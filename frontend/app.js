@@ -7,6 +7,9 @@ const sessionEl = document.getElementById("session-id");
 const dbResultEl = document.getElementById("db-result");
 const simResultEl = document.getElementById("sim-result");
 const eventLogEl = document.getElementById("event-log");
+const workflowNameEl = document.getElementById("workflow-name");
+const workflowUpdatedEl = document.getElementById("workflow-updated");
+const frontendTriggerEl = document.getElementById("frontend-trigger");
 
 const sessionId = crypto.randomUUID();
 sessionEl.textContent = sessionId.slice(0, 8);
@@ -127,6 +130,14 @@ function handleEvent(event) {
     renderSimResult(event.payload);
     addEventLog("SIM", `수율: ${event.payload.result.predicted_yield}%`);
   }
+
+  if (event.type === "frontend_trigger") {
+    const message = event.payload?.message || "프론트 트리거가 수신되었습니다.";
+    if (frontendTriggerEl) {
+      frontendTriggerEl.textContent = message;
+    }
+    addEventLog("UI", message);
+  }
 }
 
 const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -231,3 +242,25 @@ addMessage(
   "assistant",
   "공정 데이터 조회 또는 예측 시뮬레이션을 요청하세요. 요청을 올바른 에이전트로 라우팅합니다."
 );
+
+async function loadWorkflowMeta() {
+  if (!workflowNameEl || !workflowUpdatedEl) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/workflow");
+    if (!response.ok) {
+      workflowNameEl.textContent = "워크플로우 없음";
+      return;
+    }
+    const data = await response.json();
+    workflowNameEl.textContent = data.meta?.name || "워크플로우";
+    workflowUpdatedEl.textContent = data.meta?.updated_at
+      ? `업데이트: ${data.meta.updated_at}`
+      : "--";
+  } catch (error) {
+    workflowNameEl.textContent = "로드 실패";
+  }
+}
+
+loadWorkflowMeta();

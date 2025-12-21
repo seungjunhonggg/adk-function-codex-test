@@ -188,6 +188,16 @@ body {
   z-index: 1;
 }
 
+.node.selected {
+  outline: 2px solid rgba(47, 124, 255, 0.6);
+  box-shadow: 0 12px 26px rgba(47, 124, 255, 0.25);
+}
+
+.node.preview {
+  outline: 2px dashed rgba(255, 107, 53, 0.6);
+  box-shadow: 0 12px 26px rgba(255, 107, 53, 0.2);
+}
+
 .node-header {
   padding: 10px 12px;
   font-weight: 700;
@@ -204,6 +214,11 @@ body {
   padding: 0 12px 12px;
   font-size: 12px;
   color: var(--text-soft);
+}
+
+.node-body .node-meta {
+  margin-top: 4px;
+  font-size: 11px;
 }
 
 .node-ports {
@@ -241,7 +256,7 @@ body {
   color: var(--text-soft);
 }
 
-.inspector .panel textarea {
+#flow-json {
   width: 100%;
   min-height: 220px;
   border-radius: var(--radius-sm);
@@ -252,10 +267,72 @@ body {
   resize: vertical;
 }
 
+.field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.field input,
+.field select,
+.field textarea {
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+}
+
+.field textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+
+.node-form.hidden {
+  display: none;
+}
+
+.hidden {
+  display: none;
+}
+
+.empty-state {
+  font-size: 12px;
+  color: var(--text-soft);
+  padding: 6px 0;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: #f6f3ed;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.status {
+  font-size: 12px;
+  color: var(--text-soft);
+  margin-top: 8px;
+}
+
+#preview-result {
+  background: #f6f3ed;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  white-space: pre-line;
+}
+
 .panel-actions {
   margin-top: 10px;
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .panel-actions button {
@@ -266,6 +343,18 @@ body {
   color: white;
   font-weight: 600;
   cursor: pointer;
+}
+
+.panel-actions .ghost {
+  background: #f0ece5;
+  color: var(--text-strong);
+  border: 1px dashed rgba(0, 0, 0, 0.18);
+}
+
+.panel-actions .danger {
+  background: #ffe8e5;
+  color: #b03a2e;
+  border: 1px solid rgba(176, 58, 46, 0.25);
 }
 
 .panel.subtle ul {

@@ -11,7 +11,7 @@
       <aside class="palette">
         <div class="palette-header">
           <h1>워크플로우 빌더</h1>
-          <p>노드를 연결해 에이전트 흐름을 설계하세요.</p>
+          <p>3가지 블록(사용자/에이전트/함수)을 연결해 흐름을 설계하세요.</p>
         </div>
         <div id="palette-list" class="palette-list"></div>
         <div class="palette-footer">
@@ -25,7 +25,7 @@
         <header class="canvas-header">
           <div>
             <h2>에이전트 플로우 캔버스</h2>
-            <span>드래그로 이동, 포트를 클릭해 연결하세요.</span>
+            <span>드래그로 이동, 출력 포트 → 입력 포트로 연결하세요.</span>
           </div>
           <div class="canvas-actions">
             <button id="export-json" type="button">JSON 내보내기</button>
@@ -38,6 +38,81 @@
 
       <aside class="inspector">
         <div class="panel">
+          <h3>워크플로우 정보</h3>
+          <div class="field">
+            <label for="workflow-name">이름</label>
+            <input id="workflow-name" type="text" placeholder="예: 공정 모니터링 플로우" />
+          </div>
+          <div class="field">
+            <label for="workflow-desc">설명</label>
+            <textarea id="workflow-desc" placeholder="워크플로우 목적을 간단히 적어주세요."></textarea>
+          </div>
+          <div class="panel-actions">
+            <button id="save-workflow" type="button">저장 및 적용</button>
+            <button id="load-workflow" type="button" class="ghost">서버에서 불러오기</button>
+          </div>
+          <div id="workflow-status" class="status">저장 상태: 대기 중</div>
+        </div>
+
+        <div class="panel">
+          <h3>노드 설정</h3>
+          <div id="node-empty" class="empty-state">노드를 선택하면 상세 설정이 표시됩니다.</div>
+          <div id="node-form" class="node-form hidden">
+            <div class="field">
+              <label>선택된 노드 ID</label>
+              <div id="node-id" class="mono">--</div>
+            </div>
+            <div class="field">
+              <label for="node-label">라벨</label>
+              <input id="node-label" type="text" />
+            </div>
+            <div class="field">
+              <label for="node-type">타입</label>
+              <input id="node-type" type="text" readonly />
+            </div>
+            <div class="field">
+              <label for="node-subtype">세부 타입</label>
+              <select id="node-subtype"></select>
+            </div>
+            <div class="field" id="node-execution-field">
+              <label for="node-execution">실행 방식</label>
+              <select id="node-execution">
+                <option value="handoff">handoff (인계)</option>
+                <option value="as_tool">as_tool (부하 에이전트)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="node-keywords">키워드 (오케스트레이터 분기용)</label>
+              <input id="node-keywords" type="text" placeholder="예: 공정, 라인, 예측" />
+            </div>
+            <div class="field">
+              <label for="node-input-format">Input 포맷</label>
+              <textarea id="node-input-format" placeholder="예: { line: string, status: string }"></textarea>
+            </div>
+            <div class="field">
+              <label for="node-output-format">Output 포맷</label>
+              <textarea id="node-output-format" placeholder="예: { rows: Record[] }"></textarea>
+            </div>
+            <div class="panel-actions">
+              <button id="node-delete" type="button" class="ghost danger">노드 삭제</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>검증 & 미리보기</h3>
+          <div class="field">
+            <label for="preview-message">테스트 메시지</label>
+            <textarea id="preview-message" placeholder="예: 라인 A 상태 보여줘"></textarea>
+          </div>
+          <div class="panel-actions">
+            <button id="validate-workflow" type="button" class="ghost">워크플로우 검증</button>
+            <button id="preview-workflow" type="button">라우팅 미리보기</button>
+          </div>
+          <div id="preview-result" class="status">검증/미리보기 결과가 여기에 표시됩니다.</div>
+        </div>
+
+        <div class="panel">
           <h3>워크플로우 JSON</h3>
           <textarea id="flow-json" readonly></textarea>
           <div class="panel-actions">
@@ -47,9 +122,13 @@
         <div class="panel subtle">
           <h3>가이드</h3>
           <ul>
-            <li>노드는 왼쪽 팔레트에서 추가할 수 있습니다.</li>
-            <li>출력 포트 → 입력 포트를 클릭해 연결을 만듭니다.</li>
-            <li>JSON은 바로 복사해 문서나 설계에 활용하세요.</li>
+            <li>노드 타입은 3가지이며, 세부 타입은 오른쪽 패널에서 선택합니다.</li>
+            <li>키워드는 오케스트레이터가 분기를 결정할 때 사용됩니다.</li>
+            <li>에이전트 실행 방식: handoff(인계) / as_tool(부하 에이전트 호출).</li>
+            <li>함수 노드는 에이전트 뒤에 연결해야 저장할 수 있습니다.</li>
+            <li>검증 & 미리보기에서 라우팅 경로를 확인할 수 있습니다.</li>
+            <li>노드 선택 후 Delete 키로 빠르게 삭제할 수 있습니다.</li>
+            <li>저장 후 메인 데모의 /api/chat 라우팅에 즉시 적용됩니다.</li>
           </ul>
         </div>
       </aside>

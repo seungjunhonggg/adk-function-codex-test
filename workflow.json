@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "name": "공정 모니터링 기본 워크플로우",
+    "description": "오케스트레이터 → DB/시뮬레이션 분기 → 함수 실행 → 프론트 트리거",
+    "updated_at": "2025-12-21T12:39:56.347426Z"
+  },
+  "nodes": [
+    {
+      "id": "node-8",
+      "type": "user",
+      "subtype": "request",
+      "label": "사용자 요청",
+      "keywords": [],
+      "input_format": "",
+      "output_format": "",
+      "position": {
+        "x": 97,
+        "y": 129
+      }
+    },
+    {
+      "id": "node-9",
+      "type": "agent",
+      "subtype": "orchestrator",
+      "label": "에이전트",
+      "keywords": [],
+      "input_format": "",
+      "output_format": "",
+      "position": {
+        "x": 368,
+        "y": 90
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "node-8",
+      "to": "node-9"
+    }
+  ]
+}

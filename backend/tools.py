@@ -52,6 +52,18 @@ async def execute_simulation() -> dict:
     return {"status": "ok", "result": result}
 
 
+async def emit_frontend_trigger(message: str, payload: dict | None = None) -> dict:
+    event = {
+        "type": "frontend_trigger",
+        "payload": {
+            "message": message,
+            "data": payload or {},
+        },
+    }
+    await event_bus.broadcast(event)
+    return event["payload"]
+
+
 @function_tool
 async def get_process_data(query: str = "", limit: int = 12) -> dict:
     return await emit_process_data(query, limit)
@@ -75,3 +87,8 @@ def update_simulation_params(
 @function_tool
 async def run_simulation() -> dict:
     return await execute_simulation()
+
+
+@function_tool(strict_mode=False)
+async def frontend_trigger(message: str, data: dict | None = None) -> dict:
+    return await emit_frontend_trigger(message, data)
