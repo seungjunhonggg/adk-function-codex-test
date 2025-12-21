@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>공정 모니터링 에이전트 데모</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>공정 Ops</h1>
+          <p>에이전트 기반 공정 데이터 조회 및 예측 시뮬레이션 데모.</p>
+        </div>
+        <div class="status">
+          <span id="ws-status" class="status-dot"></span>
+          <span id="ws-label">연결 중</span>
+        </div>
+        <div class="quick-actions">
+          <button type="button" data-prompt="Line-A 최신 공정 데이터를 보여줘.">
+            Line-A 최신 공정 데이터
+          </button>
+          <button type="button" data-prompt="WARN 상태 공정 데이터를 요청해줘.">
+            WARN 상태 공정 데이터
+          </button>
+          <button type="button" data-prompt="예측 시뮬레이션을 시작해줘.">
+            예측 시뮬레이션 시작
+          </button>
+          <button type="button" data-prompt="온도 120, 전압 3.7, 크기 12, 용량 6.">
+            시뮬레이션 입력 제공
+          </button>
+          <button type="button" id="test-trigger" class="secondary">
+            간이 테스트 실행 (API 키 불필요)
+          </button>
+          <a class="quick-link" href="/builder" target="_blank" rel="noopener">
+            워크플로우 빌더 열기
+          </a>
+        </div>
+        <div class="session-tag">
+          세션: <span id="session-id">--</span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section class="chat-panel">
+          <div class="panel-header">
+            <h2>채팅 콘솔</h2>
+            <span>OpenAI Agents SDK 기반 오케스트레이션</span>
+          </div>
+          <div id="messages" class="messages"></div>
+          <form id="chat-form" class="composer">
+            <textarea id="chat-input" placeholder="공정 데이터 또는 예측 시뮬레이션을 요청하세요..."></textarea>
+            <button type="submit">전송</button>
+          </form>
+        </section>
+
+        <section class="event-panel">
+          <div class="panel-header">
+            <h2>이벤트 스트림</h2>
+            <span>에이전트 함수 도구 트리거</span>
+          </div>
+          <div class="event-content">
+            <div class="card">
+              <h3>공정 데이터</h3>
+              <div id="db-result">아직 데이터가 없습니다.</div>
+            </div>
+            <div class="card">
+              <h3>시뮬레이션 결과</h3>
+              <div id="sim-result">입력 대기 중입니다.</div>
+            </div>
+            <div class="card">
+              <h3>활동 로그</h3>
+              <div id="event-log" class="event-log"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

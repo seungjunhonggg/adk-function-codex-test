@@ -1,0 +1,60 @@
+﻿<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>에이전트 워크플로우 빌더</title>
+    <link rel="stylesheet" href="/static/builder.css" />
+  </head>
+  <body>
+    <div class="builder">
+      <aside class="palette">
+        <div class="palette-header">
+          <h1>워크플로우 빌더</h1>
+          <p>노드를 연결해 에이전트 흐름을 설계하세요.</p>
+        </div>
+        <div id="palette-list" class="palette-list"></div>
+        <div class="palette-footer">
+          <button id="load-sample" type="button">샘플 플로우 불러오기</button>
+          <button id="clear-canvas" type="button" class="ghost">전체 삭제</button>
+          <a class="ghost" href="/" target="_blank" rel="noopener">메인 데모로 돌아가기</a>
+        </div>
+      </aside>
+
+      <main class="canvas-wrap">
+        <header class="canvas-header">
+          <div>
+            <h2>에이전트 플로우 캔버스</h2>
+            <span>드래그로 이동, 포트를 클릭해 연결하세요.</span>
+          </div>
+          <div class="canvas-actions">
+            <button id="export-json" type="button">JSON 내보내기</button>
+          </div>
+        </header>
+        <div id="canvas" class="canvas">
+          <svg id="connections" class="connections"></svg>
+        </div>
+      </main>
+
+      <aside class="inspector">
+        <div class="panel">
+          <h3>워크플로우 JSON</h3>
+          <textarea id="flow-json" readonly></textarea>
+          <div class="panel-actions">
+            <button id="copy-json" type="button">복사</button>
+          </div>
+        </div>
+        <div class="panel subtle">
+          <h3>가이드</h3>
+          <ul>
+            <li>노드는 왼쪽 팔레트에서 추가할 수 있습니다.</li>
+            <li>출력 포트 → 입력 포트를 클릭해 연결을 만듭니다.</li>
+            <li>JSON은 바로 복사해 문서나 설계에 활용하세요.</li>
+          </ul>
+        </div>
+      </aside>
+    </div>
+
+    <script src="/static/builder.js"></script>
+  </body>
+</html>
