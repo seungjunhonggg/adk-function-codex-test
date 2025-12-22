@@ -3,32 +3,29 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>공정 모니터링 에이전트 데모</title>
+    <title>LOT 모니터링 에이전트 데모</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <div class="app">
       <aside class="sidebar">
         <div class="brand">
-          <h1>공정 Ops</h1>
-          <p>에이전트 기반 공정 데이터 조회 및 예측 시뮬레이션 데모.</p>
+          <h1>LOT Ops</h1>
+          <p>에이전트 기반 LOT 조회 → 예측 시뮬레이션 데모.</p>
         </div>
         <div class="status">
           <span id="ws-status" class="status-dot"></span>
           <span id="ws-label">연결 중</span>
         </div>
         <div class="quick-actions">
-          <button type="button" data-prompt="Line-A 최신 공정 데이터를 보여줘.">
-            Line-A 최신 공정 데이터
+          <button type="button" data-prompt="LOT-2024-0007 정보 보여줘.">
+            LOT-2024-0007 조회
           </button>
-          <button type="button" data-prompt="WARN 상태 공정 데이터를 요청해줘.">
-            WARN 상태 공정 데이터
+          <button type="button" data-prompt="LOT-2024-0007 예측 시뮬레이션 해줘.">
+            LOT-2024-0007 시뮬레이션
           </button>
-          <button type="button" data-prompt="예측 시뮬레이션을 시작해줘.">
-            예측 시뮬레이션 시작
-          </button>
-          <button type="button" data-prompt="온도 120, 전압 3.7, 크기 12, 용량 6.">
-            시뮬레이션 입력 제공
+          <button type="button" data-prompt="최근 조회한 LOT으로 시뮬레이션 실행해줘.">
+            최근 LOT 시뮬레이션
           </button>
           <button type="button" id="test-trigger" class="secondary">
             간이 테스트 실행 (API 키 불필요)
@@ -36,6 +33,28 @@
           <a class="quick-link" href="/builder" target="_blank" rel="noopener">
             워크플로우 빌더 열기
           </a>
+        </div>
+        <div class="lot-control">
+          <h3>LOT 입력</h3>
+          <div class="lot-field">
+            <label for="lot-id">LOT ID</label>
+            <input id="lot-id" type="text" placeholder="LOT-2024-0007" />
+          </div>
+          <div class="lot-actions">
+            <button id="lot-search" type="button">LOT 조회</button>
+            <button id="lot-simulate" type="button" class="secondary">
+              시뮬레이션
+            </button>
+          </div>
+          <div class="lot-actions secondary">
+            <button id="lot-search-sim" type="button" class="ghost">
+              조회 + 시뮬레이션
+            </button>
+            <button id="lot-clear" type="button" class="ghost">
+              입력 지우기
+            </button>
+          </div>
+          <div id="lot-status" class="lot-hint">예: LOT-2024-0007</div>
         </div>
         <div class="session-tag">
           세션: <span id="session-id">--</span>
@@ -51,11 +70,11 @@
         <section class="chat-panel">
           <div class="panel-header">
             <h2>채팅 콘솔</h2>
-            <span>OpenAI Agents SDK 기반 오케스트레이션</span>
+            <span>LOT 조회 및 시뮬레이션 요청</span>
           </div>
           <div id="messages" class="messages"></div>
           <form id="chat-form" class="composer">
-            <textarea id="chat-input" placeholder="공정 데이터 또는 예측 시뮬레이션을 요청하세요..."></textarea>
+            <textarea id="chat-input" placeholder="LOT ID를 입력하거나 예측 시뮬레이션을 요청하세요..."></textarea>
             <button type="submit">전송</button>
           </form>
         </section>
@@ -67,8 +86,8 @@
           </div>
           <div class="event-content">
             <div class="card">
-              <h3>공정 데이터</h3>
-              <div id="db-result">아직 데이터가 없습니다.</div>
+              <h3>LOT 정보</h3>
+              <div id="lot-result">아직 LOT가 없습니다.</div>
             </div>
             <div class="card">
               <h3>시뮬레이션 결과</h3>

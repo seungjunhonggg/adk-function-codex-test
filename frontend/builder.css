@@ -29,14 +29,28 @@ body {
     radial-gradient(circle at 70% 85%, #dff1eb, transparent 50%),
     var(--bg-sand);
   min-height: 100vh;
+  overflow: hidden;
 }
 
 .builder {
   display: grid;
   grid-template-columns: 280px 1fr 320px;
   min-height: 100vh;
+  height: 100vh;
   gap: 18px;
   padding: 24px;
+  overflow: hidden;
+}
+
+.palette,
+.inspector,
+.canvas-wrap {
+  min-height: 0;
+}
+
+.palette,
+.inspector {
+  overflow: auto;
 }
 
 .palette,
@@ -67,6 +81,19 @@ body {
 .palette-list {
   display: grid;
   gap: 10px;
+}
+
+.palette-section {
+  display: grid;
+  gap: 8px;
+}
+
+.palette-section h4 {
+  margin: 4px 0 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-soft);
 }
 
 .palette-item {
@@ -216,6 +243,11 @@ body {
   color: var(--text-soft);
 }
 
+.node-body .node-type {
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
 .node-body .node-meta {
   margin-top: 4px;
   font-size: 11px;
@@ -224,7 +256,19 @@ body {
 .node-ports {
   display: flex;
   justify-content: space-between;
+  align-items: flex-end;
   padding: 0 12px 12px;
+  gap: 8px;
+}
+
+.ports-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ports-group.out {
+  justify-content: flex-end;
 }
 
 .port {
@@ -234,12 +278,42 @@ body {
   border: 2px solid var(--node-color, var(--accent));
   background: #ffffff;
   cursor: pointer;
+  position: relative;
 }
 
 .port.active {
   background: var(--node-color, var(--accent));
 }
 
+.port::after {
+  content: attr(data-label);
+  position: absolute;
+  top: 16px;
+  font-size: 9px;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.port[data-label="in"]::after,
+.port[data-label="out"]::after {
+  content: "";
+}
+
+.port[data-direction="in"]::after {
+  left: -4px;
+}
+
+.port[data-direction="out"]::after {
+  right: -4px;
+}
+
+.connections path[data-kind="tool"] {
+  stroke-dasharray: 6 6;
+}
+
+.connections path[data-kind="handoff"] {
+  stroke-dasharray: 2 6;
+}
 .inspector .panel {
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -288,6 +362,11 @@ body {
   font-family: var(--font-sans);
 }
 
+.field select[multiple] {
+  min-height: 120px;
+  font-family: var(--font-mono);
+}
+
 .field textarea {
   min-height: 70px;
   resize: vertical;
@@ -319,6 +398,14 @@ body {
   font-size: 12px;
   color: var(--text-soft);
   margin-top: 8px;
+}
+
+.status.error {
+  color: #b03a2e;
+}
+
+#db-connections {
+  white-space: pre-line;
 }
 
 #preview-result {
@@ -377,12 +464,23 @@ body {
 }
 
 @media (max-width: 1200px) {
+  body {
+    overflow: auto;
+  }
+
   .builder {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
 
   .canvas-wrap {
     order: 2;
+  }
+
+  .palette,
+  .inspector {
+    overflow: visible;
   }
 }
 

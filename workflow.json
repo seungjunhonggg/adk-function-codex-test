@@ -1,41 +1,261 @@
 {
   "meta": {
-    "name": "공정 모니터링 기본 워크플로우",
-    "description": "오케스트레이터 → DB/시뮬레이션 분기 → 함수 실행 → 프론트 트리거",
+    "name": "OpenAI Agent Builder 스타일 워크플로우",
+    "description": "LOT 조회 → 시뮬레이션 예측 흐름, MCP/File Search는 에이전트 도구로 연결",
     "updated_at": "2025-12-21T12:39:56.347426Z"
   },
   "nodes": [
     {
-      "id": "node-8",
-      "type": "user",
-      "subtype": "request",
-      "label": "사용자 요청",
+      "id": "node-start",
+      "type": "start",
+      "subtype": "start",
+      "label": "Start",
       "keywords": [],
       "input_format": "",
       "output_format": "",
       "position": {
-        "x": 97,
-        "y": 129
+        "x": 80,
+        "y": 160
+      },
+      "config": {
+        "input_variables": ["input_as_text"],
+        "state_variables": ["conversation_history:text"]
       }
     },
     {
-      "id": "node-9",
-      "type": "agent",
-      "subtype": "orchestrator",
-      "label": "에이전트",
+      "id": "node-guardrail",
+      "type": "guardrail",
+      "subtype": "guardrail",
+      "label": "Guardrail",
       "keywords": [],
       "input_format": "",
       "output_format": "",
       "position": {
-        "x": 368,
-        "y": 90
+        "x": 280,
+        "y": 160
+      },
+      "config": {
+        "input": "input_as_text",
+        "pii": true,
+        "moderation": true,
+        "jailbreak": true
+      }
+    },
+    {
+      "id": "node-orchestrator",
+      "type": "agent",
+      "subtype": "orchestrator",
+      "execution_mode": "handoff",
+      "label": "Orchestrator Agent",
+      "keywords": ["lot", "로트", "데이터", "예측", "시뮬레이션"],
+      "input_format": "사용자 메시지",
+      "output_format": "라우팅 결과",
+      "position": {
+        "x": 520,
+        "y": 160
+      },
+      "config": {
+        "agent_profile": "orchestrator",
+        "instructions": "요청을 올바른 에이전트로 라우팅합니다. LOT 정보는 DB 에이전트, 예측/시뮬레이션은 시뮬레이션 에이전트로 핸드오프하세요.",
+        "include_chat_history": true,
+        "response_format": "text"
+      }
+    },
+    {
+      "id": "node-end",
+      "type": "end",
+      "subtype": "end",
+      "label": "End",
+      "keywords": [],
+      "input_format": "",
+      "output_format": "",
+      "position": {
+        "x": 760,
+        "y": 160
+      },
+      "config": {
+        "return_type": "text"
+      }
+    },
+    {
+      "id": "node-db-agent",
+      "type": "agent",
+      "subtype": "db_agent",
+      "execution_mode": "handoff",
+      "label": "DB Agent",
+      "keywords": ["lot", "로트", "상태", "데이터", "조회"],
+      "input_format": "LOT ID",
+      "output_format": "LOT 레코드",
+      "position": {
+        "x": 520,
+        "y": 20
+      },
+      "config": {
+        "agent_profile": "db_agent"
+      }
+    },
+    {
+      "id": "node-sim-agent",
+      "type": "agent",
+      "subtype": "simulation_agent",
+      "execution_mode": "handoff",
+      "label": "Simulation Agent",
+      "keywords": ["예측", "시뮬레이션", "what-if", "forecast"],
+      "input_format": "온도/전압/크기/용량",
+      "output_format": "예측 결과",
+      "position": {
+        "x": 520,
+        "y": 300
+      },
+      "config": {
+        "agent_profile": "simulation_agent"
+      }
+    },
+    {
+      "id": "node-file-search",
+      "type": "file_search",
+      "subtype": "file_search",
+      "label": "File Search",
+      "keywords": [],
+      "input_format": "query",
+      "output_format": "results",
+      "position": {
+        "x": 520,
+        "y": 420
+      },
+      "config": {
+        "top_k": 3
+      }
+    },
+    {
+      "id": "node-mcp-db",
+      "type": "mcp",
+      "subtype": "process_db",
+      "label": "MCP: Process DB",
+      "keywords": [],
+      "input_format": "query",
+      "output_format": "rows",
+      "position": {
+        "x": 760,
+        "y": 20
+      },
+      "config": {
+        "toolset": "process_db",
+        "server_name": "process_db"
+      }
+    },
+    {
+      "id": "node-mcp-sim",
+      "type": "mcp",
+      "subtype": "simulation",
+      "label": "MCP: Simulation",
+      "keywords": [],
+      "input_format": "params",
+      "output_format": "result",
+      "position": {
+        "x": 760,
+        "y": 300
+      },
+      "config": {
+        "toolset": "simulation",
+        "server_name": "simulation_api"
+      }
+    },
+    {
+      "id": "node-mcp-ui",
+      "type": "mcp",
+      "subtype": "frontend_trigger",
+      "label": "MCP: Frontend Trigger",
+      "keywords": [],
+      "input_format": "message",
+      "output_format": "ui_event",
+      "position": {
+        "x": 760,
+        "y": 420
+      },
+      "config": {
+        "toolset": "frontend_trigger",
+        "server_name": "frontend_trigger"
       }
     }
   ],
   "edges": [
     {
-      "from": "node-8",
-      "to": "node-9"
+      "from": "node-start",
+      "to": "node-guardrail",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "flow"
+    },
+    {
+      "from": "node-guardrail",
+      "to": "node-orchestrator",
+      "from_port": "pass",
+      "to_port": "in",
+      "kind": "flow"
+    },
+    {
+      "from": "node-guardrail",
+      "to": "node-end",
+      "from_port": "fail",
+      "to_port": "in",
+      "kind": "flow"
+    },
+    {
+      "from": "node-orchestrator",
+      "to": "node-end",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "flow"
+    },
+    {
+      "from": "node-orchestrator",
+      "to": "node-db-agent",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "handoff"
+    },
+    {
+      "from": "node-orchestrator",
+      "to": "node-sim-agent",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "handoff"
+    },
+    {
+      "from": "node-orchestrator",
+      "to": "node-file-search",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "tool"
+    },
+    {
+      "from": "node-db-agent",
+      "to": "node-mcp-db",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "tool"
+    },
+    {
+      "from": "node-db-agent",
+      "to": "node-mcp-ui",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "tool"
+    },
+    {
+      "from": "node-sim-agent",
+      "to": "node-mcp-sim",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "tool"
+    },
+    {
+      "from": "node-sim-agent",
+      "to": "node-mcp-ui",
+      "from_port": "out",
+      "to_port": "in",
+      "kind": "tool"
     }
   ]
 }

@@ -9,9 +9,15 @@ from pydantic import BaseModel
 from .agents import triage_agent
 from .config import OPENAI_API_KEY, SESSION_DB_PATH
 from .context import current_session_id
+from .db_connections import connect_and_save, get_schema, list_connections
 from .db import init_db
 from .events import event_bus
-from .tools import collect_simulation_params, emit_process_data, execute_simulation
+from .tools import (
+    collect_simulation_params,
+    emit_lot_info,
+    execute_simulation,
+    run_lot_simulation,
+)
 from .workflow import (
     ensure_workflow,
     execute_workflow,
@@ -46,6 +52,16 @@ class WorkflowRequest(BaseModel):
 class WorkflowPreviewRequest(BaseModel):
     workflow: dict
     message: str
+
+
+class DBConnectRequest(BaseModel):
+    name: str
+    db_type: str
+    host: str
+    port: int = 5432
+    database: str
+    user: str
+    password: str
 
 
 @app.on_event("startup")
@@ -99,20 +115,23 @@ async def chat(request: ChatRequest) -> dict:
 async def trigger_test(request: TestRequest) -> dict:
     token = current_session_id.set(request.session_id)
     try:
-        await emit_process_data(request.query or "", limit=8)
-        params = request.params or {
-            "temperature": 120,
-            "voltage": 3.7,
-            "size": 12,
-            "capacity": 6,
-        }
-        safe_params = {
-            key: value
-            for key, value in params.items()
-            if key in {"temperature", "voltage", "size", "capacity"}
-        }
-        collect_simulation_params(**safe_params)
-        result = await execute_simulation()
+        if request.query:
+            await emit_lot_info(request.query, limit=1)
+            result = await run_lot_simulation(request.query)
+        else:
+            params = request.params or {
+                "temperature": 120,
+                "voltage": 3.7,
+                "size": 12,
+                "capacity": 6,
+            }
+            safe_params = {
+                key: value
+                for key, value in params.items()
+                if key in {"temperature", "voltage", "size", "capacity"}
+            }
+            collect_simulation_params(**safe_params)
+            result = await execute_simulation()
     finally:
         current_session_id.reset(token)
 
@@ -152,6 +171,43 @@ async def preview_workflow_route(request: WorkflowPreviewRequest) -> dict:
             status_code=400, detail={"errors": ["경로를 찾지 못했습니다."]}
         )
     return preview
+
+
+@app.get("/api/db/connections")
+async def list_db_connections() -> dict:
+    return {"connections": list_connections()}
+
+
+@app.post("/api/db/connect")
+async def connect_db(request: DBConnectRequest) -> dict:
+    try:
+        record = connect_and_save(request.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail={"error": str(error)}) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=400, detail={"error": str(error)}) from error
+    schema = record.get("schema") or {}
+    return {
+        "connection": {
+            "id": record.get("id"),
+            "name": record.get("name"),
+            "db_type": record.get("db_type"),
+            "host": record.get("host"),
+            "port": record.get("port"),
+            "database": record.get("database"),
+            "user": record.get("user"),
+            "updated_at": record.get("updated_at"),
+        },
+        "schema": schema,
+    }
+
+
+@app.get("/api/db/schema/{connection_id}")
+async def get_db_schema(connection_id: str) -> dict:
+    schema = get_schema(connection_id)
+    if schema is None:
+        raise HTTPException(status_code=404, detail={"error": "연결을 찾을 수 없습니다."})
+    return {"schema": schema}
 
 
 @app.websocket("/ws")
