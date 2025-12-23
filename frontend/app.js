@@ -10,16 +10,33 @@ const eventLogEl = document.getElementById("event-log");
 const workflowNameEl = document.getElementById("workflow-name");
 const workflowUpdatedEl = document.getElementById("workflow-updated");
 const frontendTriggerEl = document.getElementById("frontend-trigger");
+const currentLotEl = document.getElementById("current-lot");
+const toggleLogButton = document.getElementById("toggle-log");
 const lotIdInput = document.getElementById("lot-id");
 const lotSearchButton = document.getElementById("lot-search");
 const lotSimButton = document.getElementById("lot-simulate");
 const lotSearchSimButton = document.getElementById("lot-search-sim");
 const lotClearButton = document.getElementById("lot-clear");
 const lotStatusEl = document.getElementById("lot-status");
+const simFormCard = document.getElementById("sim-form-card");
+const lotCard = document.getElementById("lot-card");
+const simResultCard = document.getElementById("sim-result-card");
+const frontendCard = document.getElementById("frontend-card");
+const eventLogCard = document.getElementById("event-log-card");
+const eventEmptyEl = document.getElementById("event-empty");
+const simTemperatureInput = document.getElementById("sim-temperature");
+const simVoltageInput = document.getElementById("sim-voltage");
+const simSizeInput = document.getElementById("sim-size");
+const simCapacityInput = document.getElementById("sim-capacity");
+const simProductionSelect = document.getElementById("sim-production");
+const simApplyButton = document.getElementById("sim-apply");
+const simRunButton = document.getElementById("sim-run");
+const simFormStatus = document.getElementById("sim-form-status");
 
 const sessionId = crypto.randomUUID();
 sessionEl.textContent = sessionId.slice(0, 8);
 let lastLotId = "";
+let isComposing = false;
 
 function addMessage(role, text) {
   const message = document.createElement("div");
@@ -44,6 +61,81 @@ function setLotStatus(message, isError = false) {
   if (lotIdInput) {
     lotIdInput.classList.toggle("error", isError);
   }
+}
+
+function setSimStatus(message, isError = false) {
+  if (!simFormStatus) {
+    return;
+  }
+  simFormStatus.textContent = message;
+  simFormStatus.classList.toggle("error", isError);
+}
+
+function setCurrentLot(lotId) {
+  if (!lotId) {
+    return;
+  }
+  lastLotId = lotId;
+  if (currentLotEl) {
+    currentLotEl.textContent = `현재 LOT: ${lotId}`;
+  }
+  if (lotIdInput && document.activeElement !== lotIdInput) {
+    lotIdInput.value = lotId;
+  }
+}
+
+const streamCards = [
+  lotCard,
+  simFormCard,
+  simResultCard,
+  frontendCard,
+].filter(Boolean);
+let isLogOpen = false;
+
+function updateEventEmpty() {
+  if (!eventEmptyEl) {
+    return;
+  }
+  const hasVisible = streamCards.some(
+    (card) => card && !card.classList.contains("hidden")
+  );
+  eventEmptyEl.classList.toggle("hidden", hasVisible || isLogOpen);
+}
+
+function hideAllStreamCards() {
+  streamCards.forEach((card) => {
+    if (card) {
+      card.classList.add("hidden");
+    }
+  });
+}
+
+function showStreamCard(card) {
+  if (!card) {
+    return;
+  }
+  card.classList.remove("hidden");
+  updateEventEmpty();
+}
+
+function showOnlyStreamCards(cards = []) {
+  hideAllStreamCards();
+  cards.forEach((card) => {
+    if (card) {
+      card.classList.remove("hidden");
+    }
+  });
+  updateEventEmpty();
+}
+
+function toggleEventLog() {
+  if (!eventLogCard || !toggleLogButton) {
+    return;
+  }
+  isLogOpen = !isLogOpen;
+  eventLogCard.classList.toggle("hidden", !isLogOpen);
+  toggleLogButton.textContent = isLogOpen ? "로그 닫기" : "활동 로그";
+  updateEventEmpty();
 }
 
 function renderValue(value) {
@@ -94,16 +186,148 @@ function createKpiCard(label, value, className = "") {
   return card;
 }
 
+function applyInputValue(input, value) {
+  if (!input) {
+    return;
+  }
+  if (document.activeElement === input) {
+    return;
+  }
+  if (value === null || value === undefined || value === "") {
+    if (!input.value) {
+      input.value = "";
+    }
+    return;
+  }
+  input.value = String(value);
+}
+
+function updateMissingInputs(missing = []) {
+  const missingSet = new Set(missing || []);
+  const mapping = [
+    { key: "temperature", el: simTemperatureInput },
+    { key: "voltage", el: simVoltageInput },
+    { key: "size", el: simSizeInput },
+    { key: "capacity", el: simCapacityInput },
+    { key: "production_mode", el: simProductionSelect },
+  ];
+  mapping.forEach(({ key, el }) => {
+    if (!el) {
+      return;
+    }
+    el.classList.toggle("missing", missingSet.has(key));
+  });
+}
+
+function updateFilledInputs() {
+  const mapping = [
+    simTemperatureInput,
+    simVoltageInput,
+    simSizeInput,
+    simCapacityInput,
+    simProductionSelect,
+  ];
+  mapping.forEach((el) => {
+    if (!el) {
+      return;
+    }
+    const value = String(el.value || "").trim();
+    el.classList.toggle("filled", Boolean(value));
+  });
+}
+
+function renderSimulationForm(payload = {}) {
+  if (!payload || !simFormCard) {
+    return;
+  }
+  showOnlyStreamCards([simFormCard]);
+  const params = payload.params || {};
+  applyInputValue(simTemperatureInput, params.temperature);
+  applyInputValue(simVoltageInput, params.voltage);
+  applyInputValue(simSizeInput, params.size);
+  applyInputValue(simCapacityInput, params.capacity);
+  applyInputValue(simProductionSelect, params.production_mode);
+  updateMissingInputs(payload.missing || []);
+  updateFilledInputs();
+
+  if (payload.missing && payload.missing.length) {
+    const missingLabel = payload.missing
+      .map((item) => {
+        if (item === "production_mode") {
+          return "양산/개발";
+        }
+        if (item === "temperature") return "온도";
+        if (item === "voltage") return "전압";
+        if (item === "size") return "크기";
+        if (item === "capacity") return "용량";
+        return item;
+      })
+      .join(", ");
+    setSimStatus(`미입력: ${missingLabel}`, true);
+  } else {
+    setSimStatus("입력 완료: 시뮬레이션 실행 가능");
+  }
+}
+
+function collectSimFormParams() {
+  const temperature = simTemperatureInput?.value.trim();
+  const voltage = simVoltageInput?.value.trim();
+  const size = simSizeInput?.value.trim();
+  const capacity = simCapacityInput?.value.trim();
+  const productionMode = simProductionSelect?.value || "";
+  return {
+    temperature: temperature ? Number(temperature) : null,
+    voltage: voltage ? Number(voltage) : null,
+    size: size ? Number(size) : null,
+    capacity: capacity ? Number(capacity) : null,
+    production_mode: productionMode || null,
+  };
+}
+
+async function sendSimulationParams({ run } = { run: false }) {
+  if (!simFormStatus) {
+    return;
+  }
+  setSimStatus("입력값 전송 중...");
+  const params = collectSimFormParams();
+  const payload = run
+    ? { session_id: sessionId }
+    : { session_id: sessionId, ...params };
+  try {
+    const response = await fetch(
+      run ? "/api/simulation/run" : "/api/simulation/params",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!response.ok) {
+      setSimStatus("시뮬레이션 요청 실패", true);
+      return;
+    }
+    const data = await response.json();
+    if (data.missing && data.missing.length) {
+      renderSimulationForm({ params: data.params || params, missing: data.missing });
+      return;
+    }
+    setSimStatus("시뮬레이션 실행 완료");
+    updateMissingInputs([]);
+  } catch (error) {
+    setSimStatus("시뮬레이션 요청 실패: 네트워크 오류", true);
+  }
+}
+
 function renderLotResult(payload) {
   if (!payload || !payload.rows || payload.rows.length === 0) {
     lotResultEl.textContent = "조회 결과가 없습니다.";
     return;
   }
 
+  showOnlyStreamCards([lotCard]);
+
   const lotId = payload.lot_id || payload.query || "";
-  if (lotId) {
-    lastLotId = lotId;
-  }
+  setCurrentLot(lotId);
   const row = payload.rows[0] || {};
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
@@ -139,9 +363,10 @@ function renderLotResult(payload) {
 
   const header = document.createElement("div");
   header.className = "lot-header";
+  const fetchedAt = new Date().toLocaleTimeString("ko-KR");
   header.innerHTML = `
     <strong>${lotId || "LOT 정보"}</strong>
-    <span>${payload.source ? `source: ${payload.source}` : ""}</span>
+    <span>${payload.source ? `source: ${payload.source}` : ""} · 조회 ${fetchedAt}</span>
   `;
 
   lotResultEl.innerHTML = "";
@@ -162,6 +387,8 @@ function renderSimResult(payload) {
     simResultEl.textContent = "시뮬레이션 데이터가 없습니다.";
     return;
   }
+
+  showOnlyStreamCards([simResultCard]);
 
   const params = payload.params || {};
   const result = payload.result || {};
@@ -223,10 +450,16 @@ function renderSimResult(payload) {
   const paramBlock = document.createElement("div");
   paramBlock.className = "metric";
   paramBlock.style.marginTop = "12px";
+  const productionLabel =
+    params.production_mode === "mass"
+      ? "양산"
+      : params.production_mode === "dev"
+        ? "개발"
+        : params.production_mode || "-";
   paramBlock.innerHTML = `
     <span>입력값</span>
     <strong>
-      T ${params.temperature}, V ${params.voltage}, S ${params.size}, C ${params.capacity}
+      T ${params.temperature}, V ${params.voltage}, S ${params.size}, C ${params.capacity}, M ${productionLabel}
     </strong>
   `;
 
@@ -247,6 +480,10 @@ function handleEvent(event) {
     }
   }
 
+  if (event.type === "simulation_form") {
+    renderSimulationForm(event.payload);
+  }
+
   if (event.type === "simulation_result") {
     renderSimResult(event.payload);
     const yieldValue = event.payload?.result?.predicted_yield;
@@ -258,9 +495,13 @@ function handleEvent(event) {
     if (frontendTriggerEl) {
       frontendTriggerEl.textContent = message;
     }
+    showOnlyStreamCards([frontendCard]);
     addEventLog("UI", message);
     if (message.toLowerCase().includes("lot")) {
       setLotStatus(message, true);
+    }
+    if (message.includes("시뮬레이션")) {
+      setSimStatus(message, true);
     }
   }
 }
@@ -334,6 +575,28 @@ input.addEventListener("input", () => {
   input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
 });
 
+input.addEventListener("compositionstart", () => {
+  isComposing = true;
+});
+
+input.addEventListener("compositionend", () => {
+  isComposing = false;
+});
+
+input.addEventListener("keydown", (event) => {
+  if (isComposing || event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    if (form.requestSubmit) {
+      form.requestSubmit();
+    } else {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }
+  }
+});
+
 document.querySelectorAll("[data-prompt]").forEach((button) => {
   button.addEventListener("click", () => {
     const prompt = button.getAttribute("data-prompt");
@@ -346,7 +609,7 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
 function resolveLotId({ allowLast = false } = {}) {
   const raw = lotIdInput?.value.trim() || "";
   if (raw) {
-    lastLotId = raw;
+    setCurrentLot(raw);
     return raw;
   }
   if (allowLast && lastLotId) {
@@ -363,6 +626,13 @@ function handleLotAction(action) {
     return;
   }
   setLotStatus(`${lotId} 요청 전송 중...`);
+
+  if (action === "search" || action === "search_sim") {
+    if (lotResultEl) {
+      showOnlyStreamCards([lotCard]);
+      lotResultEl.textContent = `${lotId} 조회 중...`;
+    }
+  }
 
   if (action === "search") {
     sendChatMessage(`${lotId} 정보 보여줘.`);
@@ -396,6 +666,37 @@ if (lotIdInput) {
   });
 }
 
+if (toggleLogButton) {
+  toggleLogButton.addEventListener("click", toggleEventLog);
+}
+
+if (simApplyButton) {
+  simApplyButton.addEventListener("click", () => {
+    sendSimulationParams({ run: false });
+  });
+}
+if (simRunButton) {
+  simRunButton.addEventListener("click", () => {
+    sendSimulationParams({ run: true });
+  });
+}
+[
+  simTemperatureInput,
+  simVoltageInput,
+  simSizeInput,
+  simCapacityInput,
+  simProductionSelect,
+].forEach((inputEl) => {
+  if (!inputEl) {
+    return;
+  }
+  inputEl.addEventListener("input", () => {
+    inputEl.classList.remove("missing");
+    updateFilledInputs();
+    setSimStatus("입력값을 수정 중입니다.");
+  });
+});
+
 const testButton = document.getElementById("test-trigger");
 if (testButton) {
   testButton.addEventListener("click", async () => {
@@ -420,6 +721,8 @@ if (testButton) {
 }
 
 setLotStatus("LOT ID를 입력하세요.");
+setSimStatus("시뮬레이션 입력 대기");
+updateEventEmpty();
 
 addMessage(
   "assistant",

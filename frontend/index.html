@@ -35,7 +35,7 @@
           </a>
         </div>
         <div class="lot-control">
-          <h3>LOT 입력</h3>
+          <h3>LOT 빠른 조회 (보조)</h3>
           <div class="lot-field">
             <label for="lot-id">LOT ID</label>
             <input id="lot-id" type="text" placeholder="LOT-2024-0007" />
@@ -69,8 +69,13 @@
       <main class="main">
         <section class="chat-panel">
           <div class="panel-header">
-            <h2>채팅 콘솔</h2>
-            <span>LOT 조회 및 시뮬레이션 요청</span>
+            <div>
+              <h2>채팅 콘솔</h2>
+              <span>LOT 조회 및 시뮬레이션 요청</span>
+            </div>
+            <div class="panel-header-actions">
+              <span id="current-lot" class="pill">현재 LOT: --</span>
+            </div>
           </div>
           <div id="messages" class="messages"></div>
           <form id="chat-form" class="composer">
@@ -81,23 +86,73 @@
 
         <section class="event-panel">
           <div class="panel-header">
-            <h2>이벤트 스트림</h2>
-            <span>에이전트 함수 도구 트리거</span>
+            <div>
+              <h2>이벤트 스트림</h2>
+              <span>필요할 때만 카드가 나타납니다.</span>
+            </div>
+            <div class="panel-header-actions">
+              <button id="toggle-log" type="button" class="ghost">활동 로그</button>
+            </div>
           </div>
           <div class="event-content">
-            <div class="card">
+            <div id="event-empty" class="event-empty">
+              <strong>아직 이벤트가 없습니다.</strong>
+              <ul>
+                <li>채팅에 “시뮬레이션 하고싶어”라고 입력해보세요.</li>
+                <li>LOT 조회/시뮬레이션을 요청하면 해당 카드가 열립니다.</li>
+              </ul>
+            </div>
+            <div class="card stream-card hidden" id="lot-card">
               <h3>LOT 정보</h3>
               <div id="lot-result">아직 LOT가 없습니다.</div>
             </div>
-            <div class="card">
+            <div class="card stream-card hidden" id="sim-form-card">
+              <h3>시뮬레이션 입력</h3>
+              <div class="sim-form">
+                <div class="sim-field">
+                  <label for="sim-temperature">온도</label>
+                  <input id="sim-temperature" type="number" step="0.1" placeholder="120" />
+                </div>
+                <div class="sim-field">
+                  <label for="sim-voltage">전압</label>
+                  <input id="sim-voltage" type="number" step="0.01" placeholder="3.7" />
+                </div>
+                <div class="sim-field">
+                  <label for="sim-size">크기</label>
+                  <input id="sim-size" type="number" step="0.1" placeholder="12" />
+                </div>
+                <div class="sim-field">
+                  <label for="sim-capacity">용량</label>
+                  <input id="sim-capacity" type="number" step="0.1" placeholder="6" />
+                </div>
+                <div class="sim-field">
+                  <label for="sim-production">양산/개발품</label>
+                  <select id="sim-production">
+                    <option value="">선택</option>
+                    <option value="mass">양산</option>
+                    <option value="dev">개발</option>
+                  </select>
+                </div>
+              </div>
+              <div class="sim-actions">
+                <button id="sim-apply" type="button">값 반영</button>
+                <button id="sim-run" type="button" class="secondary">
+                  시뮬레이션 실행
+                </button>
+              </div>
+              <div id="sim-form-status" class="sim-status">
+                시뮬레이션 입력 대기
+              </div>
+            </div>
+            <div class="card stream-card hidden" id="sim-result-card">
               <h3>시뮬레이션 결과</h3>
               <div id="sim-result">입력 대기 중입니다.</div>
             </div>
-            <div class="card">
+            <div class="card stream-card hidden" id="frontend-card">
               <h3>프론트 트리거</h3>
               <div id="frontend-trigger">아직 트리거가 없습니다.</div>
             </div>
-            <div class="card">
+            <div class="card stream-card hidden" id="event-log-card">
               <h3>활동 로그</h3>
               <div id="event-log" class="event-log"></div>
             </div>

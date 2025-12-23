@@ -28,6 +28,7 @@ from .config import (
     LOT_DB_SCHEMA,
     LOT_DB_TABLE,
     LOT_PARAM_CAPACITY_COLUMN,
+    LOT_PARAM_PRODUCTION_COLUMN,
     LOT_PARAM_SIZE_COLUMN,
     LOT_PARAM_TEMPERATURE_COLUMN,
     LOT_PARAM_VOLTAGE_COLUMN,
@@ -36,7 +37,7 @@ from .db import query_process_data
 from .db_connections import execute_table_query
 from .events import event_bus
 from .lot_store import lot_store
-from .simulation import call_simulation_api, simulation_store
+from .simulation import call_simulation_api, extract_simulation_params, simulation_store
 
 
 def _parse_columns(value: str | None) -> list[str]:
@@ -60,6 +61,7 @@ def _extract_simulation_params_from_lot(row: dict) -> dict:
         "voltage": LOT_PARAM_VOLTAGE_COLUMN,
         "size": LOT_PARAM_SIZE_COLUMN,
         "capacity": LOT_PARAM_CAPACITY_COLUMN,
+        "production_mode": LOT_PARAM_PRODUCTION_COLUMN,
     }
     params: dict[str, object] = {}
     for key, column in mapping.items():
@@ -140,6 +142,7 @@ def collect_simulation_params(
     voltage: float | None = None,
     size: float | None = None,
     capacity: float | None = None,
+    production_mode: str | None = None,
 ) -> dict:
     session_id = current_session_id.get()
     params = simulation_store.update(
@@ -148,6 +151,7 @@ def collect_simulation_params(
         voltage=voltage,
         size=size,
         capacity=capacity,
+        production_mode=production_mode,
     )
     missing = simulation_store.missing(session_id)
     return {"params": params, "missing": missing}
@@ -182,6 +186,14 @@ async def emit_frontend_trigger(message: str, payload: dict | None = None) -> di
     return event["payload"]
 
 
+async def emit_simulation_form(params: dict, missing: list[str]) -> dict:
+    session_id = current_session_id.get()
+    simulation_store.activate(session_id)
+    event = {"type": "simulation_form", "payload": {"params": params, "missing": missing}}
+    await event_bus.broadcast(event)
+    return event["payload"]
+
+
 def _search_knowledge_base(query: str, top_k: int) -> list[dict]:
     if not query:
         return KNOWLEDGE_BASE[:top_k]
@@ -207,23 +219,43 @@ async def get_process_data(query: str = "", limit: int = 12) -> dict:
 
 
 @function_tool
-def update_simulation_params(
+async def update_simulation_params(
+    message: str | None = None,
     temperature: float | None = None,
     voltage: float | None = None,
     size: float | None = None,
     capacity: float | None = None,
+    production_mode: str | None = None,
 ) -> dict:
-    return collect_simulation_params(
-        temperature=temperature,
-        voltage=voltage,
-        size=size,
-        capacity=capacity,
-    )
+    parsed = extract_simulation_params(message) if message else {}
+    if temperature is not None:
+        parsed["temperature"] = temperature
+    if voltage is not None:
+        parsed["voltage"] = voltage
+    if size is not None:
+        parsed["size"] = size
+    if capacity is not None:
+        parsed["capacity"] = capacity
+    if production_mode is not None:
+        parsed["production_mode"] = production_mode
+
+    result = collect_simulation_params(**parsed)
+    await emit_simulation_form(result["params"], result["missing"])
+    return result
 
 
 @function_tool
 async def run_simulation() -> dict:
     return await execute_simulation()
+
+
+@function_tool
+async def open_simulation_form() -> dict:
+    session_id = current_session_id.get()
+    params = simulation_store.get(session_id)
+    missing = simulation_store.missing(session_id)
+    await emit_simulation_form(params, missing)
+    return {"params": params, "missing": missing}
 
 
 @function_tool
@@ -242,7 +274,8 @@ async def run_lot_simulation(lot_id: str = "") -> dict:
         return {"status": "missing", "missing": ["lot_id"]}
 
     params = _extract_simulation_params_from_lot(row)
-    collect_simulation_params(**params)
+    update_result = collect_simulation_params(**params)
+    await emit_simulation_form(update_result["params"], update_result["missing"])
     result = await execute_simulation()
     payload = {"status": result.get("status"), "lot_id": lot_id or stored.get("lot_id")}
     if result.get("status") == "missing":

@@ -13,14 +13,17 @@ from agents import Agent, Runner, function_tool
 from .agents import db_agent, simulation_agent, triage_agent
 from .config import MODEL_NAME, WORKFLOW_PATH
 from .db_connections import execute_table_query
+from .simulation import extract_simulation_params
 from .tools import (
     collect_simulation_params,
     emit_frontend_trigger,
+    emit_simulation_form,
     emit_process_data,
     execute_simulation,
     file_search,
     frontend_trigger,
     get_process_data,
+    open_simulation_form,
     run_lot_simulation,
     run_simulation,
     update_simulation_params,
@@ -844,7 +847,14 @@ def _resolve_tools(tool_nodes: list[dict]) -> list:
         if toolset == "process_db":
             tools.append(get_process_data)
         elif toolset == "simulation":
-            tools.extend([update_simulation_params, run_simulation, run_lot_simulation])
+            tools.extend(
+                [
+                    open_simulation_form,
+                    update_simulation_params,
+                    run_simulation,
+                    run_lot_simulation,
+                ]
+            )
         elif toolset == "frontend_trigger":
             tools.append(frontend_trigger)
     return _dedupe_tools(tools)
@@ -1188,8 +1198,9 @@ async def _execute_tool_node(
         return f"LOT 조회를 실행했습니다. UI에서 {len(rows)}건을 확인하세요."
 
     if toolset == "simulation":
-        params = _extract_simulation_params(context.input_as_text)
+        params = extract_simulation_params(context.input_as_text)
         update_result = collect_simulation_params(**params)
+        await emit_simulation_form(update_result.get("params", {}), update_result.get("missing", []))
         missing = update_result.get("missing", [])
         if missing:
             missing_text = ", ".join(_to_korean_field(m) for m in missing)
@@ -1485,8 +1496,12 @@ async def _execute_function_path(
             assistant_message = f"LOT 조회를 실행했습니다. UI에서 {len(rows)}건을 확인하세요."
 
         elif toolset == "api_function" or toolset == "simulation":
-            params = _extract_simulation_params(message)
+            params = extract_simulation_params(message)
             update_result = collect_simulation_params(**params)
+            await emit_simulation_form(
+                update_result.get("params", {}),
+                update_result.get("missing", []),
+            )
             missing = update_result.get("missing", [])
             if missing:
                 missing_text = ", ".join(_to_korean_field(m) for m in missing)
@@ -1676,39 +1691,13 @@ def _extract_db_query(message: str) -> str:
     return " ".join(query_parts) if query_parts else message
 
 
-def _extract_simulation_params(message: str) -> dict:
-    patterns = {
-        "temperature": r"(?:온도|temperature|temp)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)",
-        "voltage": r"(?:전압|voltage|volt)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)",
-        "size": r"(?:크기|size)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)",
-        "capacity": r"(?:용량|capacity)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)",
-    }
-
-    params: dict[str, float] = {}
-    for key, pattern in patterns.items():
-        match = re.search(pattern, message, re.IGNORECASE)
-        if match:
-            params[key] = float(match.group(1))
-
-    if len(params) < 4:
-        numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", message)
-        if len(numbers) >= 4 and not params:
-            params = {
-                "temperature": float(numbers[0]),
-                "voltage": float(numbers[1]),
-                "size": float(numbers[2]),
-                "capacity": float(numbers[3]),
-            }
-
-    return params
-
-
 def _to_korean_field(field: str) -> str:
     mapping = {
         "temperature": "온도",
         "voltage": "전압",
         "size": "크기",
         "capacity": "용량",
+        "production_mode": "양산/개발품",
     }
     return mapping.get(field, field)
 

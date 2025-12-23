@@ -4,6 +4,7 @@ from .config import MODEL_NAME
 from .tools import (
     get_lot_info,
     get_process_data,
+    open_simulation_form,
     run_lot_simulation,
     run_simulation,
     update_simulation_params,
@@ -39,13 +40,23 @@ simulation_agent = _build_agent(
     instructions=(
         "당신은 LOT 기반 예측 시뮬레이션을 담당합니다. "
         "LOT ID가 주어지면 run_lot_simulation을 호출하세요. "
-        "LOT 정보가 없거나 수치 입력이 부족하면 필요한 항목만 질문하세요. "
-        "사용자가 수치를 제공하면 update_simulation_params로 저장합니다. "
-        "네 가지 값이 모두 모이면 run_simulation을 호출하고 간단히 요약한 뒤 "
+        "사용자가 시뮬레이션을 원하면 open_simulation_form을 먼저 호출해 UI를 엽니다. "
+        "필수 입력은 temperature, voltage, size, capacity, production_mode(양산/개발) 입니다. "
+        "사용자가 일부 값을 제공하면 반드시 update_simulation_params로 저장한 뒤 "
+        "missing 항목만 다시 질문하세요. "
+        "값 추출이 애매하면 update_simulation_params(message=사용자_메시지)를 호출해 "
+        "메시지를 그대로 전달하세요. "
+        "update_simulation_params를 호출하지 않고 missing을 질문하지 마세요. "
+        "다섯 가지 값이 모두 모이면 run_simulation을 호출하고 간단히 요약한 뒤 "
         "UI 패널이 갱신되었다고 알려주세요. "
         "모든 응답은 한국어로 작성합니다."
     ),
-    tools=[update_simulation_params, run_simulation, run_lot_simulation],
+    tools=[
+        open_simulation_form,
+        update_simulation_params,
+        run_simulation,
+        run_lot_simulation,
+    ],
     **MODEL_KWARGS,
 )
 

@@ -1,6 +1,8 @@
 import os
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+if OPENAI_API_KEY and not os.getenv("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 SIM_API_URL = os.getenv("SIM_API_URL", "")
 SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "sessions.db")
@@ -17,3 +19,4 @@ LOT_PARAM_TEMPERATURE_COLUMN = os.getenv("LOT_PARAM_TEMPERATURE_COLUMN", "temper
 LOT_PARAM_VOLTAGE_COLUMN = os.getenv("LOT_PARAM_VOLTAGE_COLUMN", "voltage")
 LOT_PARAM_SIZE_COLUMN = os.getenv("LOT_PARAM_SIZE_COLUMN", "size")
 LOT_PARAM_CAPACITY_COLUMN = os.getenv("LOT_PARAM_CAPACITY_COLUMN", "capacity")
+LOT_PARAM_PRODUCTION_COLUMN = os.getenv("LOT_PARAM_PRODUCTION_COLUMN", "production_mode")

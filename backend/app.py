@@ -12,9 +12,11 @@ from .context import current_session_id
 from .db_connections import connect_and_save, get_schema, list_connections
 from .db import init_db
 from .events import event_bus
+from .simulation import extract_simulation_params, simulation_store
 from .tools import (
     collect_simulation_params,
     emit_lot_info,
+    emit_simulation_form,
     execute_simulation,
     run_lot_simulation,
 )
@@ -64,6 +66,19 @@ class DBConnectRequest(BaseModel):
     password: str
 
 
+class SimulationParamsRequest(BaseModel):
+    session_id: str
+    temperature: float | None = None
+    voltage: float | None = None
+    size: float | None = None
+    capacity: float | None = None
+    production_mode: str | None = None
+
+
+class SimulationRunRequest(BaseModel):
+    session_id: str
+
+
 @app.on_event("startup")
 async def startup() -> None:
     init_db()
@@ -94,9 +109,15 @@ async def chat(request: ChatRequest) -> dict:
             allow_llm=bool(OPENAI_API_KEY),
         )
         if workflow_run is not None:
+            await _maybe_update_simulation_from_message(
+                request.message, request.session_id
+            )
             return {"assistant_message": workflow_run.assistant_message}
 
         if not OPENAI_API_KEY:
+            await _maybe_update_simulation_from_message(
+                request.message, request.session_id
+            )
             return {
                 "assistant_message": (
                     "OPENAI_API_KEY가 설정되지 않았습니다. "
@@ -105,10 +126,27 @@ async def chat(request: ChatRequest) -> dict:
             }
 
         result = await Runner.run(triage_agent, input=request.message, session=session)
+        await _maybe_update_simulation_from_message(request.message, request.session_id)
+        return {"assistant_message": result.final_output}
     finally:
         current_session_id.reset(token)
 
-    return {"assistant_message": result.final_output}
+
+async def _maybe_update_simulation_from_message(message: str, session_id: str) -> None:
+    if not simulation_store.is_active(session_id):
+        return
+    parsed = extract_simulation_params(message)
+    if not parsed:
+        return
+    current = simulation_store.get(session_id)
+    missing_only = {key: value for key, value in parsed.items() if key not in current}
+    if not missing_only:
+        return
+    update_result = collect_simulation_params(**missing_only)
+    await emit_simulation_form(
+        update_result.get("params", {}),
+        update_result.get("missing", []),
+    )
 
 
 @app.post("/api/test/trigger")
@@ -171,6 +209,55 @@ async def preview_workflow_route(request: WorkflowPreviewRequest) -> dict:
             status_code=400, detail={"errors": ["경로를 찾지 못했습니다."]}
         )
     return preview
+
+
+@app.post("/api/simulation/params")
+async def update_simulation_params_route(request: SimulationParamsRequest) -> dict:
+    token = current_session_id.set(request.session_id)
+    try:
+        update_result = collect_simulation_params(
+            temperature=request.temperature,
+            voltage=request.voltage,
+            size=request.size,
+            capacity=request.capacity,
+            production_mode=request.production_mode,
+        )
+        await emit_simulation_form(
+            update_result["params"], update_result["missing"]
+        )
+        if update_result["missing"]:
+            return {
+                "status": "missing",
+                "missing": update_result["missing"],
+                "params": update_result["params"],
+            }
+        result = await execute_simulation()
+        return {
+            "status": result.get("status"),
+            "params": update_result["params"],
+            "result": result.get("result"),
+        }
+    finally:
+        current_session_id.reset(token)
+
+
+@app.post("/api/simulation/run")
+async def run_simulation_route(request: SimulationRunRequest) -> dict:
+    token = current_session_id.set(request.session_id)
+    try:
+        params = simulation_store.get(request.session_id)
+        missing = simulation_store.missing(request.session_id)
+        await emit_simulation_form(params, missing)
+        if missing:
+            return {"status": "missing", "missing": missing, "params": params}
+        result = await execute_simulation()
+        return {
+            "status": result.get("status"),
+            "params": params,
+            "result": result.get("result"),
+        }
+    finally:
+        current_session_id.reset(token)
 
 
 @app.get("/api/db/connections")
