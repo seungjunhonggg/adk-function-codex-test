@@ -1,6 +1,6 @@
 import os
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", )
 if OPENAI_API_KEY and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5-nano")
