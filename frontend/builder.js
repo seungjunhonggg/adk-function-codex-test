@@ -1,8 +1,10 @@
 ﻿const paletteList = document.getElementById("palette-list");
 const canvas = document.getElementById("canvas");
+const canvasWrap = canvas ? canvas.closest(".canvas-wrap") : null;
 const connections = document.getElementById("connections");
 const flowJson = document.getElementById("flow-json");
 const exportButton = document.getElementById("export-json");
+const toggleAllNodesButton = document.getElementById("toggle-all-nodes");
 const copyButton = document.getElementById("copy-json");
 const loadSampleButton = document.getElementById("load-sample");
 const clearButton = document.getElementById("clear-canvas");
@@ -15,6 +17,11 @@ const validateWorkflowButton = document.getElementById("validate-workflow");
 const previewWorkflowButton = document.getElementById("preview-workflow");
 const previewMessageInput = document.getElementById("preview-message");
 const previewResult = document.getElementById("preview-result");
+const inspectorPanel = document.getElementById("inspector-panel");
+const inspectorCloseButton = document.getElementById("inspector-close");
+const inspectorTabButtons = Array.from(
+  document.querySelectorAll(".inspector-tab")
+);
 
 const workflowPanel = document.querySelector('[data-panel="workflow"]');
 const dbPanel = document.querySelector('[data-panel="db"]');
@@ -61,66 +68,79 @@ const NODE_LIBRARY = {
     title: "Start",
     desc: "워크플로우 시작점 · 입력 변수를 정의",
     color: "#2f7cff",
+    icon: "S",
   },
   agent: {
     title: "Agent",
     desc: "LLM 실행 · 도구/핸드오프 구성",
     color: "#ff6b35",
+    icon: "A",
   },
   guardrail: {
     title: "Guardrail",
     desc: "PII/Moderation/Jailbreak 체크",
     color: "#f4a261",
+    icon: "G",
   },
   mcp: {
     title: "MCP",
     desc: "MCP 서버 연결 · 도구 제공",
     color: "#2a9d8f",
+    icon: "M",
   },
   file_search: {
     title: "File Search",
     desc: "벡터 스토어 기반 검색",
     color: "#3a86ff",
+    icon: "F",
   },
   function_tool: {
     title: "Function Tool",
     desc: "사용자 정의 함수 · DB 쿼리 자동 생성",
     color: "#10b981",
+    icon: "T",
   },
   end: {
     title: "End",
     desc: "워크플로우 종료 · 출력 포맷",
     color: "#6b7280",
+    icon: "E",
   },
   note: {
     title: "Note",
     desc: "메모/설명용 스티키 노트",
     color: "#b08968",
+    icon: "N",
   },
   if_else: {
     title: "If / Else",
     desc: "조건 분기 (CEL)",
     color: "#f59e0b",
+    icon: "IF",
   },
   while: {
     title: "While",
     desc: "조건 반복 (CEL)",
     color: "#ef4444",
+    icon: "W",
   },
   user_approval: {
     title: "User Approval",
     desc: "사람 승인 단계 추가",
     color: "#db2777",
+    icon: "UA",
   },
   transform: {
     title: "Transform",
     desc: "데이터 변환/매핑",
     color: "#0ea5e9",
+    icon: "X",
   },
   state: {
     title: "State",
     desc: "전역 상태 업데이트",
     color: "#6b705c",
+    icon: "ST",
   },
 };
 
@@ -592,6 +612,40 @@ let isLoading = false;
 let previewedNodeIds = new Set();
 let activeFieldDefs = [];
 let fieldInputMap = new Map();
+let currentScale = 1;
+let panX = 0;
+let panY = 0;
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let panOriginX = 0;
+let panOriginY = 0;
+let panMoved = false;
+let suppressCanvasClick = false;
+
+function toRgba(color, alpha) {
+  if (!color || typeof color !== "string") {
+    return `rgba(0, 0, 0, ${alpha})`;
+  }
+  const trimmed = color.trim();
+  if (!trimmed.startsWith("#")) {
+    return trimmed;
+  }
+  let hex = trimmed.slice(1);
+  if (hex.length === 3) {
+    hex = hex
+      .split("")
+      .map((ch) => ch + ch)
+      .join("");
+  }
+  if (hex.length !== 6) {
+    return `rgba(0, 0, 0, ${alpha})`;
+  }
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 let dbConnections = [];
 const dbSchemas = {};
@@ -605,6 +659,39 @@ const inspectorPanels = {
   guide: guidePanel,
 };
 
+let activeInspectorTab = "node";
+
+function setInspectorOpen(open) {
+  if (!inspectorPanel) {
+    return;
+  }
+  inspectorPanel.classList.toggle("is-open", open);
+}
+
+function setActiveTab(tabKey) {
+  if (!tabKey) {
+    return;
+  }
+  activeInspectorTab = tabKey;
+  inspectorTabButtons.forEach((button) => {
+    const isActive = button.dataset.tab === tabKey;
+    button.classList.toggle("active", isActive);
+  });
+  Object.keys(inspectorPanels).forEach((key) => {
+    setPanelVisible(key, key === tabKey);
+  });
+}
+
+function setTabEnabled(tabKey, enabled) {
+  inspectorTabButtons.forEach((button) => {
+    if (button.dataset.tab !== tabKey) {
+      return;
+    }
+    button.disabled = !enabled;
+    button.classList.toggle("disabled", !enabled);
+  });
+}
+
 function setPanelVisible(panelKey, visible) {
   const panel = inspectorPanels[panelKey];
   if (!panel) {
@@ -615,19 +702,13 @@ function setPanelVisible(panelKey, visible) {
 
 function updateInspectorVisibility(node) {
   if (node) {
-    setPanelVisible("node", true);
-    setPanelVisible("workflow", false);
-    setPanelVisible("preview", false);
-    setPanelVisible("json", false);
-    setPanelVisible("guide", false);
-    setPanelVisible("db", node.type === "function_tool");
+    setInspectorOpen(true);
+    setTabEnabled("db", node.type === "function_tool");
+    setActiveTab("node");
   } else {
-    setPanelVisible("node", false);
-    setPanelVisible("workflow", true);
-    setPanelVisible("preview", true);
-    setPanelVisible("json", true);
-    setPanelVisible("guide", true);
-    setPanelVisible("db", true);
+    setInspectorOpen(false);
+    setTabEnabled("db", false);
+    setActiveTab("node");
   }
 }
 
@@ -917,6 +998,91 @@ function markDirty() {
   }
 }
 
+function applyCanvasTransform() {
+  canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${currentScale})`;
+}
+
+function setCanvasScale(scale) {
+  const next = Math.max(0.5, Math.min(1.8, scale));
+  currentScale = Number(next.toFixed(3));
+  applyCanvasTransform();
+  updateConnections();
+}
+
+function handleCanvasWheel(event) {
+  event.preventDefault();
+  const zoomFactor = event.deltaY < 0 ? 1.08 : 0.92;
+  setCanvasScale(currentScale * zoomFactor);
+}
+
+function isBackgroundPanTarget(target) {
+  if (!target || !(target instanceof Element)) {
+    return false;
+  }
+  if (target.closest(".node")) {
+    return false;
+  }
+  if (target.closest(".palette")) {
+    return false;
+  }
+  if (target.closest(".inspector-panel")) {
+    return false;
+  }
+  if (target.closest(".canvas-toolbar")) {
+    return false;
+  }
+  return true;
+}
+
+function startCanvasPan(event) {
+  if (event.button !== 0 || !isBackgroundPanTarget(event.target)) {
+    return;
+  }
+  event.preventDefault();
+  isPanning = true;
+  panMoved = false;
+  panStartX = event.clientX;
+  panStartY = event.clientY;
+  panOriginX = panX;
+  panOriginY = panY;
+  canvas.classList.add("panning");
+  if (canvasWrap) {
+    canvasWrap.classList.add("panning");
+  }
+  document.addEventListener("mousemove", moveCanvasPan);
+  document.addEventListener("mouseup", endCanvasPan);
+}
+
+function moveCanvasPan(event) {
+  if (!isPanning) {
+    return;
+  }
+  const deltaX = event.clientX - panStartX;
+  const deltaY = event.clientY - panStartY;
+  if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+    panMoved = true;
+  }
+  panX = panOriginX + deltaX;
+  panY = panOriginY + deltaY;
+  applyCanvasTransform();
+}
+
+function endCanvasPan() {
+  if (!isPanning) {
+    return;
+  }
+  isPanning = false;
+  canvas.classList.remove("panning");
+  if (canvasWrap) {
+    canvasWrap.classList.remove("panning");
+  }
+  if (panMoved) {
+    suppressCanvasClick = true;
+  }
+  document.removeEventListener("mousemove", moveCanvasPan);
+  document.removeEventListener("mouseup", endCanvasPan);
+}
+
 function buildPalette() {
   paletteList.innerHTML = "";
   NODE_GROUPS.forEach((group) => {
@@ -933,11 +1099,19 @@ function buildPalette() {
       }
       const item = document.createElement("div");
       item.className = "palette-item";
-      item.innerHTML = `<strong>${type.title}</strong><span>${type.desc}</span>`;
+      const iconText = type.icon || type.title.slice(0, 1);
+      const iconStyle = type.color
+        ? `style="background:${type.color}1a;color:${type.color};"`
+        : "";
+      item.innerHTML = `<div class="palette-icon" ${iconStyle}>${iconText}</div><div class="palette-copy"><strong>${type.title}</strong><span>${type.desc}</span></div>`;
       item.addEventListener("click", () => {
-        const rect = canvas.getBoundingClientRect();
-        const x = rect.width / 2 - 80 + Math.random() * 80;
-        const y = rect.height / 2 - 60 + Math.random() * 80;
+        const rect = (canvasWrap || canvas).getBoundingClientRect();
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+        const baseCenterX = (centerX - panX) / currentScale;
+        const baseCenterY = (centerY - panY) / currentScale;
+        const x = baseCenterX - 80 + Math.random() * 80;
+        const y = baseCenterY - 60 + Math.random() * 80;
         createNode(typeKey, x, y);
       });
       section.appendChild(item);
@@ -1008,10 +1182,20 @@ function createNode(typeKey, x, y, options = {}) {
   nodeEl.style.left = `${x}px`;
   nodeEl.style.top = `${y}px`;
   nodeEl.style.setProperty("--node-color", type.color);
+  nodeEl.style.setProperty("--node-header-bg", toRgba(type.color, 0.14));
   nodeEl.dataset.nodeId = id;
 
   const header = document.createElement("div");
   header.className = "node-header";
+  const titleEl = document.createElement("span");
+  titleEl.className = "node-title";
+  const toggleButton = document.createElement("button");
+  toggleButton.type = "button";
+  toggleButton.className = "node-toggle";
+  toggleButton.textContent = "v";
+  toggleButton.title = "세부 내용 접기/펴기";
+  header.appendChild(titleEl);
+  header.appendChild(toggleButton);
 
   const body = document.createElement("div");
   body.className = "node-body";
@@ -1074,27 +1258,36 @@ function createNode(typeKey, x, y, options = {}) {
     color: type.color,
     element: nodeEl,
     header,
+    titleEl,
+    toggleButton,
     body,
     ports: nodePorts,
     inPorts: Object.values(nodePorts.in),
     outPorts: Object.values(nodePorts.out),
+    collapsed: false,
   };
 
   nodes.set(id, node);
 
   updateNodeVisual(node);
-  enableDrag(node, header);
+  enableDrag(node, nodeEl);
   enablePorts(node);
 
   nodeEl.addEventListener("click", (event) => {
     event.stopPropagation();
     selectNode(node);
   });
+  toggleButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    selectNode(node);
+    toggleNodeCollapse(node);
+  });
 
   updateFlowJson();
   updateConnections();
   selectNode(node);
   markDirty();
+  updateToggleAllLabel();
 
   return node;
 }
@@ -1102,11 +1295,46 @@ function createNode(typeKey, x, y, options = {}) {
 function updateNodeVisual(node) {
   const title = NODE_LIBRARY[node.type]?.title || node.type;
   const metaLines = buildNodeMeta(node);
-  node.header.textContent = node.label;
+  node.element.classList.toggle("collapsed", Boolean(node.collapsed));
+  node.titleEl.textContent = node.label;
+  if (node.toggleButton) {
+    const collapsed = Boolean(node.collapsed);
+    node.toggleButton.textContent = collapsed ? ">" : "v";
+    node.toggleButton.title = collapsed ? "세부 내용 펼치기" : "세부 내용 접기";
+  }
   node.body.innerHTML = `
     <div class="node-type">${title}</div>
     ${metaLines.map((line) => `<div class="node-meta">${line}</div>`).join("")}
   `;
+  updateToggleAllLabel();
+}
+
+function toggleNodeCollapse(node) {
+  if (!node) {
+    return;
+  }
+  node.collapsed = !node.collapsed;
+  node.element.classList.toggle("collapsed", node.collapsed);
+  updateNodeVisual(node);
+  updateConnections();
+}
+
+function updateToggleAllLabel() {
+  if (!toggleAllNodesButton) {
+    return;
+  }
+  const hasExpanded = Array.from(nodes.values()).some((node) => !node.collapsed);
+  toggleAllNodesButton.textContent = hasExpanded ? "전체 접기" : "전체 펼치기";
+}
+
+function setAllNodesCollapsed(collapsed) {
+  nodes.forEach((node) => {
+    node.collapsed = collapsed;
+    node.element.classList.toggle("collapsed", collapsed);
+    updateNodeVisual(node);
+  });
+  updateConnections();
+  updateToggleAllLabel();
 }
 
 function buildNodeMeta(node) {
@@ -1227,15 +1455,27 @@ function truncate(value, maxLength) {
 
 function enableDrag(node, handle) {
   handle.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    if (
+      event.target.closest(".port") ||
+      event.target.closest(".node-toggle")
+    ) {
+      return;
+    }
     event.preventDefault();
+    selectNode(node);
     const startX = event.clientX;
     const startY = event.clientY;
     const startLeft = node.element.offsetLeft;
     const startTop = node.element.offsetTop;
 
     function onMove(moveEvent) {
-      const nextLeft = startLeft + (moveEvent.clientX - startX);
-      const nextTop = startTop + (moveEvent.clientY - startY);
+      const deltaX = (moveEvent.clientX - startX) / currentScale;
+      const deltaY = (moveEvent.clientY - startY) / currentScale;
+      const nextLeft = startLeft + deltaX;
+      const nextTop = startTop + deltaY;
       node.element.style.left = `${nextLeft}px`;
       node.element.style.top = `${nextTop}px`;
       node.x = nextLeft;
@@ -1396,8 +1636,10 @@ function getPortCenter(portEl) {
   const portRect = portEl.getBoundingClientRect();
   const canvasRect = canvas.getBoundingClientRect();
   return {
-    x: portRect.left - canvasRect.left + portRect.width / 2,
-    y: portRect.top - canvasRect.top + portRect.height / 2,
+    x:
+      (portRect.left - canvasRect.left + portRect.width / 2) / currentScale,
+    y:
+      (portRect.top - canvasRect.top + portRect.height / 2) / currentScale,
   };
 }
 
@@ -1447,6 +1689,7 @@ function resetCanvas() {
   initMarkers();
   updateFlowJson();
   markDirty();
+  updateToggleAllLabel();
 }
 
 function loadSample() {
@@ -1509,6 +1752,7 @@ function renderWorkflow(workflow) {
   updateConnections();
   isLoading = false;
   isDirty = false;
+  updateToggleAllLabel();
   if (workflowStatus) {
     workflowStatus.textContent = "저장 상태: 불러옴";
   }
@@ -1600,6 +1844,7 @@ function deleteSelectedNode() {
   updateFlowJson();
   updateConnections();
   markDirty();
+  updateToggleAllLabel();
 }
 
 function updateSelectedNode() {
@@ -1866,10 +2111,17 @@ async function saveWorkflow() {
   if (!saveWorkflowButton) {
     return;
   }
+  const existingName = workflowNameInput?.value.trim() || "";
+  const nextName = window.prompt("워크플로우 이름을 입력하세요.", existingName);
+  if (!nextName || !nextName.trim()) {
+    workflowStatus.textContent = "저장 취소: 이름이 필요합니다.";
+    return;
+  }
+  workflowNameInput.value = nextName.trim();
   const payload = buildWorkflowPayload();
   workflowStatus.textContent = "저장 중...";
   try {
-    const response = await fetch("/api/workflow", {
+    const response = await fetch("/api/workflows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workflow: payload }),
@@ -1880,7 +2132,7 @@ async function saveWorkflow() {
       return;
     }
     const data = await response.json();
-    workflowStatus.textContent = `저장 완료: ${data.meta?.updated_at || ""}`;
+    workflowStatus.textContent = `저장 완료: ${data.workflow?.meta?.updated_at || ""}`;
     isDirty = false;
   } catch (error) {
     workflowStatus.textContent = "저장 실패: 네트워크 오류";
@@ -1947,14 +2199,31 @@ function defaultWorkflow() {
         subtype: "orchestrator",
         execution_mode: "handoff",
         label: "Orchestrator Agent",
-        keywords: ["공정", "데이터", "예측", "시뮬레이션"],
-        input_format: "사용자 메시지",
-        output_format: "라우팅 결과",
+        keywords: [
+          "lot",
+          "로트",
+          "line",
+          "라인",
+          "status",
+          "상태",
+          "data",
+          "데이터",
+          "조회",
+          "예측",
+          "시뮬레이션",
+          "simulation",
+          "forecast",
+          "what-if",
+          "risk",
+          "수율",
+        ],
+        input_format: "user message (Korean)",
+        output_format: "routing decision + tool/agent call",
         position: { x: 520, y: 160 },
         config: {
           agent_profile: "orchestrator",
           instructions:
-            "요청을 올바른 에이전트로 라우팅합니다. 공정 데이터는 DB 에이전트, 예측/시뮬레이션은 시뮬레이션 에이전트로 핸드오프하세요.",
+            "You are the conversation lead for a manufacturing monitoring demo. Always respond in Korean. Do not mention internal routing, tools, or intent labels. Decide whether the user wants process/LOT data or a simulation. If data lookup, call the db_agent tool with the user message. If simulation/prediction, call the simulation_agent tool. If both are requested, call db_agent first, then simulation_agent. After tool output, respond naturally in 1-3 sentences. Do not expose the tool report format; translate it into natural Korean. If the tool reports missing fields, ask a single clear question for those fields. If status is ok, summarize the result and suggest one optional next step. Do not invent LOT IDs or parameters.",
           include_chat_history: true,
           response_format: "text",
         },
@@ -1974,25 +2243,55 @@ function defaultWorkflow() {
         id: "node-db-agent",
         type: "agent",
         subtype: "db_agent",
-        execution_mode: "handoff",
+        execution_mode: "as_tool",
         label: "DB Agent",
-        keywords: ["공정", "라인", "상태", "데이터", "조회"],
-        input_format: "라인/상태 필터",
-        output_format: "공정 레코드",
+        keywords: [
+          "lot",
+          "로트",
+          "line",
+          "라인",
+          "status",
+          "상태",
+          "data",
+          "데이터",
+          "조회",
+          "process",
+          "공정",
+        ],
+        input_format: "lot_id or line/status query",
+        output_format: "process rows + UI update",
         position: { x: 520, y: 20 },
-        config: { agent_profile: "db_agent" },
+        config: {
+          agent_profile: "db_agent",
+          instructions:
+            "You are an internal DB helper used by the orchestrator. Do not address the user directly. Always respond in Korean. If a LOT ID is present, call get_lot_info(lot_id, limit=12). If no LOT ID but the user mentions line/status/conditions, call get_process_data(query=original_message, limit=12). If required info is missing, do not ask the user; report missing fields. Do not invent LOT IDs or data. Prefer tool calls over direct answers. Return exactly four lines: status: <ok|missing|error>. summary: <Korean 1 sentence>. missing: <comma-separated fields or 'none'>. next: <Korean follow-up question or 'none'>.",
+        },
       },
       {
         id: "node-sim-agent",
         type: "agent",
         subtype: "simulation_agent",
-        execution_mode: "handoff",
+        execution_mode: "as_tool",
         label: "Simulation Agent",
-        keywords: ["예측", "시뮬레이션", "what-if", "forecast"],
-        input_format: "온도/전압/크기/용량",
-        output_format: "예측 결과",
+        keywords: [
+          "예측",
+          "시뮬레이션",
+          "simulation",
+          "forecast",
+          "what-if",
+          "risk",
+          "리스크",
+          "수율",
+          "throughput",
+        ],
+        input_format: "lot_id or temperature/voltage/size/capacity/production_mode",
+        output_format: "simulation result + UI update",
         position: { x: 520, y: 300 },
-        config: { agent_profile: "simulation_agent" },
+        config: {
+          agent_profile: "simulation_agent",
+          instructions:
+            "You are an internal simulation helper used by the orchestrator. Do not address the user directly. Always respond in Korean. When the user requests a simulation, call open_simulation_form first to open the UI panel (unless it is already open). If a LOT ID is provided, call run_lot_simulation(lot_id). Otherwise collect the five required params: temperature, voltage, size, capacity, production_mode. If any params are provided, call update_simulation_params with those values or with message=original_message to extract. Do not ask the user directly; report missing fields. Never ask for values that are already filled. When all five params are available, call run_simulation. Return exactly four lines: status: <ok|missing|error>. summary: <Korean 1 sentence>. missing: <comma-separated fields or 'none'>. next: <Korean follow-up question or 'none'>.",
+        },
       },
       {
         id: "node-file-search",
@@ -2121,39 +2420,84 @@ function defaultWorkflow() {
   };
 }
 
-exportButton.addEventListener("click", () => {
+async function copyFlowJson(triggerButton) {
+  if (!flowJson) {
+    return;
+  }
   updateFlowJson();
-  flowJson.focus();
-  flowJson.select();
+  const payload = flowJson.value || "";
+  if (!payload) {
+    return;
+  }
+  const button = triggerButton || null;
+  const originalLabel = button ? button.textContent : "";
+  try {
+    await navigator.clipboard.writeText(payload);
+    if (button) {
+      button.textContent = "복사됨";
+      setTimeout(() => {
+        button.textContent = originalLabel;
+      }, 1500);
+    }
+  } catch (error) {
+    try {
+      flowJson.focus();
+      flowJson.select();
+    } catch (selectError) {
+    }
+    if (button) {
+      button.textContent = "복사 실패";
+      setTimeout(() => {
+        button.textContent = originalLabel;
+      }, 1500);
+    }
+  }
+}
+
+exportButton.addEventListener("click", () => {
+  copyFlowJson(exportButton);
 });
 
-copyButton.addEventListener("click", async () => {
-  updateFlowJson();
-  try {
-    await navigator.clipboard.writeText(flowJson.value);
-    copyButton.textContent = "복사됨";
-    setTimeout(() => {
-      copyButton.textContent = "복사";
-    }, 1500);
-  } catch (error) {
-    copyButton.textContent = "복사 실패";
-  }
-});
+if (toggleAllNodesButton) {
+  toggleAllNodesButton.addEventListener("click", () => {
+    const hasExpanded = Array.from(nodes.values()).some((node) => !node.collapsed);
+    setAllNodesCollapsed(hasExpanded);
+  });
+}
+
+if (copyButton) {
+  copyButton.addEventListener("click", () => {
+    copyFlowJson(copyButton);
+  });
+}
 
 loadSampleButton.addEventListener("click", loadSample);
 clearButton.addEventListener("click", resetCanvas);
 
 window.addEventListener("resize", updateConnections);
 canvas.addEventListener("click", () => {
+  if (suppressCanvasClick) {
+    suppressCanvasClick = false;
+    return;
+  }
   pendingConnection = null;
   clearPortHighlights();
   clearSelection();
 });
+canvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
+if (canvasWrap) {
+  canvasWrap.addEventListener("mousedown", startCanvasPan);
+} else {
+  canvas.addEventListener("mousedown", startCanvasPan);
+}
 
 nodeLabelInput.addEventListener("input", updateSelectedNode);
 nodeExecutionSelect.addEventListener("change", updateSelectedNode);
 if (nodeDeleteButton) {
   nodeDeleteButton.addEventListener("click", deleteSelectedNode);
+}
+if (inspectorCloseButton) {
+  inspectorCloseButton.addEventListener("click", clearSelection);
 }
 
 saveWorkflowButton.addEventListener("click", saveWorkflow);
@@ -2178,6 +2522,17 @@ if (dbConnectButton) {
 }
 if (dbRefreshButton) {
   dbRefreshButton.addEventListener("click", refreshDbConnections);
+}
+
+if (inspectorTabButtons.length) {
+  inspectorTabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.disabled) {
+        return;
+      }
+      setActiveTab(button.dataset.tab);
+    });
+  });
 }
 
 document.addEventListener("keydown", (event) => {

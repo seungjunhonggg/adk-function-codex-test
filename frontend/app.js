@@ -9,6 +9,9 @@ const simResultEl = document.getElementById("sim-result");
 const eventLogEl = document.getElementById("event-log");
 const workflowNameEl = document.getElementById("workflow-name");
 const workflowUpdatedEl = document.getElementById("workflow-updated");
+const loadWorkflowJsonButton = document.getElementById("load-workflow-json");
+const workflowJsonEl = document.getElementById("workflow-json");
+const workflowListEl = document.getElementById("workflow-list");
 const frontendTriggerEl = document.getElementById("frontend-trigger");
 const currentLotEl = document.getElementById("current-lot");
 const toggleLogButton = document.getElementById("toggle-log");
@@ -90,6 +93,9 @@ const streamCards = [
   simResultCard,
   frontendCard,
 ].filter(Boolean);
+if (eventLogCard) {
+  eventLogCard.classList.remove("hidden");
+}
 let isLogOpen = false;
 
 function updateEventEmpty() {
@@ -99,7 +105,8 @@ function updateEventEmpty() {
   const hasVisible = streamCards.some(
     (card) => card && !card.classList.contains("hidden")
   );
-  eventEmptyEl.classList.toggle("hidden", hasVisible || isLogOpen);
+  const hasLogs = eventLogEl && eventLogEl.children.length > 0;
+  eventEmptyEl.classList.toggle("hidden", hasVisible || isLogOpen || hasLogs);
 }
 
 function hideAllStreamCards() {
@@ -472,6 +479,14 @@ function handleEvent(event) {
     return;
   }
 
+  if (event.type === "chat_message") {
+    const role = event.payload?.role || "assistant";
+    const content = event.payload?.content || "";
+    if (content) {
+      addMessage(role, content);
+    }
+  }
+
   if (event.type === "lot_result" || event.type === "db_result") {
     renderLotResult(event.payload);
     addEventLog("LOT", `행 수: ${event.payload.rows.length}`);
@@ -488,6 +503,13 @@ function handleEvent(event) {
     renderSimResult(event.payload);
     const yieldValue = event.payload?.result?.predicted_yield;
     addEventLog("SIM", `수율: ${yieldValue ?? "-"}%`);
+  }
+
+  if (event.type === "workflow_log") {
+    const label = event.payload?.label || "LOG";
+    const detail = event.payload?.detail || "";
+    addEventLog(label, detail);
+    updateEventEmpty();
   }
 
   if (event.type === "frontend_trigger") {
@@ -666,10 +688,6 @@ if (lotIdInput) {
   });
 }
 
-if (toggleLogButton) {
-  toggleLogButton.addEventListener("click", toggleEventLog);
-}
-
 if (simApplyButton) {
   simApplyButton.addEventListener("click", () => {
     sendSimulationParams({ run: false });
@@ -749,4 +767,161 @@ async function loadWorkflowMeta() {
   }
 }
 
+function renderWorkflowList({ workflows = [], activeId = "" } = {}) {
+  if (!workflowListEl) {
+    return;
+  }
+  workflowListEl.innerHTML = "";
+  if (!workflows.length) {
+    const emptyItem = document.createElement("li");
+    emptyItem.className = "workflow-empty";
+    emptyItem.textContent = "저장된 워크플로우가 없습니다.";
+    workflowListEl.appendChild(emptyItem);
+    return;
+  }
+
+  workflows.forEach((workflow) => {
+    const item = document.createElement("li");
+    item.className = "workflow-item";
+    const info = document.createElement("div");
+    info.className = "workflow-info";
+
+    const selectButton = document.createElement("button");
+    selectButton.type = "button";
+    selectButton.className = "workflow-select";
+    selectButton.textContent = workflow.name || "워크플로우";
+    if (workflow.id && workflow.id === activeId) {
+      selectButton.classList.add("active");
+    }
+    selectButton.addEventListener("click", () => {
+      if (!workflow.id) {
+        return;
+      }
+      applySavedWorkflow(workflow.id);
+    });
+
+    const date = document.createElement("div");
+    date.className = "workflow-date";
+    date.textContent = workflow.updated_at
+      ? `업데이트: ${workflow.updated_at}`
+      : "업데이트: -";
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "workflow-delete";
+    deleteButton.title = "삭제";
+    deleteButton.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /><path d="M7 7l1 12a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2l1-12" /><path d="M10 11v6" /><path d="M14 11v6" /></svg>';
+    deleteButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!workflow.id) {
+        return;
+      }
+      const confirmed = window.confirm(
+        `"${workflow.name || "워크플로우"}"를 삭제할까요?`
+      );
+      if (!confirmed) {
+        return;
+      }
+      deleteSavedWorkflow(workflow.id);
+    });
+
+    info.appendChild(selectButton);
+    info.appendChild(date);
+    item.appendChild(info);
+    item.appendChild(deleteButton);
+    workflowListEl.appendChild(item);
+  });
+}
+
+async function loadWorkflowCatalog() {
+  if (!workflowListEl) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/workflows");
+    if (!response.ok) {
+      renderWorkflowList({ workflows: [] });
+      return;
+    }
+    const data = await response.json();
+    renderWorkflowList({
+      workflows: data.workflows || [],
+      activeId: data.active_id || "",
+    });
+  } catch (error) {
+    renderWorkflowList({ workflows: [] });
+  }
+}
+
+async function applySavedWorkflow(workflowId) {
+  if (!workflowId) {
+    return;
+  }
+  try {
+    const response = await fetch(`/api/workflows/${workflowId}/apply`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      addMessage("system", "워크플로우 적용에 실패했습니다.");
+      return;
+    }
+    await loadWorkflowMeta();
+    await loadWorkflowCatalog();
+    addMessage("system", "워크플로우가 적용되었습니다.");
+  } catch (error) {
+    addMessage("system", "워크플로우 적용 중 오류가 발생했습니다.");
+  }
+}
+
+async function deleteSavedWorkflow(workflowId) {
+  if (!workflowId) {
+    return;
+  }
+  try {
+    const response = await fetch(`/api/workflows/${workflowId}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      addMessage("system", "워크플로우 삭제에 실패했습니다.");
+      return;
+    }
+    await loadWorkflowCatalog();
+    addMessage("system", "워크플로우가 삭제되었습니다.");
+  } catch (error) {
+    addMessage("system", "워크플로우 삭제 중 오류가 발생했습니다.");
+  }
+}
+
+async function toggleWorkflowJson() {
+  if (!workflowJsonEl || !loadWorkflowJsonButton) {
+    return;
+  }
+  const isOpen = !workflowJsonEl.classList.contains("hidden");
+  if (isOpen) {
+    workflowJsonEl.classList.add("hidden");
+    loadWorkflowJsonButton.textContent = "워크플로우 JSON 불러오기";
+    return;
+  }
+  workflowJsonEl.classList.remove("hidden");
+  workflowJsonEl.textContent = "로드 중...";
+  loadWorkflowJsonButton.textContent = "JSON 닫기";
+  try {
+    const response = await fetch("/api/workflow");
+    if (!response.ok) {
+      workflowJsonEl.textContent = "로드 실패: 워크플로우 없음";
+      return;
+    }
+    const data = await response.json();
+    workflowJsonEl.textContent = JSON.stringify(data, null, 2);
+  } catch (error) {
+    workflowJsonEl.textContent = "로드 실패";
+  }
+}
+
 loadWorkflowMeta();
+loadWorkflowCatalog();
+
+if (loadWorkflowJsonButton) {
+  loadWorkflowJsonButton.addEventListener("click", toggleWorkflowJson);
+}

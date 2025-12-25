@@ -7,12 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from agents import Agent, Runner, function_tool
 
 from .agents import db_agent, simulation_agent, triage_agent
-from .config import MODEL_NAME, WORKFLOW_PATH
+from .config import MODEL_NAME, WORKFLOW_PATH, WORKFLOW_STORE_PATH
 from .db_connections import execute_table_query
+from .observability import WorkflowRunHooks, emit_workflow_log
 from .simulation import extract_simulation_params
 from .tools import (
     collect_simulation_params,
@@ -121,6 +123,109 @@ def save_workflow(workflow: dict) -> dict:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(normalized, handle, ensure_ascii=False, indent=2)
     return normalized
+
+
+def ensure_workflow_store() -> dict:
+    path = Path(WORKFLOW_STORE_PATH)
+    if not path.exists():
+        store = {"active_id": None, "items": []}
+        return save_workflow_store(store)
+    return load_workflow_store()
+
+
+def load_workflow_store() -> dict:
+    path = Path(WORKFLOW_STORE_PATH)
+    if not path.exists():
+        return {"active_id": None, "items": []}
+    with path.open("r", encoding="utf-8") as handle:
+        try:
+            data = json.load(handle)
+        except json.JSONDecodeError:
+            return {"active_id": None, "items": []}
+    if not isinstance(data, dict):
+        return {"active_id": None, "items": []}
+    items = data.get("items")
+    if not isinstance(items, list):
+        items = []
+    return {"active_id": data.get("active_id"), "items": items}
+
+
+def save_workflow_store(store: dict) -> dict:
+    path = Path(WORKFLOW_STORE_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(store, handle, ensure_ascii=False, indent=2)
+    return store
+
+
+def list_saved_workflows() -> dict:
+    store = load_workflow_store()
+    return {
+        "active_id": store.get("active_id"),
+        "workflows": [_workflow_summary(item) for item in store.get("items", [])],
+    }
+
+
+def save_workflow_entry(workflow: dict) -> dict:
+    normalized = normalize_workflow(workflow)
+    normalized.setdefault("meta", {})
+    name = normalized["meta"].get("name") or "워크플로우"
+    normalized["meta"]["name"] = name
+    normalized["meta"]["updated_at"] = _now_iso()
+
+    store = load_workflow_store()
+    items = store.get("items", [])
+    existing = next(
+        (item for item in items if (item.get("meta") or {}).get("name") == name),
+        None,
+    )
+    if existing:
+        workflow_id = existing.get("id") or _new_workflow_id(name)
+        existing["id"] = workflow_id
+        existing["workflow"] = normalized
+        existing["meta"] = normalized["meta"]
+    else:
+        workflow_id = _new_workflow_id(name)
+        items.insert(
+            0,
+            {"id": workflow_id, "meta": normalized["meta"], "workflow": normalized},
+        )
+
+    saved_active = save_workflow(normalized)
+    store["items"] = items
+    store["active_id"] = workflow_id
+    _sync_store_item(items, workflow_id, saved_active)
+    save_workflow_store(store)
+    return {
+        "active_id": store.get("active_id"),
+        "workflow": saved_active,
+        "item": _workflow_summary(_find_store_item(items, workflow_id)),
+        "workflows": [_workflow_summary(item) for item in items],
+    }
+
+
+def apply_saved_workflow(workflow_id: str) -> dict | None:
+    store = load_workflow_store()
+    item = _find_store_item(store.get("items", []), workflow_id)
+    if not item:
+        return None
+    saved_active = save_workflow(item.get("workflow") or {})
+    store["active_id"] = workflow_id
+    save_workflow_store(store)
+    return {"active_id": workflow_id, "workflow": saved_active, "item": item}
+
+
+def delete_saved_workflow(workflow_id: str) -> bool:
+    store = load_workflow_store()
+    items = store.get("items", [])
+    filtered = [item for item in items if item.get("id") != workflow_id]
+    if len(filtered) == len(items):
+        return False
+    store["items"] = filtered
+    if store.get("active_id") == workflow_id:
+        store["active_id"] = None
+    save_workflow_store(store)
+    return True
 
 
 def validate_workflow(workflow: dict) -> tuple[bool, list[str]]:
@@ -423,17 +528,41 @@ def default_workflow() -> dict:
                 "subtype": "orchestrator",
                 "execution_mode": "handoff",
                 "label": "Orchestrator Agent",
-                "keywords": ["lot", "로트", "데이터", "예측", "시뮬레이션"],
-                "input_format": "사용자 메시지",
-                "output_format": "라우팅 결과",
+                "keywords": [
+                    "lot",
+                    "로트",
+                    "line",
+                    "라인",
+                    "status",
+                    "상태",
+                    "data",
+                    "데이터",
+                    "조회",
+                    "예측",
+                    "시뮬레이션",
+                    "simulation",
+                    "forecast",
+                    "what-if",
+                    "risk",
+                    "수율",
+                ],
+                "input_format": "user message (Korean)",
+                "output_format": "routing decision + tool/agent call",
                 "position": {"x": 520, "y": 160},
                 "config": {
                     "agent_profile": "orchestrator",
                     "instructions": (
-                        "요청을 올바른 에이전트로 라우팅합니다. "
-                        "LOT 정보, LOT 상태 요청이면 DB 에이전트로 핸드오프합니다. "
-                        "예측, 시뮬레이션, what-if 요청이면 시뮬레이션 에이전트로 핸드오프합니다. "
-                        "불명확하면 어떤 워크플로우를 원하는지 질문하세요."
+                        "You are the conversation lead for a manufacturing monitoring demo. "
+                        "Always respond in Korean. "
+                        "Do not mention internal routing, tools, or intent labels. "
+                        "Decide whether the user wants process/LOT data or a simulation. "
+                        "If data lookup, call the db_agent tool with the user message. "
+                        "If simulation/prediction, call the simulation_agent tool. "
+                        "If both are requested, call db_agent first, then simulation_agent. "
+                        "After tool output, respond naturally in 1-3 sentences. Do not expose the tool report format; translate it into natural Korean. "
+                        "If the tool reports missing fields, ask a single clear question for those fields. "
+                        "If status is ok, summarize the result and suggest one optional next step. "
+                        "Do not invent LOT IDs or parameters."
                     ),
                     "include_chat_history": True,
                     "output_format": "text",
@@ -454,25 +583,84 @@ def default_workflow() -> dict:
                 "id": "node-db-agent",
                 "type": "agent",
                 "subtype": "db_agent",
-                "execution_mode": "handoff",
+                "execution_mode": "as_tool",
                 "label": "DB Agent",
-                "keywords": ["lot", "로트", "상태", "데이터", "조회"],
-                "input_format": "LOT ID",
-                "output_format": "LOT 레코드",
+                "keywords": [
+                    "lot",
+                    "로트",
+                    "line",
+                    "라인",
+                    "status",
+                    "상태",
+                    "data",
+                    "데이터",
+                    "조회",
+                    "process",
+                    "공정",
+                ],
+                "input_format": "lot_id or line/status query",
+                "output_format": "process rows + UI update",
                 "position": {"x": 520, "y": 20},
-                "config": {"agent_profile": "db_agent"},
+                "config": {
+                    "agent_profile": "db_agent",
+                    "instructions": (
+                        "You are an internal DB helper used by the orchestrator. "
+                        "Do not address the user directly. Always respond in Korean. "
+                        "If a LOT ID is present, call get_lot_info(lot_id, limit=12). "
+                        "If no LOT ID but the user mentions line/status/conditions, call "
+                        "get_process_data(query=original_message, limit=12). "
+                        "If required info is missing, do not ask the user; report missing fields. "
+                        "Do not invent LOT IDs or data. Prefer tool calls over direct answers. "
+                        "Return exactly four lines: "
+                        "status: <ok|missing|error>. "
+                        "summary: <Korean 1 sentence>. "
+                        "missing: <comma-separated fields or 'none'>. "
+                        "next: <Korean follow-up question or 'none'>."
+                    ),
+                },
             },
             {
                 "id": "node-sim-agent",
                 "type": "agent",
                 "subtype": "simulation_agent",
-                "execution_mode": "handoff",
+                "execution_mode": "as_tool",
                 "label": "Simulation Agent",
-                "keywords": ["예측", "시뮬레이션", "what-if", "forecast"],
-                "input_format": "온도/전압/크기/용량",
-                "output_format": "예측 결과",
+                "keywords": [
+                    "예측",
+                    "시뮬레이션",
+                    "simulation",
+                    "forecast",
+                    "what-if",
+                    "risk",
+                    "리스크",
+                    "수율",
+                    "throughput",
+                ],
+                "input_format": "lot_id or temperature/voltage/size/capacity/production_mode",
+                "output_format": "simulation result + UI update",
                 "position": {"x": 520, "y": 300},
-                "config": {"agent_profile": "simulation_agent"},
+                "config": {
+                    "agent_profile": "simulation_agent",
+                    "instructions": (
+                        "You are an internal simulation helper used by the orchestrator. "
+                        "Do not address the user directly. Always respond in Korean. "
+                        "When the user requests a simulation, call open_simulation_form first "
+                        "to open the UI panel (unless it is already open). "
+                        "If a LOT ID is provided, call run_lot_simulation(lot_id). "
+                        "Otherwise collect the five required params: temperature, voltage, "
+                        "size, capacity, production_mode. "
+                        "If any params are provided, call update_simulation_params with those "
+                        "values or with message=original_message to extract. "
+                        "Do not ask the user directly; report missing fields. "
+                        "Never ask for values that are already filled. "
+                        "When all five params are available, call run_simulation. "
+                        "Return exactly four lines: "
+                        "status: <ok|missing|error>. "
+                        "summary: <Korean 1 sentence>. "
+                        "missing: <comma-separated fields or 'none'>. "
+                        "next: <Korean follow-up question or 'none'>."
+                    ),
+                },
             },
             {
                 "id": "node-file-search",
@@ -618,9 +806,11 @@ def default_workflow() -> dict:
 
 MODEL_KWARGS = {"model": MODEL_NAME} if MODEL_NAME else {}
 DEFAULT_AGENT_INSTRUCTIONS = (
-    "당신은 워크플로우 에이전트입니다. "
-    "사용자 요청을 이해하고 필요한 도구를 호출해 답변하세요. "
-    "모든 응답은 한국어로 작성합니다."
+    "You are a workflow agent. "
+    "Always respond in Korean. "
+    "Use the available tools or handoffs to complete the task. "
+    "If required information is missing, ask one clear question to obtain it. "
+    "Do not invent data or tool results."
 )
 
 
@@ -741,6 +931,7 @@ def _build_agent_tool(
         tool_name=tool_name,
         tool_description=tool_description,
         session=session,
+        hooks=WorkflowRunHooks(),
     )
 
 
@@ -753,6 +944,7 @@ async def _execute_agent_path(
     session: Any,
     allow_llm: bool,
 ) -> WorkflowRun:
+    hooks = WorkflowRunHooks() if allow_llm else None
     agent_nodes = [
         node_id for node_id in path if node_map[node_id].get("type") == "agent"
     ]
@@ -796,10 +988,20 @@ async def _execute_agent_path(
             tool_use_behavior="stop_on_first_tool",
             **MODEL_KWARGS,
         )
-        result = await Runner.run(host_agent, input=message, session=session)
+        result = await Runner.run(
+            host_agent,
+            input=message,
+            session=session,
+            hooks=hooks,
+        )
         return WorkflowRun(result.final_output, True, path)
 
-    result = await Runner.run(configured_agent, input=message, session=session)
+    result = await Runner.run(
+        configured_agent,
+        input=message,
+        session=session,
+        hooks=hooks,
+    )
     return WorkflowRun(result.final_output, True, path)
 
 
@@ -885,9 +1087,9 @@ def _safe_tool_name(value: str | None) -> str:
 
 
 def _build_tool_description(node: dict) -> str:
-    input_format = node.get("input_format") or "입력"
-    output_format = node.get("output_format") or "출력"
-    return f"{input_format} → {output_format}"
+    input_format = node.get("input_format") or "Input"
+    output_format = node.get("output_format") or "Output"
+    return f"Input: {input_format}. Output: {output_format}."
 
 
 def _build_function_tool(node: dict) -> Any | None:
@@ -1167,11 +1369,16 @@ async def _execute_tool_node(
 ) -> str | None:
     config = node.get("config") or {}
     node_type = node.get("type")
+    tool_label = node.get("label") or node.get("subtype") or node_type
 
     if node_type == "file_search":
         top_k = int(config.get("top_k") or 3)
         result = file_search(query=context.input_as_text, top_k=top_k)
         context.state["file_search"] = result
+        await emit_workflow_log(
+            "TOOL",
+            f"{tool_label} result {result.get('count', 0)}",
+        )
         return f"File Search 결과 {result.get('count', 0)}건을 찾았습니다."
 
     if node_type == "function_tool":
@@ -1183,10 +1390,19 @@ async def _execute_tool_node(
             result = await result
         context.state["function_tool"] = result
         if isinstance(result, dict) and result.get("error"):
+            await emit_workflow_log(
+                "TOOL",
+                f"{tool_label} error: {result.get('error')}",
+            )
             return f"Function Tool 오류: {result.get('error')}"
         rows = result.get("rows") if isinstance(result, dict) else None
         if rows is not None:
+            await emit_workflow_log(
+                "TOOL",
+                f"{tool_label} rows {len(rows)}",
+            )
             return f"Function Tool 결과 {len(rows)}건을 조회했습니다."
+        await emit_workflow_log("TOOL", f"{tool_label} done")
         return "Function Tool을 실행했습니다."
 
     toolset = config.get("toolset") or node.get("subtype")
@@ -1195,6 +1411,10 @@ async def _execute_tool_node(
         result = await emit_process_data(query, limit=12)
         context.state["db_result"] = result
         rows = result.get("rows", [])
+        await emit_workflow_log(
+            "TOOL",
+            f"{tool_label} rows {len(rows)}",
+        )
         return f"LOT 조회를 실행했습니다. UI에서 {len(rows)}건을 확인하세요."
 
     if toolset == "simulation":
@@ -1204,9 +1424,14 @@ async def _execute_tool_node(
         missing = update_result.get("missing", [])
         if missing:
             missing_text = ", ".join(_to_korean_field(m) for m in missing)
+            await emit_workflow_log(
+                "TOOL",
+                f"{tool_label} missing: {', '.join(missing)}",
+            )
             return f"시뮬레이션 입력이 부족합니다: {missing_text}"
         result = await execute_simulation()
         context.state["simulation_result"] = result
+        await emit_workflow_log("TOOL", f"{tool_label} done")
         return "시뮬레이션 API 함수를 실행했습니다. 결과가 UI에 반영되었습니다."
 
     if toolset == "frontend_trigger":
@@ -1214,6 +1439,7 @@ async def _execute_tool_node(
             context.state.get("db_result") or context.state.get("simulation_result")
         )
         await emit_frontend_trigger(trigger_message, context.state)
+        await emit_workflow_log("TOOL", f"{tool_label} sent")
         return "프론트 트리거를 전송했습니다."
 
     return None
@@ -1258,6 +1484,7 @@ async def _traverse_workflow(
     context = WorkflowContext(
         input_as_text=message, state={}, tool_messages=[], used_llm=False
     )
+    hooks = WorkflowRunHooks() if allow_llm and not simulate else None
     path: list[str] = []
     current_id = start_node.get("id")
     loop_counts: dict[str, int] = {}
@@ -1311,6 +1538,13 @@ async def _traverse_workflow(
                         if candidates
                         else None
                     )
+                    if selected_id:
+                        selected_node = node_map.get(selected_id)
+                        if selected_node:
+                            await emit_workflow_log(
+                                "HANDOFF",
+                                f"{node.get('label') or current_id} -> {selected_node.get('label') or selected_id}",
+                            )
                     tool_owner = node_map.get(selected_id) if selected_id else node
                     if tool_owner and tool_owner.get("id"):
                         tool_nodes = _collect_tool_nodes(
@@ -1329,7 +1563,11 @@ async def _traverse_workflow(
                     node, node_map, tool_adjacency, handoff_adjacency, session
                 )
                 result = await Runner.run(
-                    agent, input=context.input_as_text, session=session
+                    agent,
+                    input=context.input_as_text,
+                    session=session,
+                    context=context,
+                    hooks=hooks,
                 )
                 context.last_output = result.final_output
                 context.input_as_text = result.final_output
@@ -1644,6 +1882,40 @@ def _build_linear_path(start_id: str, adjacency: dict[str, list[str]]) -> list[s
             break
         current = next_nodes[0]
     return path
+
+
+def _workflow_summary(item: dict | None) -> dict:
+    if not item:
+        return {}
+    meta = item.get("meta") or {}
+    return {
+        "id": item.get("id"),
+        "name": meta.get("name") or "워크플로우",
+        "description": meta.get("description") or "",
+        "updated_at": meta.get("updated_at") or "",
+    }
+
+
+def _new_workflow_id(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", (name or "").strip().lower()).strip("-")
+    if not slug:
+        slug = "workflow"
+    return f"{slug}-{uuid4().hex[:6]}"
+
+
+def _find_store_item(items: list[dict], workflow_id: str) -> dict | None:
+    for item in items:
+        if item.get("id") == workflow_id:
+            return item
+    return None
+
+
+def _sync_store_item(items: list[dict], workflow_id: str, workflow: dict) -> None:
+    item = _find_store_item(items, workflow_id)
+    if not item:
+        return
+    item["workflow"] = workflow
+    item["meta"] = workflow.get("meta") or {}
 
 
 def _normalize_node_type(value: str | None) -> str | None:

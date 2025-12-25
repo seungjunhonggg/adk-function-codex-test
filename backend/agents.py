@@ -1,6 +1,7 @@
 from agents import Agent
 
 from .config import MODEL_NAME
+from .observability import WorkflowRunHooks
 from .tools import (
     get_lot_info,
     get_process_data,
@@ -21,15 +22,35 @@ def _build_agent(**kwargs: object) -> Agent:
 
 MODEL_KWARGS = {"model": MODEL_NAME} if MODEL_NAME else {}
 
+auto_message_agent = _build_agent(
+    name="패널 요약 에이전트",
+    instructions=(
+        "You compose short Korean assistant messages for UI-triggered events. "
+        "Do not mention tools, routing, or system logs. "
+        "Write 1-2 sentences. "
+        "If missing_fields are provided, ask for those fields in one clear question. "
+        "If result is present, summarize key metrics like predicted_yield, risk_band, "
+        "and estimated_throughput, then suggest one optional next step."
+    ),
+    **MODEL_KWARGS,
+)
+
 
 db_agent = _build_agent(
     name="DB 에이전트",
     instructions=(
-        "당신은 LOT 모니터링 데모의 DB 조회 에이전트입니다. "
-        "사용자가 LOT 정보를 요청하면 get_lot_info를 호출하세요. "
-        "LOT ID를 명확히 추출해서 lot_id로 전달합니다. "
-        "도구 호출 후 결과를 간단히 요약하고 UI 패널이 갱신되었다고 알려주세요. "
-        "모든 응답은 한국어로 작성합니다."
+        "You are an internal DB helper used by the orchestrator. "
+        "Do not address the user directly. Always respond in Korean. "
+        "If a LOT ID is present, call get_lot_info(lot_id, limit=12). "
+        "If no LOT ID but the user mentions line/status/conditions, call "
+        "get_process_data(query=original_message, limit=12). "
+        "If required info is missing, do not ask the user; report missing fields. "
+        "Do not invent LOT IDs or data. Prefer tool calls over direct answers. "
+        "Return exactly four lines: "
+        "status: <ok|missing|error>. "
+        "summary: <Korean 1 sentence>. "
+        "missing: <comma-separated fields or 'none'>. "
+        "next: <Korean follow-up question or 'none'>."
     ),
     tools=[get_lot_info, get_process_data],
     **MODEL_KWARGS,
@@ -38,18 +59,23 @@ db_agent = _build_agent(
 simulation_agent = _build_agent(
     name="시뮬레이션 에이전트",
     instructions=(
-        "당신은 LOT 기반 예측 시뮬레이션을 담당합니다. "
-        "LOT ID가 주어지면 run_lot_simulation을 호출하세요. "
-        "사용자가 시뮬레이션을 원하면 open_simulation_form을 먼저 호출해 UI를 엽니다. "
-        "필수 입력은 temperature, voltage, size, capacity, production_mode(양산/개발) 입니다. "
-        "사용자가 일부 값을 제공하면 반드시 update_simulation_params로 저장한 뒤 "
-        "missing 항목만 다시 질문하세요. "
-        "값 추출이 애매하면 update_simulation_params(message=사용자_메시지)를 호출해 "
-        "메시지를 그대로 전달하세요. "
-        "update_simulation_params를 호출하지 않고 missing을 질문하지 마세요. "
-        "다섯 가지 값이 모두 모이면 run_simulation을 호출하고 간단히 요약한 뒤 "
-        "UI 패널이 갱신되었다고 알려주세요. "
-        "모든 응답은 한국어로 작성합니다."
+        "You are an internal simulation helper used by the orchestrator. "
+        "Do not address the user directly. Always respond in Korean. "
+        "When the user requests a simulation, call open_simulation_form first "
+        "to open the UI panel (unless it is already open). "
+        "If a LOT ID is provided, call run_lot_simulation(lot_id). "
+        "Otherwise collect the five required params: temperature, voltage, "
+        "size, capacity, production_mode. "
+        "If any params are provided, call update_simulation_params with those "
+        "values or with message=original_message to extract. "
+        "Do not ask the user directly; report missing fields. "
+        "Never ask for values that are already filled. "
+        "When all five params are available, call run_simulation. "
+        "Return exactly four lines: "
+        "status: <ok|missing|error>. "
+        "summary: <Korean 1 sentence>. "
+        "missing: <comma-separated fields or 'none'>. "
+        "next: <Korean follow-up question or 'none'>."
     ),
     tools=[
         open_simulation_form,
@@ -60,15 +86,33 @@ simulation_agent = _build_agent(
     **MODEL_KWARGS,
 )
 
+db_agent_tool = db_agent.as_tool(
+    tool_name="db_agent",
+    tool_description=("Process/LOT lookup helper. Input: lot id or line/status query. Output: 4 lines (status/summary/missing/next)."),
+    hooks=WorkflowRunHooks(),
+)
+
+simulation_agent_tool = simulation_agent.as_tool(
+    tool_name="simulation_agent",
+    tool_description=("Simulation helper. Input: lot id or params. Output: 4 lines (status/summary/missing/next)."),
+    hooks=WorkflowRunHooks(),
+)
+
 triage_agent = _build_agent(
-    name="분류 에이전트",
+    name="오케스트레이터",
     instructions=(
-        "요청을 올바른 에이전트로 라우팅합니다. "
-        "LOT 정보, LOT 상태 요청이면 DB 에이전트로 핸드오프합니다. "
-        "예측, 시뮬레이션, what-if 요청이면 시뮬레이션 에이전트로 핸드오프합니다. "
-        "불명확하면 어떤 워크플로우를 원하는지 질문하세요. "
-        "모든 응답은 한국어로 작성합니다."
+        "You are the conversation lead for a manufacturing monitoring demo. "
+        "Always respond in Korean. "
+        "Do not mention internal routing, tools, or intent labels. "
+        "Decide whether the user wants process/LOT data or a simulation. "
+        "If data lookup, call the db_agent tool with the user message. "
+        "If simulation/prediction, call the simulation_agent tool. "
+        "If both are requested, call db_agent first, then simulation_agent. "
+        "After tool output, respond naturally in 1-3 sentences. Do not expose the tool report format; translate it into natural Korean. "
+        "If the tool reports missing fields, ask a single clear question for those fields. "
+        "If status is ok, summarize the result and suggest one optional next step. "
+        "Do not invent LOT IDs or parameters."
     ),
-    handoffs=[db_agent, simulation_agent],
+    tools=[db_agent_tool, simulation_agent_tool],
     **MODEL_KWARGS,
 )

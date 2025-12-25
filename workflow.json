@@ -1,14 +1,15 @@
 {
   "meta": {
-    "name": "OpenAI Agent Builder 스타일 워크플로우",
+    "name": "testtest",
     "description": "LOT 조회 → 시뮬레이션 예측 흐름, MCP/File Search는 에이전트 도구로 연결",
-    "updated_at": "2025-12-21T12:39:56.347426Z"
+    "updated_at": "2025-12-25T11:51:57.559330Z"
   },
   "nodes": [
     {
       "id": "node-start",
       "type": "start",
       "subtype": "start",
+      "execution_mode": "",
       "label": "Start",
       "keywords": [],
       "input_format": "",
@@ -18,14 +19,19 @@
         "y": 160
       },
       "config": {
-        "input_variables": ["input_as_text"],
-        "state_variables": ["conversation_history:text"]
+        "input_variables": [
+          "input_as_text"
+        ],
+        "state_variables": [
+          "conversation_history:text"
+        ]
       }
     },
     {
       "id": "node-guardrail",
       "type": "guardrail",
       "subtype": "guardrail",
+      "execution_mode": "",
       "label": "Guardrail",
       "keywords": [],
       "input_format": "",
@@ -38,7 +44,9 @@
         "input": "input_as_text",
         "pii": true,
         "moderation": true,
-        "jailbreak": true
+        "jailbreak": true,
+        "hallucination": false,
+        "vector_store_id": ""
       }
     },
     {
@@ -47,24 +55,45 @@
       "subtype": "orchestrator",
       "execution_mode": "handoff",
       "label": "Orchestrator Agent",
-      "keywords": ["lot", "로트", "데이터", "예측", "시뮬레이션"],
-      "input_format": "사용자 메시지",
-      "output_format": "라우팅 결과",
+      "keywords": [
+        "lot",
+        "로트",
+        "line",
+        "라인",
+        "status",
+        "상태",
+        "data",
+        "데이터",
+        "조회",
+        "예측",
+        "시뮬레이션",
+        "simulation",
+        "forecast",
+        "what-if",
+        "risk",
+        "수율"
+      ],
+      "input_format": "user message (Korean)",
+      "output_format": "routing decision + tool/agent call",
       "position": {
         "x": 520,
         "y": 160
       },
       "config": {
         "agent_profile": "orchestrator",
-        "instructions": "요청을 올바른 에이전트로 라우팅합니다. LOT 정보는 DB 에이전트, 예측/시뮬레이션은 시뮬레이션 에이전트로 핸드오프하세요.",
+        "instructions": "You are the conversation lead for a manufacturing monitoring demo. Always respond in Korean. Do not mention internal routing, tools, or intent labels. Decide whether the user wants process/LOT data or a simulation. If data lookup, call the db_agent tool with the user message. If simulation/prediction, call the simulation_agent tool. If both are requested, call db_agent first, then simulation_agent. After tool output, respond naturally in 1-3 sentences. Do not expose the tool report format; translate it into natural Korean. If the tool reports missing fields, ask a single clear question for those fields. If status is ok, summarize the result and suggest one optional next step. Do not invent LOT IDs or parameters.",
         "include_chat_history": true,
-        "response_format": "text"
+        "response_format": "text",
+        "verbosity": "medium",
+        "summary": "off",
+        "write_conversation_history": false
       }
     },
     {
       "id": "node-end",
       "type": "end",
       "subtype": "end",
+      "execution_mode": "",
       "label": "End",
       "keywords": [],
       "input_format": "",
@@ -74,47 +103,83 @@
         "y": 160
       },
       "config": {
-        "return_type": "text"
+        "return_type": "text",
+        "schema": ""
       }
     },
     {
       "id": "node-db-agent",
       "type": "agent",
       "subtype": "db_agent",
-      "execution_mode": "handoff",
+      "execution_mode": "as_tool",
       "label": "DB Agent",
-      "keywords": ["lot", "로트", "상태", "데이터", "조회"],
-      "input_format": "LOT ID",
-      "output_format": "LOT 레코드",
+      "keywords": [
+        "lot",
+        "로트",
+        "line",
+        "라인",
+        "status",
+        "상태",
+        "data",
+        "데이터",
+        "조회",
+        "process",
+        "공정"
+      ],
+      "input_format": "lot_id or line/status query",
+      "output_format": "process rows + UI update",
       "position": {
         "x": 520,
         "y": 20
       },
       "config": {
-        "agent_profile": "db_agent"
+        "agent_profile": "db_agent",
+        "instructions": "You are an internal DB helper used by the orchestrator. Do not address the user directly. Always respond in Korean. If a LOT ID is present, call get_lot_info(lot_id, limit=12). If no LOT ID but the user mentions line/status/conditions, call get_process_data(query=original_message, limit=12). If required info is missing, do not ask the user; report missing fields. Do not invent LOT IDs or data. Prefer tool calls over direct answers. Return exactly four lines: status: <ok|missing|error>. summary: <Korean 1 sentence>. missing: <comma-separated fields or 'none'>. next: <Korean follow-up question or 'none'>.",
+        "include_chat_history": true,
+        "response_format": "text",
+        "verbosity": "medium",
+        "summary": "off",
+        "write_conversation_history": false
       }
     },
     {
       "id": "node-sim-agent",
       "type": "agent",
       "subtype": "simulation_agent",
-      "execution_mode": "handoff",
+      "execution_mode": "as_tool",
       "label": "Simulation Agent",
-      "keywords": ["예측", "시뮬레이션", "what-if", "forecast"],
-      "input_format": "온도/전압/크기/용량",
-      "output_format": "예측 결과",
+      "keywords": [
+        "예측",
+        "시뮬레이션",
+        "simulation",
+        "forecast",
+        "what-if",
+        "risk",
+        "리스크",
+        "수율",
+        "throughput"
+      ],
+      "input_format": "lot_id or temperature/voltage/size/capacity/production_mode",
+      "output_format": "simulation result + UI update",
       "position": {
         "x": 520,
         "y": 300
       },
       "config": {
-        "agent_profile": "simulation_agent"
+        "agent_profile": "simulation_agent",
+        "instructions": "You are an internal simulation helper used by the orchestrator. Do not address the user directly. Always respond in Korean. When the user requests a simulation, call open_simulation_form first to open the UI panel (unless it is already open). If a LOT ID is provided, call run_lot_simulation(lot_id). Otherwise collect the five required params: temperature, voltage, size, capacity, production_mode. If any params are provided, call update_simulation_params with those values or with message=original_message to extract. Do not ask the user directly; report missing fields. Never ask for values that are already filled. When all five params are available, call run_simulation. Return exactly four lines: status: <ok|missing|error>. summary: <Korean 1 sentence>. missing: <comma-separated fields or 'none'>. next: <Korean follow-up question or 'none'>.",
+        "include_chat_history": true,
+        "response_format": "text",
+        "verbosity": "medium",
+        "summary": "off",
+        "write_conversation_history": false
       }
     },
     {
       "id": "node-file-search",
       "type": "file_search",
       "subtype": "file_search",
+      "execution_mode": "",
       "label": "File Search",
       "keywords": [],
       "input_format": "query",
@@ -124,6 +189,7 @@
         "y": 420
       },
       "config": {
+        "vector_store_id": "",
         "top_k": 3
       }
     },
@@ -131,6 +197,7 @@
       "id": "node-mcp-db",
       "type": "mcp",
       "subtype": "process_db",
+      "execution_mode": "",
       "label": "MCP: Process DB",
       "keywords": [],
       "input_format": "query",
@@ -141,13 +208,19 @@
       },
       "config": {
         "toolset": "process_db",
-        "server_name": "process_db"
+        "server_name": "process_db",
+        "server_url": "",
+        "auth_type": "none",
+        "auth_token": "",
+        "tool_names": [],
+        "message": ""
       }
     },
     {
       "id": "node-mcp-sim",
       "type": "mcp",
       "subtype": "simulation",
+      "execution_mode": "",
       "label": "MCP: Simulation",
       "keywords": [],
       "input_format": "params",
@@ -158,13 +231,19 @@
       },
       "config": {
         "toolset": "simulation",
-        "server_name": "simulation_api"
+        "server_name": "simulation_api",
+        "server_url": "",
+        "auth_type": "none",
+        "auth_token": "",
+        "tool_names": [],
+        "message": ""
       }
     },
     {
       "id": "node-mcp-ui",
       "type": "mcp",
       "subtype": "frontend_trigger",
+      "execution_mode": "",
       "label": "MCP: Frontend Trigger",
       "keywords": [],
       "input_format": "message",
@@ -175,7 +254,12 @@
       },
       "config": {
         "toolset": "frontend_trigger",
-        "server_name": "frontend_trigger"
+        "server_name": "frontend_trigger",
+        "server_url": "",
+        "auth_type": "none",
+        "auth_token": "",
+        "tool_names": [],
+        "message": ""
       }
     }
   ],

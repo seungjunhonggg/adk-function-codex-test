@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+﻿import json
+from pathlib import Path
 
 from agents import Runner, SQLiteSession
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -6,12 +7,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .agents import triage_agent
+from .agents import auto_message_agent, triage_agent
 from .config import OPENAI_API_KEY, SESSION_DB_PATH
 from .context import current_session_id
 from .db_connections import connect_and_save, get_schema, list_connections
 from .db import init_db
 from .events import event_bus
+from .observability import WorkflowRunHooks
 from .simulation import extract_simulation_params, simulation_store
 from .tools import (
     collect_simulation_params,
@@ -21,11 +23,16 @@ from .tools import (
     run_lot_simulation,
 )
 from .workflow import (
+    apply_saved_workflow,
+    delete_saved_workflow,
     ensure_workflow,
+    ensure_workflow_store,
     execute_workflow,
+    list_saved_workflows,
     load_workflow,
     normalize_workflow,
     preview_workflow,
+    save_workflow_entry,
     save_workflow,
     validate_workflow,
 )
@@ -83,6 +90,7 @@ class SimulationRunRequest(BaseModel):
 async def startup() -> None:
     init_db()
     ensure_workflow()
+    ensure_workflow_store()
 
 
 @app.get("/")
@@ -125,7 +133,12 @@ async def chat(request: ChatRequest) -> dict:
                 )
             }
 
-        result = await Runner.run(triage_agent, input=request.message, session=session)
+        result = await Runner.run(
+            triage_agent,
+            input=request.message,
+            session=session,
+            hooks=WorkflowRunHooks(),
+        )
         await _maybe_update_simulation_from_message(request.message, request.session_id)
         return {"assistant_message": result.final_output}
     finally:
@@ -147,6 +160,109 @@ async def _maybe_update_simulation_from_message(message: str, session_id: str) -
         update_result.get("params", {}),
         update_result.get("missing", []),
     )
+
+
+def _format_simulation_params(params: dict) -> str:
+    if not params:
+        return "입력 없음"
+    mapping = [
+        ("temperature", "온도"),
+        ("voltage", "전압"),
+        ("size", "크기"),
+        ("capacity", "용량"),
+        ("production_mode", "양산/개발"),
+    ]
+    parts = []
+    for key, label in mapping:
+        value = params.get(key)
+        if value is None or value == "":
+            continue
+        if key == "production_mode":
+            if value == "mass":
+                value = "양산"
+            elif value == "dev":
+                value = "개발"
+        parts.append(f"{label}={value}")
+    return ", ".join(parts) if parts else "입력 없음"
+
+
+def _format_simulation_result(result: dict | None) -> str:
+    if not result:
+        return "결과 없음"
+    parts = []
+    if result.get("predicted_yield") is not None:
+        parts.append(f"예측 수율={result.get('predicted_yield')}%")
+    if result.get("risk_band"):
+        parts.append(f"리스크={result.get('risk_band')}")
+    if result.get("estimated_throughput") is not None:
+        parts.append(f"처리량={result.get('estimated_throughput')} u/h")
+    if not parts:
+        return "결과 수신"
+    return ", ".join(parts)
+
+
+def _format_missing_fields(missing: list[str]) -> str:
+    if not missing:
+        return "없음"
+    mapping = {
+        "temperature": "온도",
+        "voltage": "전압",
+        "size": "크기",
+        "capacity": "용량",
+        "production_mode": "양산/개발",
+    }
+    labels = [mapping.get(item, item) for item in missing]
+    return ", ".join(labels)
+
+
+async def _append_system_note(session_id: str, content: str) -> None:
+    session = SQLiteSession(session_id, SESSION_DB_PATH)
+    await session.add_items([{"role": "system", "content": content}])
+
+
+async def _append_assistant_message(session_id: str, content: str) -> None:
+    session = SQLiteSession(session_id, SESSION_DB_PATH)
+    await session.add_items([{"role": "assistant", "content": content}])
+
+
+async def _emit_chat_message(session_id: str, content: str) -> None:
+    if not content:
+        return
+    await _append_assistant_message(session_id, content)
+    await event_bus.broadcast(
+        {"type": "chat_message", "payload": {"role": "assistant", "content": content}}
+    )
+
+
+async def _generate_simulation_auto_message(
+    params: dict, missing: list[str], result: dict | None
+) -> str:
+    if not OPENAI_API_KEY:
+        if missing:
+            missing_text = _format_missing_fields(missing)
+            return f"시뮬레이션을 실행하려면 {missing_text} 값을 알려주세요."
+        if result:
+            return (
+                f"시뮬레이션 결과가 나왔습니다. {_format_simulation_result(result)}. "
+                "다른 조건도 시도해볼까요?"
+            )
+        return "시뮬레이션 입력을 확인해 주세요."
+
+    payload = {
+        "params": params,
+        "missing_fields": missing,
+        "result": result or {},
+    }
+    prompt = (
+        "Compose a short Korean assistant message based on the JSON below. "
+        "Rules: 1-2 sentences, no mention of tools/routing. "
+        "If missing_fields is not empty, ask for those fields in one question. "
+        "If result is present, summarize key metrics (predicted_yield, risk_band, "
+        "estimated_throughput) and suggest one optional next step. "
+        f"JSON: {json.dumps(payload, ensure_ascii=False)}"
+    )
+    run = await Runner.run(auto_message_agent, input=prompt)
+    return (run.final_output or "").strip()
 
 
 @app.post("/api/test/trigger")
@@ -190,6 +306,36 @@ async def set_workflow(request: WorkflowRequest) -> dict:
     return save_workflow(normalized)
 
 
+@app.get("/api/workflows")
+async def list_workflows() -> dict:
+    return list_saved_workflows()
+
+
+@app.post("/api/workflows")
+async def save_workflow_catalog(request: WorkflowRequest) -> dict:
+    normalized = normalize_workflow(request.workflow)
+    valid, errors = validate_workflow(normalized)
+    if not valid:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    return save_workflow_entry(normalized)
+
+
+@app.post("/api/workflows/{workflow_id}/apply")
+async def apply_workflow(workflow_id: str) -> dict:
+    result = apply_saved_workflow(workflow_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail={"error": "워크플로우를 찾을 수 없습니다."})
+    return {"status": "ok", "active_id": result.get("active_id"), "workflow": result.get("workflow")}
+
+
+@app.delete("/api/workflows/{workflow_id}")
+async def remove_workflow(workflow_id: str) -> dict:
+    deleted = delete_saved_workflow(workflow_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail={"error": "워크플로우를 찾을 수 없습니다."})
+    return {"status": "ok"}
+
+
 @app.post("/api/workflow/validate")
 async def validate_workflow_route(request: WorkflowRequest) -> dict:
     normalized = normalize_workflow(request.workflow)
@@ -225,6 +371,13 @@ async def update_simulation_params_route(request: SimulationParamsRequest) -> di
         await emit_simulation_form(
             update_result["params"], update_result["missing"]
         )
+        params_summary = _format_simulation_params(update_result.get("params", {}))
+        missing = update_result.get("missing", [])
+        missing_text = ", ".join(missing) if missing else "없음"
+        await _append_system_note(
+            request.session_id,
+            f"시뮬레이션 입력 패널 업데이트: {params_summary}. 누락: {missing_text}.",
+        )
         if update_result["missing"]:
             return {
                 "status": "missing",
@@ -232,6 +385,10 @@ async def update_simulation_params_route(request: SimulationParamsRequest) -> di
                 "params": update_result["params"],
             }
         result = await execute_simulation()
+        await _append_system_note(
+            request.session_id,
+            f"시뮬레이션 실행 완료: {_format_simulation_result(result.get('result'))}.",
+        )
         return {
             "status": result.get("status"),
             "params": update_result["params"],
@@ -248,9 +405,25 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
         params = simulation_store.get(request.session_id)
         missing = simulation_store.missing(request.session_id)
         await emit_simulation_form(params, missing)
+        params_summary = _format_simulation_params(params)
+        missing_text = ", ".join(missing) if missing else "없음"
+        await _append_system_note(
+            request.session_id,
+            f"시뮬레이션 실행 요청(패널): {params_summary}. 누락: {missing_text}.",
+        )
         if missing:
+            auto_message = await _generate_simulation_auto_message(params, missing, None)
+            await _emit_chat_message(request.session_id, auto_message)
             return {"status": "missing", "missing": missing, "params": params}
         result = await execute_simulation()
+        await _append_system_note(
+            request.session_id,
+            f"시뮬레이션 실행 완료: {_format_simulation_result(result.get('result'))}.",
+        )
+        auto_message = await _generate_simulation_auto_message(
+            params, [], result.get("result")
+        )
+        await _emit_chat_message(request.session_id, auto_message)
         return {
             "status": result.get("status"),
             "params": params,

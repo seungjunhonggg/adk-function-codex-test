@@ -1,13 +1,14 @@
 import os
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
 if OPENAI_API_KEY and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5-nano")
 SIM_API_URL = os.getenv("SIM_API_URL", "")
 SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "sessions.db")
 DB_PATH = os.getenv("DB_PATH", "process_data.db")
 WORKFLOW_PATH = os.getenv("WORKFLOW_PATH", "workflow.json")
+WORKFLOW_STORE_PATH = os.getenv("WORKFLOW_STORE_PATH", "workflows.json")
 DB_CONNECTIONS_PATH = os.getenv("DB_CONNECTIONS_PATH", "db_connections.json")
 LOT_DB_CONNECTION_ID = os.getenv("LOT_DB_CONNECTION_ID", "")
 LOT_DB_SCHEMA = os.getenv("LOT_DB_SCHEMA", "public")

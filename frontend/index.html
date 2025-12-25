@@ -10,59 +10,30 @@
     <div class="app">
       <aside class="sidebar">
         <div class="brand">
-          <h1>LOT Ops</h1>
-          <p>에이전트 기반 LOT 조회 → 예측 시뮬레이션 데모.</p>
+          <p>공정 모니터링 데모</p>
         </div>
         <div class="status">
           <span id="ws-status" class="status-dot"></span>
           <span id="ws-label">연결 중</span>
         </div>
-        <div class="quick-actions">
-          <button type="button" data-prompt="LOT-2024-0007 정보 보여줘.">
-            LOT-2024-0007 조회
-          </button>
-          <button type="button" data-prompt="LOT-2024-0007 예측 시뮬레이션 해줘.">
-            LOT-2024-0007 시뮬레이션
-          </button>
-          <button type="button" data-prompt="최근 조회한 LOT으로 시뮬레이션 실행해줘.">
-            최근 LOT 시뮬레이션
-          </button>
-          <button type="button" id="test-trigger" class="secondary">
-            간이 테스트 실행 (API 키 불필요)
-          </button>
-          <a class="quick-link" href="/builder" target="_blank" rel="noopener">
-            워크플로우 빌더 열기
-          </a>
-        </div>
-        <div class="lot-control">
-          <h3>LOT 빠른 조회 (보조)</h3>
-          <div class="lot-field">
-            <label for="lot-id">LOT ID</label>
-            <input id="lot-id" type="text" placeholder="LOT-2024-0007" />
-          </div>
-          <div class="lot-actions">
-            <button id="lot-search" type="button">LOT 조회</button>
-            <button id="lot-simulate" type="button" class="secondary">
-              시뮬레이션
-            </button>
-          </div>
-          <div class="lot-actions secondary">
-            <button id="lot-search-sim" type="button" class="ghost">
-              조회 + 시뮬레이션
-            </button>
-            <button id="lot-clear" type="button" class="ghost">
-              입력 지우기
-            </button>
-          </div>
-          <div id="lot-status" class="lot-hint">예: LOT-2024-0007</div>
-        </div>
-        <div class="session-tag">
+        <div class="status-meta">
           세션: <span id="session-id">--</span>
         </div>
+        <a class="primary-link" href="/builder" target="_blank" rel="noopener">
+          워크플로우 빌더 열기
+        </a>
         <div class="workflow-card">
           <h3>활성 워크플로우</h3>
           <div id="workflow-name">--</div>
           <div id="workflow-updated">--</div>
+          <div class="workflow-actions">
+            <button id="load-workflow-json" type="button">워크플로우 JSON 불러오기</button>
+          </div>
+          <pre id="workflow-json" class="workflow-json hidden"></pre>
+          <div class="workflow-list">
+            <h4>저장된 워크플로우</h4>
+            <ul id="workflow-list" class="workflow-items"></ul>
+          </div>
         </div>
       </aside>
 
@@ -71,7 +42,6 @@
           <div class="panel-header">
             <div>
               <h2>채팅 콘솔</h2>
-              <span>LOT 조회 및 시뮬레이션 요청</span>
             </div>
             <div class="panel-header-actions">
               <span id="current-lot" class="pill">현재 LOT: --</span>
@@ -79,7 +49,10 @@
           </div>
           <div id="messages" class="messages"></div>
           <form id="chat-form" class="composer">
-            <textarea id="chat-input" placeholder="LOT ID를 입력하거나 예측 시뮬레이션을 요청하세요..."></textarea>
+            <textarea
+              id="chat-input"
+              placeholder="LOT ID를 입력하거나 예측 시뮬레이션을 요청하세요."
+            ></textarea>
             <button type="submit">전송</button>
           </form>
         </section>
@@ -88,23 +61,23 @@
           <div class="panel-header">
             <div>
               <h2>이벤트 스트림</h2>
-              <span>필요할 때만 카드가 나타납니다.</span>
+              <span>요청 결과가 카드로 표시됩니다.</span>
             </div>
             <div class="panel-header-actions">
-              <button id="toggle-log" type="button" class="ghost">활동 로그</button>
+              <button id="toggle-log" type="button" class="ghost">이벤트 로그</button>
             </div>
           </div>
           <div class="event-content">
             <div id="event-empty" class="event-empty">
               <strong>아직 이벤트가 없습니다.</strong>
               <ul>
-                <li>채팅에 “시뮬레이션 하고싶어”라고 입력해보세요.</li>
-                <li>LOT 조회/시뮬레이션을 요청하면 해당 카드가 열립니다.</li>
+                <li>채팅에 LOT 조회 또는 시뮬레이션을 요청해보세요.</li>
+                <li>요청이 실행되면 결과 카드가 표시됩니다.</li>
               </ul>
             </div>
             <div class="card stream-card hidden" id="lot-card">
               <h3>LOT 정보</h3>
-              <div id="lot-result">아직 LOT가 없습니다.</div>
+              <div id="lot-result">아직 LOT 결과가 없습니다.</div>
             </div>
             <div class="card stream-card hidden" id="sim-form-card">
               <h3>시뮬레이션 입력</h3>
@@ -126,7 +99,7 @@
                   <input id="sim-capacity" type="number" step="0.1" placeholder="6" />
                 </div>
                 <div class="sim-field">
-                  <label for="sim-production">양산/개발품</label>
+                  <label for="sim-production">양산/개발</label>
                   <select id="sim-production">
                     <option value="">선택</option>
                     <option value="mass">양산</option>
@@ -153,7 +126,7 @@
               <div id="frontend-trigger">아직 트리거가 없습니다.</div>
             </div>
             <div class="card stream-card hidden" id="event-log-card">
-              <h3>활동 로그</h3>
+              <h3>이벤트 로그</h3>
               <div id="event-log" class="event-log"></div>
             </div>
           </div>

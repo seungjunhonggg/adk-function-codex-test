@@ -8,52 +8,67 @@
   </head>
   <body>
     <div class="builder">
-      <aside class="palette">
-        <div class="palette-header">
-          <h1>워크플로우 빌더</h1>
-          <p>OpenAI Agent Builder 스타일 노드(Start/Agent/Guardrail/MCP 등)를 연결해 흐름을 설계하세요.</p>
-        </div>
-        <div id="palette-list" class="palette-list"></div>
-        <div class="palette-footer">
-          <button id="load-sample" type="button">샘플 플로우 불러오기</button>
-          <button id="clear-canvas" type="button" class="ghost">전체 삭제</button>
-          <a class="ghost" href="/" target="_blank" rel="noopener">메인 데모로 돌아가기</a>
-        </div>
-      </aside>
-
       <main class="canvas-wrap">
-        <header class="canvas-header">
-          <div>
-            <h2>에이전트 플로우 캔버스</h2>
-            <span>드래그로 이동, 출력 포트 → 입력 포트로 연결하세요.</span>
-          </div>
-          <div class="canvas-actions">
-            <button id="export-json" type="button">JSON 내보내기</button>
-          </div>
-        </header>
+        <div class="canvas-toolbar">
+          <button id="save-workflow" type="button">저장 및 적용</button>
+          <button id="export-json" type="button">JSON 내보내기</button>
+          <button id="toggle-all-nodes" type="button" class="ghost">전체 접기</button>
+        </div>
         <div id="canvas" class="canvas">
           <svg id="connections" class="connections"></svg>
         </div>
-      </main>
-
-      <aside class="inspector">
-        <div class="panel" data-panel="workflow">
-          <h3>워크플로우 정보</h3>
-          <div class="field">
-            <label for="workflow-name">이름</label>
-            <input id="workflow-name" type="text" placeholder="예: 공정 모니터링 플로우" />
+        <aside class="palette">
+          <div class="palette-header">
+            <h1>워크플로우 빌더</h1>
           </div>
-          <div class="field">
-            <label for="workflow-desc">설명</label>
-            <textarea id="workflow-desc" placeholder="워크플로우 목적을 간단히 적어주세요."></textarea>
+          <div id="palette-list" class="palette-list"></div>
+          <div class="palette-footer">
+            <button id="load-sample" type="button">샘플 플로우 불러오기</button>
+            <button id="clear-canvas" type="button" class="ghost">전체 삭제</button>
+            <a class="ghost" href="/" target="_blank" rel="noopener">메인 데모로 돌아가기</a>
           </div>
-          <div class="panel-actions">
-            <button id="save-workflow" type="button">저장 및 적용</button>
-            <button id="load-workflow" type="button" class="ghost">서버에서 불러오기</button>
+        </aside>
+        <aside id="inspector-panel" class="inspector-panel">
+          <div class="inspector-header">
+            <div>
+              <h3>설정 패널</h3>
+              <p>노드를 선택하면 오른쪽에 설정 창이 나타납니다.</p>
+            </div>
+            <button id="inspector-close" type="button" class="ghost">닫기</button>
           </div>
-          <div id="workflow-status" class="status">저장 상태: 대기 중</div>
-        </div>
-
+          <div class="inspector-tabs">
+            <button class="inspector-tab active" data-tab="node" type="button">노드</button>
+            <button class="inspector-tab" data-tab="db" type="button">DB</button>
+          </div>
+          <div class="panel" data-panel="node">
+            <h3>노드 설정</h3>
+            <div id="node-empty" class="empty-state">노드를 선택하면 상세 설정이 표시됩니다.</div>
+            <div id="node-form" class="node-form hidden">
+              <div class="field">
+                <label>선택된 노드 ID</label>
+                <div id="node-id" class="mono">--</div>
+              </div>
+              <div class="field">
+                <label for="node-label">라벨</label>
+                <input id="node-label" type="text" />
+              </div>
+              <div class="field">
+                <label for="node-type">타입</label>
+                <input id="node-type" type="text" readonly />
+              </div>
+              <div class="field" id="node-execution-field">
+                <label for="node-execution">실행 방식</label>
+                <select id="node-execution">
+                  <option value="handoff">handoff (인계)</option>
+                  <option value="as_tool">as_tool (부하 에이전트)</option>
+                </select>
+              </div>
+              <div id="node-fields"></div>
+              <div class="panel-actions">
+                <button id="node-delete" type="button" class="ghost danger">노드 삭제</button>
+              </div>
+            </div>
+          </div>
         <div class="panel" data-panel="db">
           <h3>DB 연결</h3>
           <div class="field">
@@ -93,71 +108,16 @@
           <div id="db-status" class="status">DB 연결 상태: 대기 중</div>
           <div id="db-connections" class="status"></div>
         </div>
-
-        <div class="panel" data-panel="node">
-          <h3>노드 설정</h3>
-          <div id="node-empty" class="empty-state">노드를 선택하면 상세 설정이 표시됩니다.</div>
-          <div id="node-form" class="node-form hidden">
-            <div class="field">
-              <label>선택된 노드 ID</label>
-              <div id="node-id" class="mono">--</div>
-            </div>
-            <div class="field">
-              <label for="node-label">라벨</label>
-              <input id="node-label" type="text" />
-            </div>
-            <div class="field">
-              <label for="node-type">타입</label>
-              <input id="node-type" type="text" readonly />
-            </div>
-            <div class="field" id="node-execution-field">
-              <label for="node-execution">실행 방식</label>
-              <select id="node-execution">
-                <option value="handoff">handoff (인계)</option>
-                <option value="as_tool">as_tool (부하 에이전트)</option>
-              </select>
-            </div>
-            <div id="node-fields"></div>
-            <div class="panel-actions">
-              <button id="node-delete" type="button" class="ghost danger">노드 삭제</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel" data-panel="preview">
-          <h3>검증 & 미리보기</h3>
-          <div class="field">
-            <label for="preview-message">테스트 메시지</label>
-            <textarea id="preview-message" placeholder="예: 라인 A 상태 보여줘"></textarea>
-          </div>
-          <div class="panel-actions">
-            <button id="validate-workflow" type="button" class="ghost">워크플로우 검증</button>
-            <button id="preview-workflow" type="button">라우팅 미리보기</button>
-          </div>
-          <div id="preview-result" class="status">검증/미리보기 결과가 여기에 표시됩니다.</div>
-        </div>
-
-        <div class="panel" data-panel="json">
-          <h3>워크플로우 JSON</h3>
+        </aside>
+        <div class="hidden">
+          <input id="workflow-name" type="text" />
+          <textarea id="workflow-desc"></textarea>
+          <button id="load-workflow" type="button">서버에서 불러오기</button>
+          <div id="workflow-status" class="status">저장 상태: 대기 중</div>
           <textarea id="flow-json" readonly></textarea>
-          <div class="panel-actions">
-            <button id="copy-json" type="button">복사</button>
-          </div>
+          <button id="copy-json" type="button">복사</button>
         </div>
-        <div class="panel subtle" data-panel="guide">
-          <h3>가이드</h3>
-          <ul>
-            <li>Start → Guardrail → Agent → End 흐름을 기본으로 구성하세요.</li>
-            <li>Agent 연결: handoff(인계) / as_tool(부하 에이전트 호출)을 지원합니다.</li>
-            <li>MCP / File Search는 에이전트 도구로 연결하세요.</li>
-            <li>Function Tool은 DB 연결 후 스키마/테이블을 선택해 자동 쿼리 도구를 만듭니다.</li>
-            <li>If / Else, While, User Approval 노드는 분기 포트를 선택해 연결합니다.</li>
-            <li>검증 & 미리보기에서 선택 경로와 후보 에이전트를 확인할 수 있습니다.</li>
-            <li>노드 선택 후 Delete 키로 빠르게 삭제할 수 있습니다.</li>
-            <li>저장 후 메인 데모의 /api/chat 라우팅에 즉시 적용됩니다.</li>
-          </ul>
-        </div>
-      </aside>
+      </main>
     </div>
 
     <script src="/static/builder.js"></script>
