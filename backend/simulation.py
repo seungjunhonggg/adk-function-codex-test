@@ -3,7 +3,7 @@ from typing import Dict, List
 
 import httpx
 
-from .config import SIM_API_URL
+from .config import PREDICT_API_URL, SIM_API_URL
 
 
 REQUIRED_KEYS = (
@@ -75,36 +75,47 @@ def _simulate_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:
     capacity = float(params["capacity"])
     production_mode = str(params.get("production_mode") or "").lower()
 
-    temp_penalty = abs(temperature - 120.0) * 0.15
-    volt_penalty = abs(voltage - 3.7) * 12.0
-    size_penalty = abs(size - 12.0) * 0.8
-    cap_penalty = abs(capacity - 6.0) * 1.5
+    mode_tag = "M" if production_mode in {"mass", "production"} else "D"
+    model_name = f"ADJ-{int(temperature)}-{int(size)}-{mode_tag}"
+    lot_seed = int(abs(voltage * 100)) + int(abs(capacity * 10))
+    representative_lot = f"LOT-{lot_seed:04d}"
 
-    score = 98.0 - temp_penalty - volt_penalty - size_penalty - cap_penalty
-    if production_mode in {"dev", "development", "개발"}:
-        score -= 2.0
-    elif production_mode in {"mass", "production", "양산"}:
-        score += 1.0
-    score = max(50.0, min(99.0, score))
-
-    if score >= 90.0:
-        risk = "낮음"
-    elif score >= 75.0:
-        risk = "중간"
-    else:
-        risk = "높음"
-
-    throughput = 980.0 + (score - 70.0) * 4.2
+    base = (temperature * 0.02) + (voltage * 0.8) + (size * 0.15) + (capacity * 0.5)
+    params_30 = {}
+    for idx in range(1, 31):
+        params_30[f"param{idx}"] = round(base + idx * 0.37, 3)
 
     return {
-        "predicted_yield": round(score, 2),
-        "risk_band": risk,
-        "estimated_throughput": round(throughput, 1),
-        "notes": (
-            "양산 기준 안정 구간"
-            if production_mode in {"mass", "production", "양산"} and risk == "낮음"
-            else "설정 검토 필요"
-        ),
+        "recommended_model": model_name,
+        "representative_lot": representative_lot,
+        "params": params_30,
+    }
+
+
+async def call_prediction_api(params: Dict[str, float | str]) -> Dict[str, float | str]:
+    if PREDICT_API_URL:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(PREDICT_API_URL, json=params)
+            response.raise_for_status()
+            return response.json()
+    return _predict_locally(params)
+
+
+def _predict_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:
+    values = []
+    for value in params.values():
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    avg = sum(values) / len(values) if values else 0.0
+    predicted_capacity = round(5.8 + avg * 0.02, 3)
+    predicted_dc_capacity = round(predicted_capacity * 0.92, 3)
+    reliability_pass_prob = round(min(0.99, max(0.75, 0.78 + avg * 0.003)), 3)
+    return {
+        "predicted_capacity": predicted_capacity,
+        "predicted_dc_capacity": predicted_dc_capacity,
+        "reliability_pass_prob": reliability_pass_prob,
     }
 
 
@@ -123,7 +134,7 @@ def extract_simulation_params(message: str) -> dict:
             params[key] = float(match.group(1))
 
     lowered = message.lower()
-    if re.search(r"(양산|mass|production|prod)", lowered):
+    if re.search(r"(양산|생산|mass|production|prod)", lowered):
         params["production_mode"] = "mass"
     elif re.search(r"(개발|dev|development)", lowered):
         params["production_mode"] = "dev"
@@ -160,8 +171,57 @@ def _normalize_production_mode(value: object) -> str | None:
     text = str(value).strip().lower()
     if not text:
         return None
-    if text in {"mass", "production", "prod", "양산", "true", "1"}:
+    if text in {"mass", "production", "prod", "양산", "생산", "true", "1"}:
         return "mass"
     if text in {"dev", "development", "개발", "false", "0"}:
         return "dev"
     return None
+
+
+
+class RecommendationStore:
+    def __init__(self) -> None:
+        self._data: Dict[str, Dict[str, object]] = {}
+
+    def set(self, session_id: str, payload: Dict[str, object]) -> None:
+        if not session_id:
+            return
+        record = dict(payload)
+        if "awaiting_prediction" not in record:
+            record["awaiting_prediction"] = isinstance(record.get("params"), dict)
+        self._data[session_id] = record
+
+    def get(self, session_id: str) -> Dict[str, object]:
+        return dict(self._data.get(session_id, {}))
+
+    def update_params(self, session_id: str, params: Dict[str, object]) -> Dict[str, object]:
+        if not session_id:
+            return {}
+        record = dict(self._data.get(session_id, {}))
+        existing = record.get("params")
+        if not isinstance(existing, dict):
+            existing = {}
+        for key, value in params.items():
+            if not isinstance(key, str) or not key.startswith("param"):
+                continue
+            coerced = _to_float(value)
+            existing[key] = coerced if coerced is not None else value
+        record["params"] = existing
+        record["awaiting_prediction"] = True
+        self._data[session_id] = record
+        return dict(record)
+
+    def mark_prediction_done(self, session_id: str) -> None:
+        if not session_id:
+            return
+        record = self._data.get(session_id)
+        if not isinstance(record, dict):
+            return
+        record["awaiting_prediction"] = False
+        self._data[session_id] = record
+
+    def clear(self, session_id: str) -> None:
+        self._data.pop(session_id, None)
+
+
+recommendation_store = RecommendationStore()

@@ -14,7 +14,7 @@ from .db_connections import connect_and_save, get_schema, list_connections
 from .db import init_db
 from .events import event_bus
 from .observability import WorkflowRunHooks
-from .simulation import extract_simulation_params, simulation_store
+from .simulation import extract_simulation_params, recommendation_store, simulation_store
 from .tools import (
     collect_simulation_params,
     emit_lot_info,
@@ -84,6 +84,11 @@ class SimulationParamsRequest(BaseModel):
 
 class SimulationRunRequest(BaseModel):
     session_id: str
+
+
+class RecommendationParamsRequest(BaseModel):
+    session_id: str
+    params: dict[str, float | str] | None = None
 
 
 @app.on_event("startup")
@@ -190,12 +195,15 @@ def _format_simulation_result(result: dict | None) -> str:
     if not result:
         return "결과 없음"
     parts = []
-    if result.get("predicted_yield") is not None:
-        parts.append(f"예측 수율={result.get('predicted_yield')}%")
-    if result.get("risk_band"):
-        parts.append(f"리스크={result.get('risk_band')}")
-    if result.get("estimated_throughput") is not None:
-        parts.append(f"처리량={result.get('estimated_throughput')} u/h")
+    model_name = result.get("recommended_model")
+    if model_name:
+        parts.append(f"추천 기종={model_name}")
+    rep_lot = result.get("representative_lot")
+    if rep_lot:
+        parts.append(f"대표 LOT={rep_lot}")
+    params = result.get("params")
+    if isinstance(params, dict):
+        parts.append(f"파라미터={len(params)}개")
     if not parts:
         return "결과 수신"
     return ", ".join(parts)
@@ -240,13 +248,13 @@ async def _generate_simulation_auto_message(
     if not OPENAI_API_KEY:
         if missing:
             missing_text = _format_missing_fields(missing)
-            return f"시뮬레이션을 실행하려면 {missing_text} 값을 알려주세요."
+            return f"추천을 실행하려면 {missing_text} 값을 알려주세요."
         if result:
             return (
-                f"시뮬레이션 결과가 나왔습니다. {_format_simulation_result(result)}. "
-                "다른 조건도 시도해볼까요?"
+                f"인접기종 추천 결과가 나왔습니다. {_format_simulation_result(result)}. "
+                "예측 시뮬레이션도 진행할까요?"
             )
-        return "시뮬레이션 입력을 확인해 주세요."
+        return "추천 입력을 확인해 주세요."
 
     payload = {
         "params": params,
@@ -257,12 +265,26 @@ async def _generate_simulation_auto_message(
         "Compose a short Korean assistant message based on the JSON below. "
         "Rules: 1-2 sentences, no mention of tools/routing. "
         "If missing_fields is not empty, ask for those fields in one question. "
-        "If result is present, summarize key metrics (predicted_yield, risk_band, "
-        "estimated_throughput) and suggest one optional next step. "
+        "If result is present, summarize recommended_model, representative_lot, "
+        "and the count of params, then ask whether to run a prediction simulation. "
         f"JSON: {json.dumps(payload, ensure_ascii=False)}"
     )
-    run = await Runner.run(auto_message_agent, input=prompt)
-    return (run.final_output or "").strip()
+    try:
+        run = await Runner.run(auto_message_agent, input=prompt)
+        message = (run.final_output or "").strip()
+    except Exception:
+        message = ""
+    if message:
+        return message
+    if missing:
+        missing_text = _format_missing_fields(missing)
+        return f"추천을 실행하려면 {missing_text} 값을 알려주세요."
+    if result:
+        return (
+            f"인접기종 추천 결과가 나왔습니다. {_format_simulation_result(result)}. "
+            "예측 시뮬레이션도 진행할까요?"
+        )
+    return "추천 입력을 확인해 주세요."
 
 
 @app.post("/api/test/trigger")
@@ -278,11 +300,12 @@ async def trigger_test(request: TestRequest) -> dict:
                 "voltage": 3.7,
                 "size": 12,
                 "capacity": 6,
+                "production_mode": "mass",
             }
             safe_params = {
                 key: value
                 for key, value in params.items()
-                if key in {"temperature", "voltage", "size", "capacity"}
+                if key in {"temperature", "voltage", "size", "capacity", "production_mode"}
             }
             collect_simulation_params(**safe_params)
             result = await execute_simulation()
@@ -376,7 +399,7 @@ async def update_simulation_params_route(request: SimulationParamsRequest) -> di
         missing_text = ", ".join(missing) if missing else "없음"
         await _append_system_note(
             request.session_id,
-            f"시뮬레이션 입력 패널 업데이트: {params_summary}. 누락: {missing_text}.",
+            f"추천 입력 패널 업데이트: {params_summary}. 누락: {missing_text}.",
         )
         if update_result["missing"]:
             return {
@@ -384,15 +407,10 @@ async def update_simulation_params_route(request: SimulationParamsRequest) -> di
                 "missing": update_result["missing"],
                 "params": update_result["params"],
             }
-        result = await execute_simulation()
-        await _append_system_note(
-            request.session_id,
-            f"시뮬레이션 실행 완료: {_format_simulation_result(result.get('result'))}.",
-        )
         return {
-            "status": result.get("status"),
+            "status": "ready",
             "params": update_result["params"],
-            "result": result.get("result"),
+            "missing": [],
         }
     finally:
         current_session_id.reset(token)
@@ -409,7 +427,7 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
         missing_text = ", ".join(missing) if missing else "없음"
         await _append_system_note(
             request.session_id,
-            f"시뮬레이션 실행 요청(패널): {params_summary}. 누락: {missing_text}.",
+            f"추천 실행 요청(패널): {params_summary}. 누락: {missing_text}.",
         )
         if missing:
             auto_message = await _generate_simulation_auto_message(params, missing, None)
@@ -418,7 +436,7 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
         result = await execute_simulation()
         await _append_system_note(
             request.session_id,
-            f"시뮬레이션 실행 완료: {_format_simulation_result(result.get('result'))}.",
+            f"추천 실행 완료: {_format_simulation_result(result.get('result'))}.",
         )
         auto_message = await _generate_simulation_auto_message(
             params, [], result.get("result")
@@ -429,6 +447,44 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
             "params": params,
             "result": result.get("result"),
         }
+    finally:
+        current_session_id.reset(token)
+
+
+@app.post("/api/recommendation/params")
+async def update_recommendation_params_route(
+    request: RecommendationParamsRequest,
+) -> dict:
+    token = current_session_id.set(request.session_id)
+    try:
+        current = recommendation_store.get(request.session_id)
+        if not current:
+            await _append_system_note(
+                request.session_id, "추천 파라미터 업데이트 실패: 추천 결과 없음."
+            )
+            return {"status": "missing", "missing": ["recommendation"]}
+        params = request.params or {}
+        updated = recommendation_store.update_params(request.session_id, params)
+        if not updated or not isinstance(updated.get("params"), dict):
+            await _append_system_note(
+                request.session_id, "추천 파라미터 업데이트 실패: 파라미터 없음."
+            )
+            return {"status": "missing", "missing": ["params"]}
+        result_payload = {
+            "recommended_model": updated.get("recommended_model"),
+            "representative_lot": updated.get("representative_lot"),
+            "params": updated.get("params"),
+        }
+        payload = {
+            "params": updated.get("input_params") or {},
+            "result": result_payload,
+        }
+        await event_bus.broadcast({"type": "simulation_result", "payload": payload})
+        await _append_system_note(
+            request.session_id,
+            f"추천 파라미터 업데이트: {len(result_payload.get('params', {}))}개.",
+        )
+        return {"status": "ok", **payload}
     finally:
         current_session_id.reset(token)
 

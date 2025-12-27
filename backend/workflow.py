@@ -13,9 +13,10 @@ from agents import Agent, Runner, function_tool
 
 from .agents import db_agent, simulation_agent, triage_agent
 from .config import MODEL_NAME, WORKFLOW_PATH, WORKFLOW_STORE_PATH
+from .context import current_session_id
 from .db_connections import execute_table_query
 from .observability import WorkflowRunHooks, emit_workflow_log
-from .simulation import extract_simulation_params
+from .simulation import extract_simulation_params, recommendation_store
 from .tools import (
     collect_simulation_params,
     emit_frontend_trigger,
@@ -26,6 +27,7 @@ from .tools import (
     frontend_trigger,
     get_process_data,
     open_simulation_form,
+    run_prediction_simulation,
     run_lot_simulation,
     run_simulation,
     update_simulation_params,
@@ -552,17 +554,7 @@ def default_workflow() -> dict:
                 "config": {
                     "agent_profile": "orchestrator",
                     "instructions": (
-                        "You are the conversation lead for a manufacturing monitoring demo. "
-                        "Always respond in Korean. "
-                        "Do not mention internal routing, tools, or intent labels. "
-                        "Decide whether the user wants process/LOT data or a simulation. "
-                        "If data lookup, call the db_agent tool with the user message. "
-                        "If simulation/prediction, call the simulation_agent tool. "
-                        "If both are requested, call db_agent first, then simulation_agent. "
-                        "After tool output, respond naturally in 1-3 sentences. Do not expose the tool report format; translate it into natural Korean. "
-                        "If the tool reports missing fields, ask a single clear question for those fields. "
-                        "If status is ok, summarize the result and suggest one optional next step. "
-                        "Do not invent LOT IDs or parameters."
+                        "You are the conversation lead for a manufacturing monitoring demo. Always respond in Korean with a warm, friendly tone. For casual chat (greetings, thanks, small talk, unrelated topics), reply naturally and briefly, and optionally offer help with LOT lookup or recommendation. Do not mention internal routing, tools, or intent labels. If the intent is unclear, ask one short clarifying question before calling tools. When the user wants process or LOT data, gather the minimum required info with a concise, professional question (for example LOT ID or key filters like line, status, date range, or conditions). If you have enough info, call the db_agent tool with the user message. When the user wants an adjacent model recommendation, call the simulation_agent tool with the user message to open the UI and extract any params. If both are requested, call db_agent first, then simulation_agent. After tool output, respond naturally in 1-3 sentences; translate the tool report into natural Korean. If the tool reports missing fields, ask a single clear question only for those fields. If the recommendation is complete, briefly summarize it and ask whether to run a prediction simulation. If the user agrees to run the prediction simulation (including short affirmatives like 네/응/그래/ok/yes), call the simulation_agent tool again with the confirmation so it can run the prediction step. Do not invent LOT IDs or parameters."
                     ),
                     "include_chat_history": True,
                     "output_format": "text",
@@ -604,18 +596,18 @@ def default_workflow() -> dict:
                 "config": {
                     "agent_profile": "db_agent",
                     "instructions": (
-                        "You are an internal DB helper used by the orchestrator. "
+                                                "You are an internal DB helper used by the orchestrator. "
                         "Do not address the user directly. Always respond in Korean. "
                         "If a LOT ID is present, call get_lot_info(lot_id, limit=12). "
                         "If no LOT ID but the user mentions line/status/conditions, call "
                         "get_process_data(query=original_message, limit=12). "
                         "If required info is missing, do not ask the user; report missing fields. "
                         "Do not invent LOT IDs or data. Prefer tool calls over direct answers. "
-                        "Return exactly four lines: "
-                        "status: <ok|missing|error>. "
-                        "summary: <Korean 1 sentence>. "
-                        "missing: <comma-separated fields or 'none'>. "
-                        "next: <Korean follow-up question or 'none'>."
+                        "Return a compact JSON object with keys: status, summary, missing, next. "
+                        "status must be ok|missing|error. "
+                        "missing should be a comma-separated string or 'none'. "
+                        "next should be a short Korean follow-up question or 'none'."
+
                     ),
                 },
             },
@@ -641,10 +633,10 @@ def default_workflow() -> dict:
                 "position": {"x": 520, "y": 300},
                 "config": {
                     "agent_profile": "simulation_agent",
-                    "instructions": (
-                        "You are an internal simulation helper used by the orchestrator. "
+                                        "instructions": (
+                        "You are an internal recommendation helper used by the orchestrator. "
                         "Do not address the user directly. Always respond in Korean. "
-                        "When the user requests a simulation, call open_simulation_form first "
+                        "When the user requests an adjacent model recommendation, call open_simulation_form first "
                         "to open the UI panel (unless it is already open). "
                         "If a LOT ID is provided, call run_lot_simulation(lot_id). "
                         "Otherwise collect the five required params: temperature, voltage, "
@@ -653,13 +645,13 @@ def default_workflow() -> dict:
                         "values or with message=original_message to extract. "
                         "Do not ask the user directly; report missing fields. "
                         "Never ask for values that are already filled. "
-                        "When all five params are available, call run_simulation. "
-                        "Return exactly four lines: "
-                        "status: <ok|missing|error>. "
-                        "summary: <Korean 1 sentence>. "
-                        "missing: <comma-separated fields or 'none'>. "
-                        "next: <Korean follow-up question or 'none'>."
+                        "When all five params are available, call run_simulation. If the user confirms a prediction simulation (including short affirmatives like 네/응/그래/ok/yes) and a recommendation exists, call run_prediction_simulation. "
+                        "Return a compact JSON object with keys: status, summary, missing, next. "
+                        "status must be ok|missing|error. "
+                        "missing should be a comma-separated string or 'none'. "
+                        "next should be a short Korean follow-up question or 'none'."
                     ),
+
                 },
             },
             {
@@ -871,8 +863,9 @@ def _build_agent_instance(
     sub_agents = _collect_sub_agents(node_id, node_map, handoff_adjacency)
 
     tools = _resolve_tools(tool_nodes)
-    if not tools:
-        tools = list(base_agent.tools or [])
+    base_tools = list(base_agent.tools or [])
+    if base_tools:
+        tools = tools + base_tools
 
     agent_tools = []
     handoffs = []
@@ -1057,6 +1050,8 @@ def _resolve_tools(tool_nodes: list[dict]) -> list:
                     run_lot_simulation,
                 ]
             )
+        elif toolset == "prediction":
+            tools.append(run_prediction_simulation)
         elif toolset == "frontend_trigger":
             tools.append(frontend_trigger)
     return _dedupe_tools(tools)
@@ -1385,7 +1380,7 @@ async def _execute_tool_node(
         tool = _build_function_tool(node)
         if not tool:
             return "Function Tool 설정이 필요합니다."
-        result = tool(query=context.input_as_text, limit=config.get("limit") or 50)
+        result = _invoke_function_tool(node, tool, context.input_as_text)
         if hasattr(result, "__await__"):
             result = await result
         context.state["function_tool"] = result
@@ -1428,15 +1423,25 @@ async def _execute_tool_node(
                 "TOOL",
                 f"{tool_label} missing: {', '.join(missing)}",
             )
-            return f"시뮬레이션 입력이 부족합니다: {missing_text}"
+            return f"\ucd94\ucc9c \uc785\ub825\uc774 \ubd80\uc871\ud569\ub2c8\ub2e4: {missing_text}"
         result = await execute_simulation()
         context.state["simulation_result"] = result
         await emit_workflow_log("TOOL", f"{tool_label} done")
-        return "시뮬레이션 API 함수를 실행했습니다. 결과가 UI에 반영되었습니다."
+        return "\ucd94\ucc9c \ud568\uc218\ub97c \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4. \uacb0\uacfc\uac00 UI\uc5d0 \ubc18\uc601\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
+
+    if toolset == "prediction":
+        result = await run_prediction_simulation()
+        context.state["prediction_result"] = result
+        await emit_workflow_log("TOOL", f"{tool_label} done")
+        if isinstance(result, dict) and result.get("status") == "missing":
+            return "\uc608\uce21 \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud558\ub824\uba74 \ucd94\ucc9c \uacb0\uacfc\uac00 \ud544\uc694\ud569\ub2c8\ub2e4."
+        return "\uc608\uce21 \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4. \uacb0\uacfc\uac00 UI\uc5d0 \ubc18\uc601\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
 
     if toolset == "frontend_trigger":
         trigger_message = config.get("message") or _summarize_result(
-            context.state.get("db_result") or context.state.get("simulation_result")
+            context.state.get("prediction_result")
+            or context.state.get("simulation_result")
+            or context.state.get("db_result")
         )
         await emit_frontend_trigger(trigger_message, context.state)
         await emit_workflow_log("TOOL", f"{tool_label} sent")
@@ -1532,32 +1537,41 @@ async def _traverse_workflow(
             if not allow_llm:
                 context.state["llm_unavailable"] = True
                 if not simulate:
-                    candidates = handoff_adjacency.get(current_id, [])
-                    selected_id = (
-                        _select_candidate(node_map, candidates, context.input_as_text)
-                        if candidates
-                        else None
-                    )
-                    if selected_id:
-                        selected_node = node_map.get(selected_id)
-                        if selected_node:
-                            await emit_workflow_log(
-                                "HANDOFF",
-                                f"{node.get('label') or current_id} -> {selected_node.get('label') or selected_id}",
-                            )
-                    tool_owner = node_map.get(selected_id) if selected_id else node
-                    if tool_owner and tool_owner.get("id"):
-                        tool_nodes = _collect_tool_nodes(
-                            tool_owner.get("id"), node_map, tool_adjacency
+                    session_id = current_session_id.get()
+                    if _should_run_prediction(context.input_as_text, session_id):
+                        prediction_result = await run_prediction_simulation()
+                        prediction_message = _summarize_result(prediction_result)
+                        context.tool_messages.append(prediction_message)
+                        context.last_output = prediction_message
+                        context.input_as_text = prediction_message
+                        context.state["prediction_ran"] = True
+                    else:
+                        candidates = handoff_adjacency.get(current_id, [])
+                        selected_id = (
+                            _select_candidate(node_map, candidates, context.input_as_text)
+                            if candidates
+                            else None
                         )
-                        for tool_node in tool_nodes:
-                            tool_message = await _execute_tool_node(tool_node, context)
-                            if tool_message:
-                                context.tool_messages.append(tool_message)
-                                context.last_output = tool_message
-                                context.input_as_text = tool_message
-                    if selected_id:
-                        path.append(selected_id)
+                        if selected_id:
+                            selected_node = node_map.get(selected_id)
+                            if selected_node:
+                                await emit_workflow_log(
+                                    "HANDOFF",
+                                    f"{node.get('label') or current_id} -> {selected_node.get('label') or selected_id}",
+                                )
+                        tool_owner = node_map.get(selected_id) if selected_id else node
+                        if tool_owner and tool_owner.get("id"):
+                            tool_nodes = _collect_tool_nodes(
+                                tool_owner.get("id"), node_map, tool_adjacency
+                            )
+                            for tool_node in tool_nodes:
+                                tool_message = await _execute_tool_node(tool_node, context)
+                                if tool_message:
+                                    context.tool_messages.append(tool_message)
+                                    context.last_output = tool_message
+                                    context.input_as_text = tool_message
+                        if selected_id:
+                            path.append(selected_id)
             elif not simulate:
                 agent = _build_agent_instance(
                     node, node_map, tool_adjacency, handoff_adjacency, session
@@ -1685,6 +1699,19 @@ def _run_preview(
     return {"path": path, "selected_id": selected_id}
 
 
+def _invoke_function_tool(node: dict, tool: Any, message: str) -> Any:
+    config = node.get("config") or {}
+    tool_type = config.get("tool_type") or "db_query"
+    if tool_type == "db_query":
+        query = config.get("query") or _extract_db_query(message)
+        limit = config.get("limit") or 50
+        return tool(query=query, limit=limit)
+    try:
+        return tool(message=message)
+    except TypeError:
+        return tool()
+
+
 async def _execute_function_path(
     node_map: dict[str, dict],
     path: list[str],
@@ -1707,7 +1734,7 @@ async def _execute_function_path(
             if not tool:
                 assistant_message = "Function Tool 설정이 필요합니다."
                 continue
-            result = tool(query=message, limit=(node.get("config") or {}).get("limit") or 50)
+            result = _invoke_function_tool(node, tool, message)
             if hasattr(result, "__await__"):
                 result = await result
             if isinstance(result, dict) and result.get("error"):
@@ -1744,12 +1771,19 @@ async def _execute_function_path(
             if missing:
                 missing_text = ", ".join(_to_korean_field(m) for m in missing)
                 return WorkflowRun(
-                    assistant_message=f"시뮬레이션 입력이 부족합니다: {missing_text}",
+                    assistant_message=f"\ucd94\ucc9c \uc785\ub825\uc774 \ubd80\uc871\ud569\ub2c8\ub2e4: {missing_text}",
                     used_llm=False,
                     path=path,
                 )
             last_result = await execute_simulation()
-            assistant_message = "시뮬레이션 API 함수를 실행했습니다. 결과가 UI에 반영되었습니다."
+            assistant_message = "\ucd94\ucc9c \ud568\uc218\ub97c \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4. \uacb0\uacfc\uac00 UI\uc5d0 \ubc18\uc601\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
+
+        elif toolset == "prediction":
+            last_result = await run_prediction_simulation()
+            if isinstance(last_result, dict) and last_result.get("status") == "missing":
+                assistant_message = "\uc608\uce21 \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud558\ub824\uba74 \ucd94\ucc9c \uacb0\uacfc\uac00 \ud544\uc694\ud569\ub2c8\ub2e4."
+            else:
+                assistant_message = "\uc608\uce21 \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4. \uacb0\uacfc\uac00 UI\uc5d0 \ubc18\uc601\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
 
         elif toolset == "frontend_trigger":
             trigger_message = node.get("output_format") or _summarize_result(last_result)
@@ -1963,13 +1997,74 @@ def _extract_db_query(message: str) -> str:
     return " ".join(query_parts) if query_parts else message
 
 
+def _is_affirmative(message: str) -> bool:
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return False
+    affirmative = {
+        "yes",
+        "y",
+        "ok",
+        "okay",
+        "sure",
+        "yep",
+        "\ub124",
+        "\uc608",
+        "\uc751",
+        "\uadf8\ub798",
+        "\uc88b\uc544",
+        "\uac00\ub2a5",
+        "\uc9c4\ud589",
+        "\uc2e4\ud589",
+        "\ud574\uc918",
+    }
+    if lowered in affirmative:
+        return True
+    return any(token in lowered for token in affirmative)
+
+
+def _has_recommendation(session_id: str) -> bool:
+    if not session_id:
+        return False
+    recommendation = recommendation_store.get(session_id)
+    if not isinstance(recommendation, dict):
+        return False
+    params = recommendation.get("params")
+    if not isinstance(params, dict):
+        return False
+    required = {f"param{idx}" for idx in range(1, 31)}
+    return required.issubset(params.keys())
+
+
+def _should_run_prediction(message: str, session_id: str) -> bool:
+    if not message or not _has_recommendation(session_id):
+        return False
+    recommendation = recommendation_store.get(session_id)
+    awaiting_prediction = bool(
+        isinstance(recommendation, dict)
+        and recommendation.get("awaiting_prediction") is True
+    )
+    lowered = message.lower()
+    triggers = (
+        "\uc608\uce21",
+        "\uc2dc\ubbac\ub808\uc774\uc158",
+        "predict",
+        "prediction",
+        "simulate",
+        "simulation",
+    )
+    if any(token in lowered for token in triggers):
+        return True
+    return awaiting_prediction and _is_affirmative(message)
+
+
 def _to_korean_field(field: str) -> str:
     mapping = {
         "temperature": "온도",
         "voltage": "전압",
         "size": "크기",
         "capacity": "용량",
-        "production_mode": "양산/개발품",
+        "production_mode": "양산/개발",
     }
     return mapping.get(field, field)
 
@@ -1979,11 +2074,22 @@ def _summarize_result(result: dict | None) -> str:
         return "프론트 트리거가 실행되었습니다."
     if "rows" in result:
         return f"LOT 결과 {len(result.get('rows', []))}건이 표시되었습니다."
+    if "recommendation" in result and "result" in result:
+        prediction = result.get("result") or {}
+        return (
+            f"\uc608\uce21 \uacb0\uacfc: \uc6a9\ub7c9 {prediction.get('predicted_capacity', '-')}, "
+            f"DC {prediction.get('predicted_dc_capacity', '-')}, "
+            f"\uc2e0\ub8b0\uc131 {prediction.get('reliability_pass_prob', '-')}"
+        )
     if "result" in result:
         inner = result.get("result", {})
-        yield_value = inner.get("predicted_yield")
-        if yield_value is not None:
-            return f"예측 수율 {yield_value}% 결과가 표시되었습니다."
+        recommended_model = inner.get("recommended_model")
+        rep_lot = inner.get("representative_lot")
+        if recommended_model or rep_lot:
+            return (
+                f"\ucd94\ucc9c \uacb0\uacfc: {recommended_model or '-'}, "
+                f"\ub300\ud45c LOT {rep_lot or '-'}"
+            )
     return "프론트 트리거가 실행되었습니다."
 
 

@@ -6,6 +6,7 @@ const statusLabel = document.getElementById("ws-label");
 const sessionEl = document.getElementById("session-id");
 const lotResultEl = document.getElementById("lot-result");
 const simResultEl = document.getElementById("sim-result");
+const predictionResultEl = document.getElementById("prediction-result");
 const eventLogEl = document.getElementById("event-log");
 const workflowNameEl = document.getElementById("workflow-name");
 const workflowUpdatedEl = document.getElementById("workflow-updated");
@@ -24,6 +25,7 @@ const lotStatusEl = document.getElementById("lot-status");
 const simFormCard = document.getElementById("sim-form-card");
 const lotCard = document.getElementById("lot-card");
 const simResultCard = document.getElementById("sim-result-card");
+const predictionCard = document.getElementById("prediction-card");
 const frontendCard = document.getElementById("frontend-card");
 const eventLogCard = document.getElementById("event-log-card");
 const eventEmptyEl = document.getElementById("event-empty");
@@ -35,11 +37,14 @@ const simProductionSelect = document.getElementById("sim-production");
 const simApplyButton = document.getElementById("sim-apply");
 const simRunButton = document.getElementById("sim-run");
 const simFormStatus = document.getElementById("sim-form-status");
+const recommendationApplyButton = document.getElementById("recommend-apply");
+const recommendationStatusEl = document.getElementById("recommend-status");
 
 const sessionId = crypto.randomUUID();
 sessionEl.textContent = sessionId.slice(0, 8);
 let lastLotId = "";
 let isComposing = false;
+let recommendationDirty = false;
 
 function addMessage(role, text) {
   const message = document.createElement("div");
@@ -50,6 +55,9 @@ function addMessage(role, text) {
 }
 
 function addEventLog(label, detail) {
+  if (!eventLogEl) {
+    return;
+  }
   const row = document.createElement("div");
   row.textContent = `${new Date().toLocaleTimeString("ko-KR")} - ${label}: ${detail}`;
   eventLogEl.prepend(row);
@@ -74,6 +82,14 @@ function setSimStatus(message, isError = false) {
   simFormStatus.classList.toggle("error", isError);
 }
 
+function setRecommendationStatus(message, isError = false) {
+  if (!recommendationStatusEl) {
+    return;
+  }
+  recommendationStatusEl.textContent = message;
+  recommendationStatusEl.classList.toggle("error", isError);
+}
+
 function setCurrentLot(lotId) {
   if (!lotId) {
     return;
@@ -91,12 +107,17 @@ const streamCards = [
   lotCard,
   simFormCard,
   simResultCard,
+  predictionCard,
   frontendCard,
 ].filter(Boolean);
-if (eventLogCard) {
-  eventLogCard.classList.remove("hidden");
-}
 let isLogOpen = false;
+if (eventLogCard) {
+  isLogOpen = true;
+  eventLogCard.classList.remove("hidden");
+  if (toggleLogButton) {
+    toggleLogButton.textContent = "로그 닫기";
+  }
+}
 
 function updateEventEmpty() {
   if (!eventEmptyEl) {
@@ -141,7 +162,7 @@ function toggleEventLog() {
   }
   isLogOpen = !isLogOpen;
   eventLogCard.classList.toggle("hidden", !isLogOpen);
-  toggleLogButton.textContent = isLogOpen ? "로그 닫기" : "활동 로그";
+  toggleLogButton.textContent = isLogOpen ? "로그 닫기" : "이벤트 로그";
   updateEventEmpty();
 }
 
@@ -272,7 +293,7 @@ function renderSimulationForm(payload = {}) {
       .join(", ");
     setSimStatus(`미입력: ${missingLabel}`, true);
   } else {
-    setSimStatus("입력 완료: 시뮬레이션 실행 가능");
+    setSimStatus("입력 완료: 추천 실행이 가능합니다.");
   }
 }
 
@@ -295,7 +316,7 @@ async function sendSimulationParams({ run } = { run: false }) {
   if (!simFormStatus) {
     return;
   }
-  setSimStatus("입력값 전송 중...");
+  setSimStatus("추천 입력 전송 중...");
   const params = collectSimFormParams();
   const payload = run
     ? { session_id: sessionId }
@@ -310,7 +331,7 @@ async function sendSimulationParams({ run } = { run: false }) {
       }
     );
     if (!response.ok) {
-      setSimStatus("시뮬레이션 요청 실패", true);
+      setSimStatus("추천 요청 실패", true);
       return;
     }
     const data = await response.json();
@@ -318,16 +339,91 @@ async function sendSimulationParams({ run } = { run: false }) {
       renderSimulationForm({ params: data.params || params, missing: data.missing });
       return;
     }
-    setSimStatus("시뮬레이션 실행 완료");
+    if (data.result) {
+      renderSimResult({ params: data.params || params, result: data.result });
+      setSimStatus("추천 실행 완료");
+      updateMissingInputs([]);
+      return;
+    }
+    if (!run) {
+      setSimStatus("입력 반영 완료: 추천 실행을 눌러주세요.");
+      updateMissingInputs([]);
+      return;
+    }
+    setSimStatus("추천 실행 완료");
     updateMissingInputs([]);
   } catch (error) {
-    setSimStatus("시뮬레이션 요청 실패: 네트워크 오류", true);
+    setSimStatus("추천 요청 실패: 네트워크 오류", true);
+  }
+}
+
+function collectRecommendationParams() {
+  if (!simResultEl) {
+    return {};
+  }
+  const params = {};
+  simResultEl.querySelectorAll("input[data-param]").forEach((inputEl) => {
+    const key = inputEl.dataset.param;
+    if (!key) {
+      return;
+    }
+    const raw = String(inputEl.value || "").trim();
+    if (!raw) {
+      return;
+    }
+    const numeric = Number(raw);
+    params[key] = Number.isFinite(numeric) ? numeric : raw;
+  });
+  return params;
+}
+
+async function sendRecommendationParams() {
+  if (!recommendationStatusEl) {
+    return;
+  }
+  const params = collectRecommendationParams();
+  if (!Object.keys(params).length) {
+    setRecommendationStatus("파라미터를 먼저 입력해 주세요.", true);
+    return;
+  }
+  setRecommendationStatus("파라미터 반영 중...");
+  if (recommendationApplyButton) {
+    recommendationApplyButton.disabled = true;
+  }
+  try {
+    const response = await fetch("/api/recommendation/params", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, params }),
+    });
+    if (!response.ok) {
+      setRecommendationStatus("파라미터 반영 실패", true);
+      return;
+    }
+    const data = await response.json();
+    if (data.status === "missing") {
+      setRecommendationStatus("추천 결과가 없습니다.", true);
+      return;
+    }
+    if (data.result) {
+      renderSimResult({ params: data.params || {}, result: data.result });
+    }
+    recommendationDirty = false;
+    setRecommendationStatus("파라미터 반영 완료");
+  } catch (error) {
+    setRecommendationStatus("파라미터 반영 실패: 네트워크 오류", true);
+  } finally {
+    if (recommendationApplyButton) {
+      recommendationApplyButton.disabled = false;
+    }
   }
 }
 
 function renderLotResult(payload) {
   if (!payload || !payload.rows || payload.rows.length === 0) {
-    lotResultEl.textContent = "조회 결과가 없습니다.";
+    if (lotResultEl) {
+      lotResultEl.textContent = "조회 결과가 없습니다.";
+    }
     return;
   }
 
@@ -384,94 +480,138 @@ function renderLotResult(payload) {
   if (payload.rows.length > 1) {
     const count = document.createElement("div");
     count.className = "lot-count";
-    count.textContent = `추가 ${payload.rows.length - 1}건 더 있음`;
+    count.textContent = `추가 ${payload.rows.length - 1}건 있음`;
     lotResultEl.appendChild(count);
   }
 }
 
 function renderSimResult(payload) {
   if (!payload || !payload.result) {
-    simResultEl.textContent = "시뮬레이션 데이터가 없습니다.";
+    if (simResultEl) {
+      simResultEl.textContent = "추천 결과가 없습니다.";
+    }
     return;
   }
 
   showOnlyStreamCards([simResultCard]);
+  recommendationDirty = false;
 
   const params = payload.params || {};
   const result = payload.result || {};
-  const riskMap = {
-    low: "낮음",
-    medium: "중간",
-    high: "높음",
-    낮음: "낮음",
-    중간: "중간",
-    높음: "높음",
-  };
-  const riskLabel = riskMap[result.risk_band] || result.risk_band || "-";
-  const riskClass =
-    riskLabel === "높음"
-      ? "risk-high"
-      : riskLabel === "중간"
-        ? "risk-medium"
-        : "risk-low";
-
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
-  kpiRow.appendChild(
-    createKpiCard("Yield", `${result.predicted_yield ?? "-"}%`, "accent")
-  );
-  kpiRow.appendChild(createKpiCard("Risk", riskLabel, riskClass));
-  kpiRow.appendChild(
-    createKpiCard(
-      "Throughput",
-      `${result.estimated_throughput ?? "-"} u/h`
-    )
-  );
-  if (lastLotId) {
-    kpiRow.appendChild(createKpiCard("LOT", lastLotId, "ghost"));
+  if (result.recommended_model) {
+    kpiRow.appendChild(
+      createKpiCard("추천 기종", result.recommended_model, "accent")
+    );
+  }
+  if (result.representative_lot) {
+    kpiRow.appendChild(createKpiCard("대표 LOT", result.representative_lot));
+  }
+  const paramCount = result.params ? Object.keys(result.params).length : 0;
+  if (paramCount) {
+    kpiRow.appendChild(createKpiCard("파라미터", `${paramCount}개`, "ghost"));
+  }
+  if (recommendationApplyButton) {
+    recommendationApplyButton.disabled = !paramCount;
+  }
+  if (paramCount) {
+    setRecommendationStatus("파라미터를 수정한 뒤 반영을 눌러주세요.");
+  } else {
+    setRecommendationStatus("추천 파라미터를 불러오지 못했습니다.", true);
   }
 
   simResultEl.innerHTML = "";
-  simResultEl.appendChild(kpiRow);
+  if (kpiRow.childElementCount) {
+    simResultEl.appendChild(kpiRow);
+  }
 
-  const metrics = document.createElement("div");
-  metrics.className = "metric-grid";
-  metrics.innerHTML = `
-    <div class="metric">
-      <span>예측 수율</span>
-      <strong>${result.predicted_yield ?? "-"}%</strong>
-    </div>
-    <div class="metric">
-      <span>리스크 구간</span>
-      <strong>${riskLabel}</strong>
-    </div>
-    <div class="metric">
-      <span>처리량</span>
-      <strong>${result.estimated_throughput ?? "-"} u/h</strong>
-    </div>
-    <div class="metric">
-      <span>메모</span>
-      <strong>${result.notes || "-"}</strong>
-    </div>
-  `;
-  const paramBlock = document.createElement("div");
-  paramBlock.className = "metric";
-  paramBlock.style.marginTop = "12px";
   const productionLabel =
     params.production_mode === "mass"
       ? "양산"
       : params.production_mode === "dev"
         ? "개발"
         : params.production_mode || "-";
-  paramBlock.innerHTML = `
+  const inputSummary = document.createElement("div");
+  inputSummary.className = "metric";
+  inputSummary.innerHTML = `
     <span>입력값</span>
     <strong>
-      T ${params.temperature}, V ${params.voltage}, S ${params.size}, C ${params.capacity}, M ${productionLabel}
+      T ${params.temperature ?? "-"}, V ${params.voltage ?? "-"}, S ${params.size ?? "-"}, C ${params.capacity ?? "-"}, M ${productionLabel}
     </strong>
   `;
+  simResultEl.appendChild(inputSummary);
 
-  simResultEl.appendChild(metrics);
-  simResultEl.appendChild(paramBlock);
+  if (result.params && typeof result.params === "object") {
+    const sectionLabel = document.createElement("div");
+    sectionLabel.className = "section-label";
+    sectionLabel.textContent = "추천 파라미터";
+    simResultEl.appendChild(sectionLabel);
+
+    const paramGrid = document.createElement("div");
+    paramGrid.className = "param-grid";
+    Object.entries(result.params).forEach(([key, value]) => {
+      const item = document.createElement("div");
+      item.className = "param-item";
+      const label = document.createElement("span");
+      label.textContent = key;
+      const input = document.createElement("input");
+      input.type = "number";
+      input.step = "0.001";
+      input.value = value ?? "";
+      input.dataset.param = key;
+      input.addEventListener("input", () => {
+        recommendationDirty = true;
+        setRecommendationStatus("파라미터 수정됨. 반영 버튼을 눌러주세요.");
+      });
+      item.appendChild(label);
+      item.appendChild(input);
+      paramGrid.appendChild(item);
+    });
+    simResultEl.appendChild(paramGrid);
+  }
+}
+
+function renderPredictionResult(payload) {
+  if (!payload || !payload.result) {
+    if (predictionResultEl) {
+      predictionResultEl.textContent = "예측 결과가 없습니다.";
+    }
+    return;
+  }
+
+  showOnlyStreamCards([predictionCard]);
+
+  const result = payload.result || {};
+  const recommendation = payload.recommendation || {};
+  const modelName = recommendation.recommended_model || "-";
+  const repLot = recommendation.representative_lot || "-";
+
+  predictionResultEl.innerHTML = "";
+
+  const kpiRow = document.createElement("div");
+  kpiRow.className = "kpi-row";
+  kpiRow.appendChild(createKpiCard("추천 기종", modelName, "accent"));
+  kpiRow.appendChild(createKpiCard("대표 LOT", repLot));
+  predictionResultEl.appendChild(kpiRow);
+
+  const grid = document.createElement("div");
+  grid.className = "metric-grid";
+  grid.innerHTML = `
+    <div class="metric">
+      <span>예측 용량</span>
+      <strong>${renderValue(result.predicted_capacity)}</strong>
+    </div>
+    <div class="metric">
+      <span>예측 DC용량</span>
+      <strong>${renderValue(result.predicted_dc_capacity)}</strong>
+    </div>
+    <div class="metric">
+      <span>신뢰성 통과확률</span>
+      <strong>${result.reliability_pass_prob ?? "-"}</strong>
+    </div>
+  `;
+  predictionResultEl.appendChild(grid);
 }
 
 function handleEvent(event) {
@@ -489,7 +629,7 @@ function handleEvent(event) {
 
   if (event.type === "lot_result" || event.type === "db_result") {
     renderLotResult(event.payload);
-    addEventLog("LOT", `행 수: ${event.payload.rows.length}`);
+    addEventLog("LOT", `조회 ${event.payload.rows.length}`);
     if (event.payload.lot_id) {
       setLotStatus(`${event.payload.lot_id} 조회 완료`);
     }
@@ -497,12 +637,20 @@ function handleEvent(event) {
 
   if (event.type === "simulation_form") {
     renderSimulationForm(event.payload);
+    addEventLog("추천", "입력 패널 업데이트");
   }
 
   if (event.type === "simulation_result") {
     renderSimResult(event.payload);
-    const yieldValue = event.payload?.result?.predicted_yield;
-    addEventLog("SIM", `수율: ${yieldValue ?? "-"}%`);
+    const modelName = event.payload?.result?.recommended_model || "결과 수신";
+    addEventLog("추천", `기종: ${modelName}`);
+  }
+
+  if (event.type === "prediction_result") {
+    renderPredictionResult(event.payload);
+    const prob = event.payload?.result?.reliability_pass_prob;
+    const detail = prob ? `통과확률: ${prob}` : "결과 수신";
+    addEventLog("예측", detail);
   }
 
   if (event.type === "workflow_log") {
@@ -513,17 +661,25 @@ function handleEvent(event) {
   }
 
   if (event.type === "frontend_trigger") {
-    const message = event.payload?.message || "프론트 트리거가 수신되었습니다.";
+    const message = event.payload?.message || "프론트 트리거가 도착했습니다.";
+    const payloadData = event.payload?.data;
+    const hasResultPayload =
+      payloadData &&
+      typeof payloadData === "object" &&
+      ("result" in payloadData || "rows" in payloadData);
     if (frontendTriggerEl) {
       frontendTriggerEl.textContent = message;
     }
-    showOnlyStreamCards([frontendCard]);
-    addEventLog("UI", message);
-    if (message.toLowerCase().includes("lot")) {
-      setLotStatus(message, true);
+    if (!hasResultPayload) {
+      showOnlyStreamCards([frontendCard]);
     }
-    if (message.includes("시뮬레이션")) {
-      setSimStatus(message, true);
+    addEventLog("UI", message);
+    const isWarning = /필요|부족|없습니다|실패/.test(message);
+    if (message.toLowerCase().includes("lot")) {
+      setLotStatus(message, isWarning);
+    }
+    if (message.includes("추천") || message.includes("시뮬레이션")) {
+      setSimStatus(message, isWarning);
     }
   }
 }
@@ -534,7 +690,7 @@ const socket = new WebSocket(wsUrl);
 
 socket.addEventListener("open", () => {
   statusDot.classList.add("live");
-  statusLabel.textContent = "실시간";
+  statusLabel.textContent = "연결 중";
   addMessage("system", "WebSocket 연결 완료. 이벤트 스트림이 활성화되었습니다.");
 });
 
@@ -572,14 +728,14 @@ async function sendChatMessage(message) {
     });
 
     if (!response.ok) {
-      addMessage("assistant", "서버 오류입니다. 잠시 후 다시 시도해주세요.");
+      addMessage("assistant", "서버 오류입니다. 잠시 후 다시 시도해 주세요.");
       return;
     }
 
     const data = await response.json();
     addMessage("assistant", data.assistant_message || "(응답 없음)");
   } catch (error) {
-    addMessage("assistant", "네트워크 오류입니다. 백엔드 서버를 확인해주세요.");
+    addMessage("assistant", "네트워크 오류입니다. 백엔드 상태를 확인해 주세요.");
   }
 }
 
@@ -644,7 +800,7 @@ function handleLotAction(action) {
   const allowLast = action === "simulate";
   const lotId = resolveLotId({ allowLast });
   if (!lotId) {
-    setLotStatus("LOT ID를 입력해주세요.", true);
+    setLotStatus("LOT ID를 입력해 주세요.", true);
     return;
   }
   setLotStatus(`${lotId} 요청 전송 중...`);
@@ -659,9 +815,9 @@ function handleLotAction(action) {
   if (action === "search") {
     sendChatMessage(`${lotId} 정보 보여줘.`);
   } else if (action === "simulate") {
-    sendChatMessage(`${lotId} 예측 시뮬레이션 해줘.`);
+    sendChatMessage(`${lotId} 추천 시뮬레이션 해줘.`);
   } else if (action === "search_sim") {
-    sendChatMessage(`${lotId} 정보 조회하고 시뮬레이션도 해줘.`);
+    sendChatMessage(`${lotId} 정보 조회하고 추천까지 진행해줘.`);
   }
 }
 
@@ -679,12 +835,12 @@ if (lotClearButton) {
     if (lotIdInput) {
       lotIdInput.value = "";
     }
-    setLotStatus("LOT ID를 입력하세요.");
+    setLotStatus("LOT ID를 입력해 주세요.");
   });
 }
 if (lotIdInput) {
   lotIdInput.addEventListener("input", () => {
-    setLotStatus("LOT ID를 입력하세요.");
+    setLotStatus("LOT ID를 입력해 주세요.");
   });
 }
 
@@ -696,6 +852,11 @@ if (simApplyButton) {
 if (simRunButton) {
   simRunButton.addEventListener("click", () => {
     sendSimulationParams({ run: true });
+  });
+}
+if (recommendationApplyButton) {
+  recommendationApplyButton.addEventListener("click", () => {
+    sendRecommendationParams();
   });
 }
 [
@@ -727,24 +888,27 @@ if (testButton) {
       });
 
       if (!response.ok) {
-        addMessage("assistant", "테스트 호출이 실패했습니다.");
+        addMessage("assistant", "테스트 호출에 실패했습니다.");
         return;
       }
 
-      addMessage("assistant", "테스트 트리거 전송 완료. 이벤트 패널을 확인하세요.");
+      addMessage("assistant", "테스트 호출 완료. 이벤트 패널을 확인해 주세요.");
     } catch (error) {
       addMessage("assistant", "테스트 요청 중 오류가 발생했습니다.");
     }
   });
 }
 
-setLotStatus("LOT ID를 입력하세요.");
-setSimStatus("시뮬레이션 입력 대기");
+setLotStatus("LOT ID를 입력해 주세요.");
+setSimStatus("추천 입력 대기");
+if (recommendationApplyButton) {
+  recommendationApplyButton.disabled = true;
+}
 updateEventEmpty();
 
 addMessage(
   "assistant",
-  "LOT 정보 조회 또는 LOT 기반 예측 시뮬레이션을 요청하세요. 요청을 올바른 에이전트로 라우팅합니다."
+  "LOT 조회 또는 인접기종 추천을 요청해 주세요. 추천 완료 후 예측 시뮬레이션도 이어서 진행할 수 있습니다."
 );
 
 async function loadWorkflowMeta() {
@@ -924,4 +1088,7 @@ loadWorkflowCatalog();
 
 if (loadWorkflowJsonButton) {
   loadWorkflowJsonButton.addEventListener("click", toggleWorkflowJson);
+}
+if (toggleLogButton) {
+  toggleLogButton.addEventListener("click", toggleEventLog);
 }

@@ -4,18 +4,18 @@ from agents import function_tool
 KNOWLEDGE_BASE = [
     {
         "id": "kb-process",
-        "title": "LOT 모니터링",
-        "content": "이 워크플로우는 LOT 정보 조회와 예측 시뮬레이션을 지원합니다.",
+        "title": "로트 모니터링",
+        "content": "워크플로우는 LOT 조회와 인접기종 추천/예측 시뮬레이션을 지원합니다.",
     },
     {
         "id": "kb-db",
         "title": "LOT 조회",
-        "content": "get_lot_info 도구는 LOT ID로 PostgreSQL에서 정보를 조회합니다.",
+        "content": "get_lot_info 도구는 LOT ID로 PostgreSQL/SQLite에서 정보를 조회합니다.",
     },
     {
         "id": "kb-sim",
-        "title": "시뮬레이션",
-        "content": "run_lot_simulation 도구는 LOT 정보를 시뮬레이션 입력으로 변환합니다.",
+        "title": "인접기종 추천",
+        "content": "run_lot_simulation 도구는 LOT 정보를 추천 입력으로 변환합니다.",
     },
 ]
 
@@ -38,7 +38,13 @@ from .db_connections import execute_table_query
 from .events import event_bus
 from .observability import emit_workflow_log
 from .lot_store import lot_store
-from .simulation import call_simulation_api, extract_simulation_params, simulation_store
+from .simulation import (
+    call_prediction_api,
+    call_simulation_api,
+    extract_simulation_params,
+    recommendation_store,
+    simulation_store,
+)
 
 
 def _parse_columns(value: str | None) -> list[str]:
@@ -140,7 +146,7 @@ def _query_lot_rows(lot_id: str, limit: int) -> dict:
 
 async def emit_lot_info(lot_id: str = "", limit: int = 12) -> dict:
     if not lot_id:
-        await emit_frontend_trigger("LOT ID가 필요합니다.")
+        await emit_frontend_trigger("LOT ID가 필요합니다. 예: LOT123")
         return {"error": "LOT ID가 필요합니다.", "rows": []}
     try:
         payload = _query_lot_rows(lot_id, limit)
@@ -162,9 +168,9 @@ async def emit_lot_info(lot_id: str = "", limit: int = 12) -> dict:
         )
     await event_bus.broadcast({"type": "lot_result", "payload": payload})
     if rows:
-        message = f"LOT {lot_id} 데이터를 우측 패널에 표시했습니다."
+        message = f"LOT {lot_id} 조회 결과를 표시했습니다."
     else:
-        message = f"LOT {lot_id} 결과가 없습니다."
+        message = f"LOT {lot_id}에 해당하는 데이터가 없습니다."
     await emit_frontend_trigger(message, payload)
     return payload
 
@@ -198,18 +204,31 @@ async def execute_simulation() -> dict:
     params = simulation_store.get(session_id)
     missing = simulation_store.missing(session_id)
     if missing:
-        return {"status": "missing", "missing": missing}
+        return {
+            "status": "missing",
+            "missing": missing,
+            "message": "추천 입력값이 부족합니다.",
+        }
 
     result = await call_simulation_api(params)
+    recommendation_store.set(
+        session_id, {"input_params": params, "awaiting_prediction": True, **result}
+    )
     await event_bus.broadcast(
         {
             "type": "simulation_result",
             "payload": {"params": params, "result": result},
         }
     )
-    await emit_frontend_trigger("시뮬레이션 결과가 우측 패널에 표시되었습니다.", {"params": params, "result": result})
-    return {"status": "ok", "result": result}
-
+    await emit_frontend_trigger(
+        "인접기종 추천 결과가 도착했습니다.",
+        {"params": params, "result": result},
+    )
+    return {
+        "status": "ok",
+        "result": result,
+        "message": "추천 실행을 완료했습니다.",
+    }
 
 async def emit_frontend_trigger(message: str, payload: dict | None = None) -> dict:
     event = {
@@ -304,6 +323,7 @@ async def update_simulation_params(
     result = collect_simulation_params(**parsed)
     await emit_simulation_form(result["params"], result["missing"])
     missing = result.get("missing", [])
+    result["message"] = "추천 입력값을 업데이트했습니다."
     await _log_tool_result(
         "update_simulation_params",
         f"missing={len(missing)} params={len(result.get('params', {}))}",
@@ -313,8 +333,8 @@ async def update_simulation_params(
 
 @function_tool
 async def run_simulation() -> dict:
-    """Open the simulation form, then run if params are complete."""
-    await _log_route("simulation", "run_simulation")
+    """Open the recommendation form, then run if params are complete."""
+    await _log_route("recommendation", "run_simulation")
     await _log_tool_call("run_simulation")
     session_id = current_session_id.get()
     params = simulation_store.get(session_id)
@@ -322,14 +342,78 @@ async def run_simulation() -> dict:
     await emit_simulation_form(params, missing)
     if missing:
         await _log_tool_result("run_simulation", f"status=missing missing={len(missing)}")
-        return {"status": "missing", "missing": missing, "params": params}
+        return {
+            "status": "missing",
+            "missing": missing,
+            "params": params,
+            "message": "추천 입력값이 부족합니다.",
+        }
     result = await execute_simulation()
     summary = f"status={result.get('status')}"
     inner = result.get("result") if isinstance(result, dict) else None
-    if isinstance(inner, dict) and inner.get("predicted_yield") is not None:
-        summary = f"{summary}, yield={inner.get('predicted_yield')}"
+    if isinstance(inner, dict) and inner.get("recommended_model"):
+        summary = f"{summary}, model={inner.get('recommended_model')}"
     await _log_tool_result("run_simulation", summary)
     return result
+
+
+@function_tool
+async def run_prediction_simulation() -> dict:
+    """Run prediction simulation based on the latest recommendation."""
+    await _log_route("prediction", "run_prediction_simulation")
+    await _log_tool_call("run_prediction_simulation")
+    session_id = current_session_id.get()
+    recommendation = recommendation_store.get(session_id)
+    params = recommendation.get("params") if isinstance(recommendation, dict) else None
+    if not params:
+        await emit_frontend_trigger("추천 결과가 없어 예측 시뮬레이션을 진행할 수 없습니다.")
+        await _log_tool_result(
+            "run_prediction_simulation",
+            "status=missing missing=recommendation",
+        )
+        return {
+            "status": "missing",
+            "missing": ["recommendation"],
+            "message": "추천 결과가 없습니다.",
+        }
+
+    missing_params = [
+        f"param{idx}"
+        for idx in range(1, 31)
+        if f"param{idx}" not in params
+    ]
+    if missing_params:
+        missing_text = ", ".join(missing_params[:5])
+        message = (
+            "예측 입력 파라미터가 부족합니다: "
+            f"{missing_text}"
+        )
+        await emit_frontend_trigger(message)
+        await _log_tool_result(
+            "run_prediction_simulation",
+            f"status=missing missing_params={len(missing_params)}",
+        )
+        return {
+            "status": "missing",
+            "missing": missing_params,
+            "message": message,
+            "recommendation": recommendation,
+        }
+
+    result = await call_prediction_api(params)
+    payload = {"recommendation": recommendation, "result": result}
+    await event_bus.broadcast({"type": "prediction_result", "payload": payload})
+    await emit_frontend_trigger(
+        "예측 시뮬레이션 결과가 도착했습니다.",
+        payload,
+    )
+    recommendation_store.mark_prediction_done(session_id)
+    await _log_tool_result("run_prediction_simulation", "status=ok")
+    return {
+        "status": "ok",
+        "message": "예측 실행을 완료했습니다.",
+        **payload,
+    }
 
 
 @function_tool
@@ -357,15 +441,24 @@ async def run_lot_simulation(lot_id: str = "") -> dict:
     if lot_id:
         lot_payload = await emit_lot_info(lot_id, limit=1)
         if lot_payload.get("error"):
-            await _log_tool_result("run_lot_simulation", f"status=error error={lot_payload.get('error')}")
+            await _log_tool_result(
+                "run_lot_simulation",
+                f"status=error error={lot_payload.get('error')}",
+            )
             return {"status": "error", "error": lot_payload.get("error")}
 
     stored = lot_store.get(session_id)
     row = stored.get("row") if stored else None
     if not row:
-        await emit_frontend_trigger("LOT 정보가 없습니다. 먼저 LOT를 조회해주세요.")
+        await emit_frontend_trigger(
+            "LOT 정보가 없어 추천을 진행할 수 없습니다. 먼저 LOT ID를 알려주세요."
+        )
         await _log_tool_result("run_lot_simulation", "status=missing missing=lot_id")
-        return {"status": "missing", "missing": ["lot_id"]}
+        return {
+            "status": "missing",
+            "missing": ["lot_id"],
+            "message": "LOT ID가 필요합니다.",
+        }
 
     params = _extract_simulation_params_from_lot(row)
     update_result = collect_simulation_params(**params)
@@ -378,9 +471,15 @@ async def run_lot_simulation(lot_id: str = "") -> dict:
         if missing:
             missing_text = ", ".join(missing)
             await emit_frontend_trigger(
-                f"시뮬레이션 입력이 부족합니다: {missing_text}"
+                f"추천 입력값이 부족합니다: {missing_text}"
             )
-        await _log_tool_result("run_lot_simulation", f"status=missing missing={len(missing)}")
+            payload["message"] = (
+                f"추천 입력값이 부족합니다: {missing_text}"
+            )
+        await _log_tool_result(
+            "run_lot_simulation",
+            f"status=missing missing={len(missing)}",
+        )
         return payload
     payload["result"] = result.get("result")
     payload["params"] = simulation_store.get(session_id)

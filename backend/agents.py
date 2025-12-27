@@ -8,6 +8,7 @@ from .tools import (
     open_simulation_form,
     run_lot_simulation,
     run_simulation,
+    run_prediction_simulation,
     update_simulation_params,
 )
 
@@ -23,21 +24,21 @@ def _build_agent(**kwargs: object) -> Agent:
 MODEL_KWARGS = {"model": MODEL_NAME} if MODEL_NAME else {}
 
 auto_message_agent = _build_agent(
-    name="패널 요약 에이전트",
+    name="\uc790\ub3d9 \uc694\uc57d \uc5d0\uc774\uc804\ud2b8",
     instructions=(
         "You compose short Korean assistant messages for UI-triggered events. "
         "Do not mention tools, routing, or system logs. "
         "Write 1-2 sentences. "
         "If missing_fields are provided, ask for those fields in one clear question. "
-        "If result is present, summarize key metrics like predicted_yield, risk_band, "
-        "and estimated_throughput, then suggest one optional next step."
+        "If result is present, summarize recommended_model, representative_lot, "
+        "and the count of params, then ask whether to run a prediction simulation."
     ),
     **MODEL_KWARGS,
 )
 
 
 db_agent = _build_agent(
-    name="DB 에이전트",
+    name="DB \uc5d0\uc774\uc804\ud2b8",
     instructions=(
         "You are an internal DB helper used by the orchestrator. "
         "Do not address the user directly. Always respond in Korean. "
@@ -46,22 +47,21 @@ db_agent = _build_agent(
         "get_process_data(query=original_message, limit=12). "
         "If required info is missing, do not ask the user; report missing fields. "
         "Do not invent LOT IDs or data. Prefer tool calls over direct answers. "
-        "Return exactly four lines: "
-        "status: <ok|missing|error>. "
-        "summary: <Korean 1 sentence>. "
-        "missing: <comma-separated fields or 'none'>. "
-        "next: <Korean follow-up question or 'none'>."
+        "Return a compact JSON object with keys: status, summary, missing, next. "
+        "status must be ok|missing|error. "
+        "missing should be a comma-separated string or 'none'. "
+        "next should be a short Korean follow-up question or 'none'."
     ),
     tools=[get_lot_info, get_process_data],
     **MODEL_KWARGS,
 )
 
 simulation_agent = _build_agent(
-    name="시뮬레이션 에이전트",
+    name="\uc2dc\ubbac\ub808\uc774\uc158 \uc5d0\uc774\uc804\ud2b8",
     instructions=(
-        "You are an internal simulation helper used by the orchestrator. "
+        "You are an internal recommendation helper used by the orchestrator. "
         "Do not address the user directly. Always respond in Korean. "
-        "When the user requests a simulation, call open_simulation_form first "
+        "When the user requests an adjacent model recommendation, call open_simulation_form first "
         "to open the UI panel (unless it is already open). "
         "If a LOT ID is provided, call run_lot_simulation(lot_id). "
         "Otherwise collect the five required params: temperature, voltage, "
@@ -70,18 +70,18 @@ simulation_agent = _build_agent(
         "values or with message=original_message to extract. "
         "Do not ask the user directly; report missing fields. "
         "Never ask for values that are already filled. "
-        "When all five params are available, call run_simulation. "
-        "Return exactly four lines: "
-        "status: <ok|missing|error>. "
-        "summary: <Korean 1 sentence>. "
-        "missing: <comma-separated fields or 'none'>. "
-        "next: <Korean follow-up question or 'none'>."
+        "When all five params are available, call run_simulation. If the user confirms a prediction simulation (including short affirmatives like 네/응/그래/ok/yes) and a recommendation exists, call run_prediction_simulation. "
+        "Return a compact JSON object with keys: status, summary, missing, next. "
+        "status must be ok|missing|error. "
+        "missing should be a comma-separated string or 'none'. "
+        "next should be a short Korean follow-up question or 'none'."
     ),
     tools=[
         open_simulation_form,
         update_simulation_params,
         run_simulation,
         run_lot_simulation,
+        run_prediction_simulation,
     ],
     **MODEL_KWARGS,
 )
@@ -94,23 +94,30 @@ db_agent_tool = db_agent.as_tool(
 
 simulation_agent_tool = simulation_agent.as_tool(
     tool_name="simulation_agent",
-    tool_description=("Simulation helper. Input: lot id or params. Output: 4 lines (status/summary/missing/next)."),
+    tool_description=("Adjacent model recommendation helper. Input: lot id or params. Output: 4 lines (status/summary/missing/next)."),
     hooks=WorkflowRunHooks(),
 )
 
 triage_agent = _build_agent(
-    name="오케스트레이터",
+    name="\uc624\ucf00\uc2a4\ud2b8\ub808\uc774\ud130",
     instructions=(
         "You are the conversation lead for a manufacturing monitoring demo. "
-        "Always respond in Korean. "
+        "Always respond in Korean with a warm, friendly tone. "
+        "For casual chat (greetings, thanks, small talk, unrelated topics), "
+        "reply naturally and briefly, and optionally offer help with LOT lookup or recommendation. "
         "Do not mention internal routing, tools, or intent labels. "
-        "Decide whether the user wants process/LOT data or a simulation. "
-        "If data lookup, call the db_agent tool with the user message. "
-        "If simulation/prediction, call the simulation_agent tool. "
+        "If the intent is unclear, ask one short clarifying question before calling tools. "
+        "When the user wants process or LOT data, gather the minimum required info with a concise, "
+        "professional question (for example LOT ID or key filters like line, status, date range, or conditions). "
+        "If you have enough info, call the db_agent tool with the user message. "
+        "When the user wants an adjacent model recommendation, call the simulation_agent tool with the user message "
+        "to open the UI and extract any params. "
         "If both are requested, call db_agent first, then simulation_agent. "
-        "After tool output, respond naturally in 1-3 sentences. Do not expose the tool report format; translate it into natural Korean. "
-        "If the tool reports missing fields, ask a single clear question for those fields. "
-        "If status is ok, summarize the result and suggest one optional next step. "
+        "After tool output, respond naturally in 1-3 sentences; translate the tool report into natural Korean. "
+        "If the tool reports missing fields, ask a single clear question only for those fields. "
+        "If the recommendation is complete, briefly summarize it and ask whether to run a prediction simulation. "
+        "If the user agrees to run the prediction simulation (including short affirmatives like 네/응/그래/ok/yes), "
+        "call the simulation_agent tool again with the confirmation so it can run the prediction step. "
         "Do not invent LOT IDs or parameters."
     ),
     tools=[db_agent_tool, simulation_agent_tool],
