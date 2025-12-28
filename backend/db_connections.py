@@ -206,6 +206,17 @@ def _validate_table_config(
     return columns
 
 
+def _get_table_columns(schema: dict, schema_name: str, table_name: str) -> list[str]:
+    schemas = schema.get("schemas") or {}
+    schema_entry = schemas.get(schema_name)
+    if not schema_entry:
+        raise ValueError("스키마를 찾을 수 없습니다.")
+    table_entry = schema_entry.get("tables", {}).get(table_name)
+    if not table_entry:
+        raise ValueError("테이블을 찾을 수 없습니다.")
+    return [col["name"] for col in table_entry.get("columns", [])]
+
+
 def _normalize_operator(value: str | None) -> str:
     operator = (value or "ilike").lower()
     allowed = {"=", ">", "<", ">=", "<=", "ilike", "like"}
@@ -253,6 +264,80 @@ def execute_table_query(
                     op=sql.SQL(operator),
                 )
                 params.append(filter_value)
+        if limit:
+            query += sql.SQL(" LIMIT %s")
+            params.append(limit)
+
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            columns = [desc.name for desc in cur.description]
+    finally:
+        conn.close()
+
+    return {"columns": columns, "rows": [dict(zip(columns, row)) for row in rows]}
+
+
+def execute_table_query_multi(
+    connection_id: str,
+    schema_name: str,
+    table_name: str,
+    columns: list[str],
+    filters: list[dict],
+    limit: int,
+) -> dict:
+    _ensure_psycopg()
+    connection = get_connection(connection_id)
+    if not connection:
+        raise ValueError("DB 연결을 찾을 수 없습니다.")
+    schema = connection.get("schema") or {}
+    valid_columns = _validate_table_config(schema, schema_name, table_name, columns)
+    available = set(_get_table_columns(schema, schema_name, table_name))
+
+    normalized_filters = []
+    for item in filters or []:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        value = item.get("value")
+        if not column or value is None or value == "":
+            continue
+        if column not in available:
+            raise ValueError("존재하지 않는 필터 컬럼이 포함되어 있습니다.")
+        operator = _normalize_operator(item.get("operator"))
+        normalized_filters.append({"column": column, "operator": operator, "value": value})
+
+    conn = _connect_postgres(connection)
+    try:
+        query = sql.SQL("SELECT {fields} FROM {schema}.{table}").format(
+            fields=sql.SQL(", ").join(sql.Identifier(col) for col in valid_columns),
+            schema=sql.Identifier(schema_name),
+            table=sql.Identifier(table_name),
+        )
+        params: list[Any] = []
+        if normalized_filters:
+            clauses = []
+            for item in normalized_filters:
+                column = item["column"]
+                operator = item["operator"]
+                value = item["value"]
+                if operator in {"ilike", "like"}:
+                    clauses.append(
+                        sql.SQL("{col} {op} %s").format(
+                            col=sql.Identifier(column),
+                            op=sql.SQL(operator.upper()),
+                        )
+                    )
+                    params.append(f"%{value}%")
+                else:
+                    clauses.append(
+                        sql.SQL("{col} {op} %s").format(
+                            col=sql.Identifier(column),
+                            op=sql.SQL(operator),
+                        )
+                    )
+                    params.append(value)
+            query += sql.SQL(" WHERE ") + sql.SQL(" AND ").join(clauses)
         if limit:
             query += sql.SQL(" LIMIT %s")
             params.append(limit)

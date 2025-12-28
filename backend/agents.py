@@ -2,6 +2,7 @@ from agents import Agent
 
 from .config import MODEL_NAME
 from .observability import WorkflowRunHooks
+from .db_view_profile import build_db_agent_prompt, load_view_profile, normalize_view_profile
 from .tools import (
     get_lot_info,
     get_process_data,
@@ -10,6 +11,7 @@ from .tools import (
     run_simulation,
     run_prediction_simulation,
     update_simulation_params,
+    query_view_table,
 )
 
 
@@ -42,17 +44,19 @@ db_agent = _build_agent(
     instructions=(
         "You are an internal DB helper used by the orchestrator. "
         "Do not address the user directly. Always respond in Korean. "
-        "If a LOT ID is present, call get_lot_info(lot_id, limit=12). "
-        "If no LOT ID but the user mentions line/status/conditions, call "
-        "get_process_data(query=original_message, limit=12). "
+        "Use query_view_table to query the configured view. "
+        "Map user requests to allowed filter columns only. "
+        "If a LOT ID is present, prefer that column. "
         "If required info is missing, do not ask the user; report missing fields. "
         "Do not invent LOT IDs or data. Prefer tool calls over direct answers. "
         "Return a compact JSON object with keys: status, summary, missing, next. "
         "status must be ok|missing|error. "
         "missing should be a comma-separated string or 'none'. "
         "next should be a short Korean follow-up question or 'none'."
+        "\n\n"
+        + build_db_agent_prompt(normalize_view_profile(load_view_profile()))
     ),
-    tools=[get_lot_info, get_process_data],
+    tools=[query_view_table, get_lot_info, get_process_data],
     **MODEL_KWARGS,
 )
 

@@ -34,10 +34,15 @@ from .config import (
     LOT_PARAM_VOLTAGE_COLUMN,
 )
 from .db import query_process_data
-from .db_connections import execute_table_query
+from .db_connections import execute_table_query, execute_table_query_multi
 from .events import event_bus
 from .observability import emit_workflow_log
 from .lot_store import lot_store
+from .db_view_profile import (
+    get_filter_column_names,
+    load_view_profile,
+    normalize_view_profile,
+)
 from .simulation import (
     call_prediction_api,
     call_simulation_api,
@@ -69,6 +74,22 @@ def _format_tool_args(**kwargs: object) -> str:
             continue
         parts.append(f"{key}={_format_tool_value(value)}")
     return ", ".join(parts) if parts else "no_args"
+
+
+def _get_view_profile() -> dict:
+    profile = load_view_profile()
+    return normalize_view_profile(profile) if isinstance(profile, dict) else {}
+
+
+def _format_filters(filters: list[dict]) -> str:
+    parts = []
+    for item in filters:
+        column = item.get("column")
+        operator = item.get("operator")
+        value = item.get("value")
+        if column and value is not None:
+            parts.append(f"{column}{operator}{value}")
+    return ", ".join(parts) if parts else "no_filters"
 
 
 async def _log_route(route: str, detail: str) -> None:
@@ -287,6 +308,96 @@ async def get_process_data(query: str = "", limit: int = 12) -> dict:
     rows = result.get("rows", []) if isinstance(result, dict) else []
     await _log_tool_result("get_process_data", f"rows={len(rows)}")
     return result
+
+
+@function_tool(strict_mode=False)
+async def query_view_table(
+    filters: list[dict] | None = None,
+    limit: int | None = None,
+) -> dict:
+    """Query the configured DB view using allowed filter columns."""
+    await _log_route("db_view", "query_view_table")
+    await _log_tool_call(
+        "query_view_table",
+        filters=_format_filters(filters or []),
+        limit=limit,
+    )
+    profile = _get_view_profile()
+    connection_id = profile.get("connection_id")
+    schema_name = profile.get("schema")
+    table_name = profile.get("table")
+    allowed = set(get_filter_column_names(profile))
+    if not connection_id or not table_name:
+        message = "DB view profile is not configured."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_table", "status=error missing=profile")
+        return {"status": "error", "error": message, "missing": ["profile"]}
+    if not allowed:
+        message = "No allowed filter columns are configured."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_table", "status=error missing=filters")
+        return {"status": "error", "error": message, "missing": ["filters"]}
+    if not filters:
+        message = f"Provide filters using: {', '.join(sorted(allowed))}"
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_table", "status=missing missing=filters")
+        return {"status": "missing", "missing": sorted(allowed), "message": message}
+
+    normalized_filters: list[dict] = []
+    invalid = []
+    for item in filters or []:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        value = item.get("value")
+        if not column or value is None or value == "":
+            continue
+        if column not in allowed:
+            invalid.append(column)
+            continue
+        operator = item.get("operator") or "ilike"
+        normalized_filters.append(
+            {"column": column, "operator": operator, "value": value}
+        )
+
+    if invalid:
+        message = (
+            "Invalid filter columns: "
+            f"{', '.join(sorted(set(invalid)))}. "
+            f"Allowed: {', '.join(sorted(allowed))}"
+        )
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_table", "status=error invalid=filters")
+        return {"status": "error", "error": message, "invalid": sorted(set(invalid))}
+    if not normalized_filters:
+        message = f"Provide at least one valid filter from: {', '.join(sorted(allowed))}"
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_table", "status=missing missing=filters")
+        return {"status": "missing", "missing": sorted(allowed), "message": message}
+
+    row_limit = limit if isinstance(limit, int) and limit > 0 else profile.get("limit", 5)
+    row_limit = max(1, min(int(row_limit), 50))
+    result = execute_table_query_multi(
+        connection_id=connection_id,
+        schema_name=schema_name or "public",
+        table_name=table_name,
+        columns=[],
+        filters=normalized_filters,
+        limit=row_limit,
+    )
+    payload = {
+        "query": _format_filters(normalized_filters),
+        "columns": result.get("columns", []),
+        "rows": result.get("rows", []),
+        "source": "postgresql",
+        "limit": row_limit,
+    }
+    await event_bus.broadcast({"type": "db_result", "payload": payload})
+    await _log_tool_result(
+        "query_view_table",
+        f"rows={len(payload.get('rows', []))} limit={row_limit}",
+    )
+    return {"status": "ok", **payload}
 
 
 @function_tool

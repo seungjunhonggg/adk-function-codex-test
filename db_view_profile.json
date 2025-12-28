@@ -1,0 +1,18 @@
+{
+  "connection_id": "db-demo",
+  "schema": "public",
+  "table": "process_view",
+  "limit": 5,
+  "filter_columns": [
+    { "name": "lot_id", "description": "lot identifier" },
+    { "name": "line_id", "description": "production line id" },
+    { "name": "status", "description": "lot status" },
+    { "name": "product_code", "description": "product or model code" },
+    { "name": "recipe_id", "description": "recipe or process id" },
+    { "name": "equipment_id", "description": "equipment identifier" },
+    { "name": "operator", "description": "operator or shift" },
+    { "name": "event_time", "description": "event timestamp" },
+    { "name": "start_time", "description": "process start time" },
+    { "name": "end_time", "description": "process end time" }
+  ]
+}
