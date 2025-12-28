@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,9 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     psycopg = None
     sql = None
+
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -70,6 +74,34 @@ def get_schema(connection_id: str) -> dict | None:
     if not connection:
         return None
     return connection.get("schema") or {}
+
+
+def preload_schema(connection_id: str, force: bool = False) -> dict | None:
+    if not connection_id:
+        return None
+    connection = get_connection(connection_id)
+    if not connection:
+        return None
+    if not force and connection.get("schema"):
+        return connection.get("schema") or {}
+    conn = _connect_postgres(connection)
+    try:
+        schema = _introspect_postgres(conn)
+    finally:
+        conn.close()
+
+    payload = _load_connections()
+    connections = payload.get("connections", [])
+    for idx, item in enumerate(connections):
+        if item.get("id") == connection_id:
+            updated = dict(item)
+            updated["schema"] = schema
+            updated["updated_at"] = _now_iso()
+            connections[idx] = updated
+            break
+    payload["connections"] = connections
+    _save_connections(payload)
+    return schema
 
 
 def _ensure_psycopg() -> None:

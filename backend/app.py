@@ -8,9 +8,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .agents import auto_message_agent, triage_agent
-from .config import OPENAI_API_KEY, SESSION_DB_PATH
+from .config import LOT_DB_CONNECTION_ID, OPENAI_API_KEY, SESSION_DB_PATH
 from .context import current_session_id
-from .db_connections import connect_and_save, get_schema, list_connections
+from .db_connections import connect_and_save, get_schema, list_connections, preload_schema
 from .db import init_db
 from .events import event_bus
 from .observability import WorkflowRunHooks
@@ -96,6 +96,11 @@ async def startup() -> None:
     init_db()
     ensure_workflow()
     ensure_workflow_store()
+    if LOT_DB_CONNECTION_ID:
+        try:
+            preload_schema(LOT_DB_CONNECTION_ID, force=True)
+        except Exception:
+            pass
 
 
 @app.get("/")
