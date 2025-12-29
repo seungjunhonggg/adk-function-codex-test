@@ -201,7 +201,7 @@ async def emit_process_data(query: str = "", limit: int = 12) -> dict:
 
 
 def collect_simulation_params(
-    temperature: float | None = None,
+    temperature: str | None = None,
     voltage: float | None = None,
     size: float | None = None,
     capacity: float | None = None,
@@ -488,25 +488,19 @@ async def run_prediction_simulation() -> dict:
             "message": "추천 결과가 없습니다.",
         }
 
-    missing_params = [
-        f"param{idx}"
-        for idx in range(1, 31)
-        if f"param{idx}" not in params
+    param_keys = [
+        key for key in params.keys() if isinstance(key, str) and key.startswith("param")
     ]
-    if missing_params:
-        missing_text = ", ".join(missing_params[:5])
-        message = (
-            "예측 입력 파라미터가 부족합니다: "
-            f"{missing_text}"
-        )
+    if not param_keys:
+        message = "예측 입력 파라미터가 부족합니다."
         await emit_frontend_trigger(message)
         await _log_tool_result(
             "run_prediction_simulation",
-            f"status=missing missing_params={len(missing_params)}",
+            "status=missing missing_params=0",
         )
         return {
             "status": "missing",
-            "missing": missing_params,
+            "missing": [],
             "message": message,
             "recommendation": recommendation,
         }

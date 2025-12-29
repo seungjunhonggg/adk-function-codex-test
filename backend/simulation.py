@@ -28,6 +28,13 @@ class SimulationStore:
                 if mode is not None:
                     record[key] = mode
                 continue
+            if key == "temperature":
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    record[key] = text
+                continue
             coerced = _to_float(value)
             if coerced is not None:
                 record[key] = coerced
@@ -69,10 +76,10 @@ async def call_simulation_api(params: Dict[str, float | str]) -> Dict[str, float
 
 
 def _simulate_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:
-    temperature = float(params["temperature"])
-    voltage = float(params["voltage"])
-    size = float(params["size"])
-    capacity = float(params["capacity"])
+    temperature = _parse_numeric(params["temperature"], "temperature")
+    voltage = _parse_numeric(params["voltage"], "voltage")
+    size = _parse_numeric(params["size"], "size")
+    capacity = _parse_numeric(params["capacity"], "capacity")
     production_mode = str(params.get("production_mode") or "").lower()
 
     mode_tag = "M" if production_mode in {"mass", "production"} else "D"
@@ -131,7 +138,8 @@ def extract_simulation_params(message: str) -> dict:
     for key, pattern in patterns.items():
         match = re.search(pattern, message, re.IGNORECASE)
         if match:
-            params[key] = float(match.group(1))
+            value = match.group(1)
+            params[key] = value if key == "temperature" else float(value)
 
     lowered = message.lower()
     if re.search(r"(양산|생산|mass|production|prod)", lowered):
@@ -146,7 +154,7 @@ def extract_simulation_params(message: str) -> dict:
         if len(numbers) >= 4 and numeric_count == 0:
             params.update(
                 {
-                    "temperature": float(numbers[0]),
+                    "temperature": numbers[0],
                     "voltage": float(numbers[1]),
                     "size": float(numbers[2]),
                     "capacity": float(numbers[3]),
@@ -161,6 +169,16 @@ def _to_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_numeric(value: object, label: str) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value)
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not match:
+        raise ValueError(f"{label} must include a numeric value.")
+    return float(match.group(0))
 
 
 def _normalize_production_mode(value: object) -> str | None:
