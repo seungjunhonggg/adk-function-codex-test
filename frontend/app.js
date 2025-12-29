@@ -585,8 +585,8 @@ function renderSimResult(payload) {
       const label = document.createElement("span");
       label.textContent = key;
       const input = document.createElement("input");
-      input.type = "number";
-      input.step = "0.001";
+      input.type = "text";
+      input.inputMode = "numeric";
       input.value = value ?? "";
       input.dataset.param = key;
       input.addEventListener("input", () => {
