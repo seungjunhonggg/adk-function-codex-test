@@ -2,13 +2,14 @@
 from pathlib import Path
 
 from agents import Runner, SQLiteSession
+from agents.tracing import set_tracing_disabled
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .agents import auto_message_agent, triage_agent
-from .config import LOT_DB_CONNECTION_ID, OPENAI_API_KEY, SESSION_DB_PATH
+from .config import LOT_DB_CONNECTION_ID, OPENAI_API_KEY, SESSION_DB_PATH, TRACING_ENABLED
 from .context import current_session_id
 from .db_connections import connect_and_save, get_schema, list_connections, preload_schema
 from .db import init_db
@@ -75,7 +76,7 @@ class DBConnectRequest(BaseModel):
 
 class SimulationParamsRequest(BaseModel):
     session_id: str
-    temperature: float | None = None
+    temperature: str | None = None
     voltage: float | None = None
     size: float | None = None
     capacity: float | None = None
@@ -96,6 +97,7 @@ async def startup() -> None:
     init_db()
     ensure_workflow()
     ensure_workflow_store()
+    set_tracing_disabled(not TRACING_ENABLED)
     if LOT_DB_CONNECTION_ID:
         try:
             preload_schema(LOT_DB_CONNECTION_ID, force=True)
