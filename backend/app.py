@@ -76,7 +76,7 @@ class DBConnectRequest(BaseModel):
 
 class SimulationParamsRequest(BaseModel):
     session_id: str
-    temperature: float | None = None
+    temperature: str | None = None
     voltage: float | None = None
     size: float | None = None
     capacity: float | None = None
