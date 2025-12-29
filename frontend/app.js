@@ -323,11 +323,20 @@ function collectSimFormParams() {
   const size = simSizeInput?.value.trim();
   const capacity = simCapacityInput?.value.trim();
   const productionMode = simProductionSelect?.value || "";
+
+  const parseNumber = (value) => {
+    if (!value) {
+      return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+
   return {
-    temperature: temperature ? Number(temperature) : null,
-    voltage: voltage ? Number(voltage) : null,
-    size: size ? Number(size) : null,
-    capacity: capacity ? Number(capacity) : null,
+    temperature: temperature || null,
+    voltage: parseNumber(voltage),
+    size: parseNumber(size),
+    capacity: parseNumber(capacity),
     production_mode: productionMode || null,
   };
 }
