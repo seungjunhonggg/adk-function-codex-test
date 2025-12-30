@@ -836,6 +836,11 @@ body::before {
   font-weight: 600;
 }
 
+.param-item input.is-empty {
+  background: rgba(251, 191, 191, 0.18);
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

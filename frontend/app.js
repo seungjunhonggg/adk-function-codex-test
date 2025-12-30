@@ -527,6 +527,25 @@ function renderSimResult(payload) {
 
   const params = payload.params || {};
   const result = payload.result || {};
+  const targetKeys = [
+    "dc_time",
+    "dc_freq",
+    "bias_volt",
+    "long_term_halt_volt",
+    "long_term_halt_tmpt",
+  ];
+  const resultParams =
+    result.params && typeof result.params === "object" ? result.params : null;
+  const targetEntries = resultParams
+    ? targetKeys
+        .filter((key) => Object.prototype.hasOwnProperty.call(resultParams, key))
+        .map((key) => [key, resultParams[key]])
+    : [];
+  const paramEntries = resultParams
+    ? Object.entries(resultParams).filter(
+        ([key]) => !targetKeys.includes(key)
+      )
+    : [];
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
   if (result.recommended_model) {
@@ -537,7 +556,7 @@ function renderSimResult(payload) {
   if (result.representative_lot) {
     kpiRow.appendChild(createKpiCard("대표 LOT", result.representative_lot));
   }
-  const paramCount = result.params ? Object.keys(result.params).length : 0;
+  const paramCount = paramEntries.length;
   if (paramCount) {
     kpiRow.appendChild(createKpiCard("파라미터", `${paramCount}개`, "ghost"));
   }
@@ -571,15 +590,15 @@ function renderSimResult(payload) {
   `;
   simResultEl.appendChild(inputSummary);
 
-  if (result.params && typeof result.params === "object") {
+  if (targetEntries.length) {
     const sectionLabel = document.createElement("div");
     sectionLabel.className = "section-label";
-    sectionLabel.textContent = "추천 파라미터";
+    sectionLabel.textContent = "타겟 값";
     simResultEl.appendChild(sectionLabel);
 
-    const paramGrid = document.createElement("div");
-    paramGrid.className = "param-grid";
-    Object.entries(result.params).forEach(([key, value]) => {
+    const targetGrid = document.createElement("div");
+    targetGrid.className = "param-grid";
+    targetEntries.forEach(([key, value]) => {
       const item = document.createElement("div");
       item.className = "param-item";
       const label = document.createElement("span");
@@ -589,9 +608,46 @@ function renderSimResult(payload) {
       input.inputMode = "numeric";
       input.value = value ?? "";
       input.dataset.param = key;
+      if (input.value === "") {
+        input.classList.add("is-empty");
+      }
       input.addEventListener("input", () => {
         recommendationDirty = true;
         setRecommendationStatus("파라미터 수정됨. 반영 버튼을 눌러주세요.");
+        input.classList.toggle("is-empty", input.value.trim() === "");
+      });
+      item.appendChild(label);
+      item.appendChild(input);
+      targetGrid.appendChild(item);
+    });
+    simResultEl.appendChild(targetGrid);
+  }
+
+  if (paramEntries.length) {
+    const sectionLabel = document.createElement("div");
+    sectionLabel.className = "section-label";
+    sectionLabel.textContent = "추천 파라미터";
+    simResultEl.appendChild(sectionLabel);
+
+    const paramGrid = document.createElement("div");
+    paramGrid.className = "param-grid";
+    paramEntries.forEach(([key, value]) => {
+      const item = document.createElement("div");
+      item.className = "param-item";
+      const label = document.createElement("span");
+      label.textContent = key;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.inputMode = "numeric";
+      input.value = value ?? "";
+      input.dataset.param = key;
+      if (input.value === "") {
+        input.classList.add("is-empty");
+      }
+      input.addEventListener("input", () => {
+        recommendationDirty = true;
+        setRecommendationStatus("파라미터 수정됨. 반영 버튼을 눌러주세요.");
+        input.classList.toggle("is-empty", input.value.trim() === "");
       });
       item.appendChild(label);
       item.appendChild(input);
