@@ -40,7 +40,27 @@ const simFormStatus = document.getElementById("sim-form-status");
 const recommendationApplyButton = document.getElementById("recommend-apply");
 const recommendationStatusEl = document.getElementById("recommend-status");
 
-const sessionId = crypto.randomUUID();
+function generateSessionId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return Array.from(bytes, (value, index) => {
+      const hex = value.toString(16).padStart(2, "0");
+      if (index === 4 || index === 6 || index === 8 || index === 10) {
+        return `-${hex}`;
+      }
+      return hex;
+    }).join("");
+  }
+  return `fallback-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+const sessionId = generateSessionId();
 sessionEl.textContent = sessionId.slice(0, 8);
 let lastLotId = "";
 let isComposing = false;
@@ -303,11 +323,20 @@ function collectSimFormParams() {
   const size = simSizeInput?.value.trim();
   const capacity = simCapacityInput?.value.trim();
   const productionMode = simProductionSelect?.value || "";
+
+  const parseNumber = (value) => {
+    if (!value) {
+      return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+
   return {
-    temperature: temperature ? Number(temperature) : null,
-    voltage: voltage ? Number(voltage) : null,
-    size: size ? Number(size) : null,
-    capacity: capacity ? Number(capacity) : null,
+    temperature: temperature || null,
+    voltage: parseNumber(voltage),
+    size: parseNumber(size),
+    capacity: parseNumber(capacity),
     production_mode: productionMode || null,
   };
 }
@@ -498,6 +527,25 @@ function renderSimResult(payload) {
 
   const params = payload.params || {};
   const result = payload.result || {};
+  const targetKeys = [
+    "dc_time",
+    "dc_freq",
+    "bias_volt",
+    "long_term_halt_volt",
+    "long_term_halt_tmpt",
+  ];
+  const resultParams =
+    result.params && typeof result.params === "object" ? result.params : null;
+  const targetEntries = resultParams
+    ? targetKeys
+        .filter((key) => Object.prototype.hasOwnProperty.call(resultParams, key))
+        .map((key) => [key, resultParams[key]])
+    : [];
+  const paramEntries = resultParams
+    ? Object.entries(resultParams).filter(
+        ([key]) => !targetKeys.includes(key)
+      )
+    : [];
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
   if (result.recommended_model) {
@@ -508,7 +556,7 @@ function renderSimResult(payload) {
   if (result.representative_lot) {
     kpiRow.appendChild(createKpiCard("대표 LOT", result.representative_lot));
   }
-  const paramCount = result.params ? Object.keys(result.params).length : 0;
+  const paramCount = paramEntries.length;
   if (paramCount) {
     kpiRow.appendChild(createKpiCard("파라미터", `${paramCount}개`, "ghost"));
   }
@@ -542,7 +590,40 @@ function renderSimResult(payload) {
   `;
   simResultEl.appendChild(inputSummary);
 
-  if (result.params && typeof result.params === "object") {
+  if (targetEntries.length) {
+    const sectionLabel = document.createElement("div");
+    sectionLabel.className = "section-label";
+    sectionLabel.textContent = "타겟 값";
+    simResultEl.appendChild(sectionLabel);
+
+    const targetGrid = document.createElement("div");
+    targetGrid.className = "param-grid";
+    targetEntries.forEach(([key, value]) => {
+      const item = document.createElement("div");
+      item.className = "param-item";
+      const label = document.createElement("span");
+      label.textContent = key;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.inputMode = "numeric";
+      input.value = value ?? "";
+      input.dataset.param = key;
+      if (input.value === "") {
+        input.classList.add("is-empty");
+      }
+      input.addEventListener("input", () => {
+        recommendationDirty = true;
+        setRecommendationStatus("파라미터 수정됨. 반영 버튼을 눌러주세요.");
+        input.classList.toggle("is-empty", input.value.trim() === "");
+      });
+      item.appendChild(label);
+      item.appendChild(input);
+      targetGrid.appendChild(item);
+    });
+    simResultEl.appendChild(targetGrid);
+  }
+
+  if (paramEntries.length) {
     const sectionLabel = document.createElement("div");
     sectionLabel.className = "section-label";
     sectionLabel.textContent = "추천 파라미터";
@@ -550,19 +631,23 @@ function renderSimResult(payload) {
 
     const paramGrid = document.createElement("div");
     paramGrid.className = "param-grid";
-    Object.entries(result.params).forEach(([key, value]) => {
+    paramEntries.forEach(([key, value]) => {
       const item = document.createElement("div");
       item.className = "param-item";
       const label = document.createElement("span");
       label.textContent = key;
       const input = document.createElement("input");
-      input.type = "number";
-      input.step = "0.001";
+      input.type = "text";
+      input.inputMode = "numeric";
       input.value = value ?? "";
       input.dataset.param = key;
+      if (input.value === "") {
+        input.classList.add("is-empty");
+      }
       input.addEventListener("input", () => {
         recommendationDirty = true;
         setRecommendationStatus("파라미터 수정됨. 반영 버튼을 눌러주세요.");
+        input.classList.toggle("is-empty", input.value.trim() === "");
       });
       item.appendChild(label);
       item.appendChild(input);
@@ -570,6 +655,68 @@ function renderSimResult(payload) {
     });
     simResultEl.appendChild(paramGrid);
   }
+
+  const table = buildResultTable(result);
+  if (table) {
+    const sectionLabel = document.createElement("div");
+    sectionLabel.className = "section-label";
+    sectionLabel.textContent = "추천 결과 상세";
+    simResultEl.appendChild(sectionLabel);
+    simResultEl.appendChild(table);
+  }
+}
+
+function buildResultTable(result) {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const rows = Array.isArray(result.rows) ? result.rows : null;
+  if (!rows || rows.length === 0) {
+    return null;
+  }
+  let columns = Array.isArray(result.columns) ? result.columns : [];
+  const firstRow = rows[0];
+  if (!columns.length) {
+    if (firstRow && typeof firstRow === "object" && !Array.isArray(firstRow)) {
+      columns = Object.keys(firstRow);
+    } else if (Array.isArray(firstRow)) {
+      columns = firstRow.map((_, index) => `col${index + 1}`);
+    }
+  }
+  if (!columns.length) {
+    return null;
+  }
+
+  const table = document.createElement("table");
+  table.className = "result-table";
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  columns.forEach((column) => {
+    const th = document.createElement("th");
+    th.textContent = column;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    columns.forEach((column, index) => {
+      const td = document.createElement("td");
+      let value = "-";
+      if (Array.isArray(row)) {
+        value = row[index];
+      } else if (row && typeof row === "object") {
+        value = row[column];
+      }
+      td.textContent = renderValue(value);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  return table;
 }
 
 function renderPredictionResult(payload) {

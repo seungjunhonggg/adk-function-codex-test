@@ -817,6 +817,30 @@ body::before {
   margin-top: 0;
 }
 
+.result-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  font-size: 0.9rem;
+}
+
+.result-table th,
+.result-table td {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.result-table thead th {
+  background: rgba(15, 23, 42, 0.04);
+  font-weight: 600;
+}
+
+.param-item input.is-empty {
+  background: rgba(251, 191, 191, 0.18);
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
