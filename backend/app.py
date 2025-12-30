@@ -119,42 +119,42 @@ async def builder() -> FileResponse:
 async def chat(request: ChatRequest) -> dict:
     session = SQLiteSession(request.session_id, SESSION_DB_PATH)
     token = current_session_id.set(request.session_id)
-    try:
-        workflow = load_workflow()
-        workflow_run = await execute_workflow(
-            workflow,
-            request.message,
-            request.session_id,
-            session,
-            allow_llm=bool(OPENAI_API_KEY),
-        )
-        if workflow_run is not None:
-            await _maybe_update_simulation_from_message(
-                request.message, request.session_id
-            )
-            return {"assistant_message": workflow_run.assistant_message}
+    # try:
+    #     workflow = load_workflow()
+    #     workflow_run = await execute_workflow(
+    #         workflow,
+    #         request.message,
+    #         request.session_id,
+    #         session,
+    #         allow_llm=bool(OPENAI_API_KEY),
+    #     )
+    #     if workflow_run is not None:
+    #         await _maybe_update_simulation_from_message(
+    #             request.message, request.session_id
+    #         )
+    #         return {"assistant_message": workflow_run.assistant_message}
 
-        if not OPENAI_API_KEY:
-            await _maybe_update_simulation_from_message(
-                request.message, request.session_id
-            )
-            return {
-                "assistant_message": (
-                    "OPENAI_API_KEY가 설정되지 않았습니다. "
-                    "환경 변수로 설정한 뒤 재시작해주세요."
-                )
-            }
+    #     if not OPENAI_API_KEY:
+    #         await _maybe_update_simulation_from_message(
+    #             request.message, request.session_id
+    #         )
+    #         return {
+    #             "assistant_message": (
+    #                 "OPENAI_API_KEY가 설정되지 않았습니다. "
+    #                 "환경 변수로 설정한 뒤 재시작해주세요."
+    #             )
+    #         }
 
-        result = await Runner.run(
-            triage_agent,
-            input=request.message,
-            session=session,
-            hooks=WorkflowRunHooks(),
-        )
-        await _maybe_update_simulation_from_message(request.message, request.session_id)
-        return {"assistant_message": result.final_output}
-    finally:
-        current_session_id.reset(token)
+    result = await Runner.run(
+        triage_agent,
+        input=request.message,
+        session=session,
+        hooks=WorkflowRunHooks(),
+    )
+    await _maybe_update_simulation_from_message(request.message, request.session_id)
+    return {"assistant_message": result.final_output}
+# finally:
+    current_session_id.reset(token)
 
 
 async def _maybe_update_simulation_from_message(message: str, session_id: str) -> None:
@@ -535,7 +535,8 @@ async def get_db_schema(connection_id: str) -> dict:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    await event_bus.connect(websocket)
+    session_id = websocket.query_params.get("session_id")
+    await event_bus.connect(websocket, session_id=session_id)
     try:
         while True:
             await websocket.receive_text()

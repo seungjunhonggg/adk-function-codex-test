@@ -10,6 +10,11 @@ from .tools import (
     run_lot_simulation,
     run_simulation,
     run_prediction_simulation,
+    filter_lots_by_defect_rate,
+    run_design_grid_search,
+    get_design_candidates,
+    get_defect_rate_stats,
+    reset_test_simulation,
     update_simulation_params,
     query_view_table,
 )
@@ -90,6 +95,39 @@ simulation_agent = _build_agent(
     **MODEL_KWARGS,
 )
 
+test_simulation_agent = _build_agent(
+    name="\ud14c\uc2a4\ud2b8 \uc2dc\ubbac\ub808\uc774\uc158 \uc5d0\uc774\uc804\ud2b8",
+    instructions=(
+        "You are an internal optimization helper used by the orchestrator. "
+        "Do not address the user directly. Always respond in Korean. "
+        "Follow the same input collection flow as the simulation agent: "
+        "open_simulation_form \u2192 update_simulation_params \u2192 run_simulation (or run_lot_simulation if a LOT ID is provided). "
+        "After run_simulation succeeds, call filter_lots_by_defect_rate to filter LOTs by defect rate. "
+        "Then call run_design_grid_search to generate 100 design candidates and show the top 10. "
+        "If the user asks for other candidates (e.g. \ub2e4\ub978 10\uac1c/\ub098\uba38\uc9c0 90\uac1c), call get_design_candidates with offset/limit or rank. "
+        "If the user asks about defect-rate stats, call get_defect_rate_stats. "
+        "If the user wants to rerun with new conditions, call reset_test_simulation and then rerun the needed steps. "
+        "Do not ask the user directly; report missing fields. "
+        "Never ask for values that are already filled. "
+        "Return a compact JSON object with keys: status, summary, missing, next. "
+        "status must be ok|missing|error. "
+        "missing should be a comma-separated string or 'none'. "
+        "next should be a short Korean follow-up question or 'none'."
+    ),
+    tools=[
+        open_simulation_form,
+        update_simulation_params,
+        run_simulation,
+        # run_lot_simulation,
+        filter_lots_by_defect_rate,
+        run_design_grid_search,
+        get_design_candidates,
+        get_defect_rate_stats,
+        reset_test_simulation,
+    ],
+    **MODEL_KWARGS,
+)
+
 db_agent_tool = db_agent.as_tool(
     tool_name="db_agent",
     tool_description=("Process/LOT lookup helper. Input: lot id or line/status query. Output: 4 lines (status/summary/missing/next)."),
@@ -99,6 +137,12 @@ db_agent_tool = db_agent.as_tool(
 simulation_agent_tool = simulation_agent.as_tool(
     tool_name="simulation_agent",
     tool_description=("Adjacent model recommendation helper. Input: lot id or params. Output: 4 lines (status/summary/missing/next)."),
+    hooks=WorkflowRunHooks(),
+)
+
+test_simulation_agent_tool = test_simulation_agent.as_tool(
+    tool_name="test_simulation_agent",
+    tool_description=("Optimization helper with defect-rate filtering and grid search. Input: lot id or params. Output: 4 lines (status/summary/missing/next)."),
     hooks=WorkflowRunHooks(),
 )
 

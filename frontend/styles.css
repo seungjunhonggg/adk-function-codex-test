@@ -817,6 +817,49 @@ body::before {
   margin-top: 0;
 }
 
+.defect-chart {
+  display: grid;
+  gap: 8px;
+}
+
+.defect-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 60px;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.defect-row .defect-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+.defect-bar {
+  height: 8px;
+  background: rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.defect-bar-fill {
+  height: 100%;
+  background: var(--accent-2);
+}
+
+.defect-value {
+  font-size: 11px;
+  text-align: right;
+  color: var(--text-soft);
+}
+
+.candidate-meta {
+  font-size: 11px;
+  color: var(--text-soft);
+  margin-bottom: 8px;
+}
+
 .result-table {
   width: 100%;
   border-collapse: collapse;

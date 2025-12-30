@@ -286,6 +286,7 @@ const NODE_FIELDS = {
         { value: "orchestrator", label: "Orchestrator" },
         { value: "db_agent", label: "DB Agent" },
         { value: "simulation_agent", label: "Simulation Agent" },
+        { value: "test_simulation_agent", label: "Test Simulation Agent" },
       ],
     },
     {

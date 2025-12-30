@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from agents import Agent, Runner, function_tool
 
-from .agents import db_agent, simulation_agent, triage_agent
+from .agents import db_agent, simulation_agent, test_simulation_agent, triage_agent
 from .config import MODEL_NAME, WORKFLOW_PATH, WORKFLOW_STORE_PATH
 from .context import current_session_id
 from .db_connections import execute_table_query
@@ -55,7 +55,13 @@ LEGACY_TOOLSET_MAP = {
     "api_function": "simulation",
     "frontend_trigger": "frontend_trigger",
 }
-ALLOWED_AGENT_PROFILES = {"custom", "orchestrator", "db_agent", "simulation_agent"}
+ALLOWED_AGENT_PROFILES = {
+    "custom",
+    "orchestrator",
+    "db_agent",
+    "simulation_agent",
+    "test_simulation_agent",
+}
 ALLOWED_AGENT_EXECUTION = {"handoff", "as_tool"}
 TOOL_NODE_TYPES = {"mcp", "file_search", "function_tool"}
 PORT_RULES = {
@@ -822,6 +828,8 @@ def _resolve_agent_by_node(node: dict) -> Agent:
         return db_agent
     if profile == "simulation_agent":
         return simulation_agent
+    if profile == "test_simulation_agent":
+        return test_simulation_agent
     if profile == "orchestrator":
         return triage_agent
     model_name = config.get("model") or MODEL_NAME
@@ -1251,9 +1259,9 @@ def _evaluate_guardrail(node: dict, context: WorkflowContext) -> tuple[bool, lis
     issues: list[str] = []
 
     if config.get("pii"):
-        if _guardrail_matches(text, r"\\b[\\w.+-]+@[\\w-]+\\.[\\w.-]+\\b"):
+        if _guardrail_matches(text, r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"):
             issues.append("PII(email)")
-        if _guardrail_matches(text, r"\\b\\d{2,4}[-\\s]?\\d{3,4}[-\\s]?\\d{4}\\b"):
+        if _guardrail_matches(text, r"\b\d{2,4}[-\s]?\d{3,4}[-\s]?\d{4}\b"):
             issues.append("PII(phone)")
 
     if config.get("moderation"):

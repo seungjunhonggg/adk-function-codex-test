@@ -32,6 +32,7 @@ from .config import (
     LOT_PARAM_SIZE_COLUMN,
     LOT_PARAM_TEMPERATURE_COLUMN,
     LOT_PARAM_VOLTAGE_COLUMN,
+    LOT_DEFECT_RATE_COLUMN,
 )
 from .db import query_process_data
 from .db_connections import execute_table_query, execute_table_query_multi
@@ -49,6 +50,20 @@ from .simulation import (
     extract_simulation_params,
     recommendation_store,
     simulation_store,
+)
+from .test_simulation import (
+    DEFAULT_CHART_LIMIT,
+    DEFAULT_DEFECT_MAX,
+    DEFAULT_GRID_LIMIT,
+    DEFAULT_TARGET,
+    DEFAULT_TOP_K,
+    call_grid_search_api,
+    filter_lot_candidates,
+    grid_search_candidates,
+    parse_defect_rate_bounds,
+    parse_target_value,
+    summarize_defect_rates,
+    test_simulation_store,
 )
 
 
@@ -519,6 +534,267 @@ async def run_prediction_simulation() -> dict:
         "message": "예측 실행을 완료했습니다.",
         **payload,
     }
+
+
+@function_tool
+async def filter_lots_by_defect_rate(
+    message: str | None = None,
+    defect_rate_min: float | None = None,
+    defect_rate_max: float | None = None,
+    limit: int | None = None,
+) -> dict:
+    """Filter candidate LOTs by defect rate and emit a chart to the UI."""
+    await _log_route("test_simulation", "filter_lots_by_defect_rate")
+    await _log_tool_call(
+        "filter_lots_by_defect_rate",
+        message=message,
+        defect_rate_min=defect_rate_min,
+        defect_rate_max=defect_rate_max,
+        limit=limit,
+    )
+    session_id = current_session_id.get()
+
+    parsed_min, parsed_max = parse_defect_rate_bounds(message or "")
+    min_rate = defect_rate_min if defect_rate_min is not None else parsed_min
+    max_rate = defect_rate_max if defect_rate_max is not None else parsed_max
+    if min_rate is None and max_rate is None:
+        max_rate = DEFAULT_DEFECT_MAX
+
+    row_limit = limit if isinstance(limit, int) and limit > 0 else 50
+    row_limit = max(1, min(row_limit, 200))
+
+    candidates = []
+    if LOT_DB_CONNECTION_ID and LOT_DB_TABLE and LOT_DEFECT_RATE_COLUMN:
+        try:
+            filters = []
+            if min_rate is not None:
+                filters.append(
+                    {"column": LOT_DEFECT_RATE_COLUMN, "operator": ">=", "value": min_rate}
+                )
+            if max_rate is not None:
+                filters.append(
+                    {"column": LOT_DEFECT_RATE_COLUMN, "operator": "<=", "value": max_rate}
+                )
+            columns = _parse_columns(LOT_DB_COLUMNS)
+            if LOT_DB_LOT_COLUMN and LOT_DB_LOT_COLUMN not in columns:
+                columns.append(LOT_DB_LOT_COLUMN)
+            if LOT_DEFECT_RATE_COLUMN not in columns:
+                columns.append(LOT_DEFECT_RATE_COLUMN)
+            result = execute_table_query_multi(
+                connection_id=LOT_DB_CONNECTION_ID,
+                schema_name=LOT_DB_SCHEMA or "public",
+                table_name=LOT_DB_TABLE,
+                columns=columns,
+                filters=filters,
+                limit=row_limit,
+            )
+            for row in result.get("rows", []):
+                lot_id = row.get(LOT_DB_LOT_COLUMN) or row.get("lot_id") or row.get("LOT_ID")
+                defect = row.get(LOT_DEFECT_RATE_COLUMN)
+                if lot_id and defect is not None:
+                    try:
+                        defect_value = float(defect)
+                    except (TypeError, ValueError):
+                        continue
+                    candidates.append({"lot_id": lot_id, "defect_rate": defect_value})
+        except Exception:
+            candidates = []
+
+    if not candidates:
+        candidates = test_simulation_store.ensure_candidates(session_id, max(row_limit, 50))
+    filtered = filter_lot_candidates(candidates, min_rate, max_rate, row_limit)
+    test_simulation_store.set_filtered_lots(
+        session_id,
+        filtered,
+        {"min_rate": min_rate, "max_rate": max_rate},
+    )
+
+    stats = summarize_defect_rates(filtered)
+    chart_lots = filtered[:DEFAULT_CHART_LIMIT]
+    await event_bus.broadcast(
+        {
+            "type": "defect_rate_chart",
+            "payload": {
+                "lots": chart_lots,
+                "filters": {"min_rate": min_rate, "max_rate": max_rate},
+                "stats": stats,
+            },
+        }
+    )
+
+    if not filtered:
+        await emit_frontend_trigger("불량률 조건에 맞는 LOT가 없습니다.")
+        await _log_tool_result("filter_lots_by_defect_rate", "status=missing rows=0")
+        return {
+            "status": "missing",
+            "missing": ["lot_candidates"],
+            "filters": {"min_rate": min_rate, "max_rate": max_rate},
+            "message": "불량률 조건에 맞는 LOT가 없습니다.",
+        }
+
+    await emit_frontend_trigger(
+        f"불량률 필터링 완료: {len(filtered)}건 (그래프 표시)",
+        {"count": len(filtered)},
+    )
+    await _log_tool_result(
+        "filter_lots_by_defect_rate",
+        f"rows={len(filtered)} min={min_rate} max={max_rate}",
+    )
+    return {
+        "status": "ok",
+        "count": len(filtered),
+        "filters": {"min_rate": min_rate, "max_rate": max_rate},
+        "stats": stats,
+        "lots": filtered,
+    }
+
+
+@function_tool
+async def run_design_grid_search(
+    message: str | None = None,
+    target: float | None = None,
+    limit: int | None = None,
+    top_k: int | None = None,
+) -> dict:
+    """Run grid search around design values and emit top candidates."""
+    await _log_route("test_simulation", "run_design_grid_search")
+    await _log_tool_call(
+        "run_design_grid_search",
+        message=message,
+        target=target,
+        limit=limit,
+        top_k=top_k,
+    )
+    session_id = current_session_id.get()
+    parsed_target = parse_target_value(message or "")
+    target_value = target if target is not None else parsed_target
+    if target_value is None:
+        target_value = test_simulation_store.get_grid_target(session_id)
+    if target_value is None:
+        target_value = DEFAULT_TARGET
+
+    filtered = test_simulation_store.get_filtered_lots(session_id)
+    if not filtered:
+        await emit_frontend_trigger("불량률 필터 결과가 없어 설계 탐색을 진행할 수 없습니다.")
+        await _log_tool_result("run_design_grid_search", "status=missing filtered_lots=0")
+        return {
+            "status": "missing",
+            "missing": ["filtered_lots"],
+            "message": "불량률 필터 결과가 없습니다.",
+        }
+
+    grid_limit = limit if isinstance(limit, int) and limit > 0 else DEFAULT_GRID_LIMIT
+    grid_limit = max(1, min(grid_limit, 500))
+    results = []
+    try:
+        api_results = await call_grid_search_api(filtered, target_value, grid_limit)
+    except Exception:
+        api_results = None
+    if isinstance(api_results, list) and api_results and isinstance(api_results[0], dict):
+        results = api_results
+    if not results:
+        results = grid_search_candidates(filtered, target_value, grid_limit)
+    for idx, item in enumerate(results, start=1):
+        item["rank"] = idx
+    test_simulation_store.set_grid_results(session_id, results, target_value)
+
+    top_count = top_k if isinstance(top_k, int) and top_k > 0 else DEFAULT_TOP_K
+    top_count = max(1, min(top_count, 50))
+    top_candidates = results[:top_count]
+    await event_bus.broadcast(
+        {
+            "type": "design_candidates",
+            "payload": {
+                "candidates": top_candidates,
+                "total": len(results),
+                "offset": 0,
+                "limit": top_count,
+                "target": target_value,
+            },
+        }
+    )
+    await emit_frontend_trigger(
+        f"설계 후보 {len(results)}건 중 상위 {len(top_candidates)}건을 표시했습니다.",
+        {"count": len(top_candidates), "total": len(results)},
+    )
+    await _log_tool_result(
+        "run_design_grid_search",
+        f"total={len(results)} top={len(top_candidates)} target={target_value}",
+    )
+    return {
+        "status": "ok",
+        "target": target_value,
+        "total": len(results),
+        "candidates": top_candidates,
+    }
+
+
+@function_tool
+async def get_design_candidates(
+    offset: int = 0,
+    limit: int = 10,
+    rank: int | None = None,
+) -> dict:
+    """Fetch stored grid search candidates."""
+    await _log_tool_call("get_design_candidates", offset=offset, limit=limit, rank=rank)
+    session_id = current_session_id.get()
+    if rank is not None and rank > 0:
+        offset = max(rank - 1, 0)
+        limit = 1
+
+    offset_value = max(0, int(offset))
+    limit_value = max(1, min(int(limit), 50))
+    candidates, total = test_simulation_store.get_candidates(
+        session_id, offset_value, limit_value
+    )
+    if not candidates:
+        await _log_tool_result("get_design_candidates", "status=missing total=0")
+        return {
+            "status": "missing",
+            "missing": ["grid_results"],
+            "message": "설계 후보가 없습니다.",
+        }
+
+    await event_bus.broadcast(
+        {
+            "type": "design_candidates",
+            "payload": {
+                "candidates": candidates,
+                "total": total,
+                "offset": offset_value,
+                "limit": limit_value,
+                "target": test_simulation_store.get_grid_target(session_id),
+            },
+        }
+    )
+    await _log_tool_result(
+        "get_design_candidates",
+        f"offset={offset_value} limit={limit_value} total={total}",
+    )
+    return {
+        "status": "ok",
+        "total": total,
+        "offset": offset_value,
+        "limit": limit_value,
+        "candidates": candidates,
+    }
+
+
+@function_tool
+def get_defect_rate_stats() -> dict:
+    """Summarize defect-rate stats from the filtered lots."""
+    session_id = current_session_id.get()
+    filtered = test_simulation_store.get_filtered_lots(session_id)
+    stats = summarize_defect_rates(filtered)
+    return {"status": "ok", "stats": stats, "count": stats.get("count", 0)}
+
+
+@function_tool
+def reset_test_simulation() -> dict:
+    """Clear the stored test simulation results."""
+    session_id = current_session_id.get()
+    test_simulation_store.clear(session_id)
+    return {"status": "ok", "message": "테스트 시뮬레이션 상태를 초기화했습니다."}
 
 
 @function_tool

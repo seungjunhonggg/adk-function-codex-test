@@ -25,6 +25,8 @@ const lotStatusEl = document.getElementById("lot-status");
 const simFormCard = document.getElementById("sim-form-card");
 const lotCard = document.getElementById("lot-card");
 const simResultCard = document.getElementById("sim-result-card");
+const defectChartCard = document.getElementById("defect-chart-card");
+const designCandidatesCard = document.getElementById("design-candidates-card");
 const predictionCard = document.getElementById("prediction-card");
 const frontendCard = document.getElementById("frontend-card");
 const eventLogCard = document.getElementById("event-log-card");
@@ -39,6 +41,8 @@ const simRunButton = document.getElementById("sim-run");
 const simFormStatus = document.getElementById("sim-form-status");
 const recommendationApplyButton = document.getElementById("recommend-apply");
 const recommendationStatusEl = document.getElementById("recommend-status");
+const defectChartEl = document.getElementById("defect-chart");
+const designCandidatesEl = document.getElementById("design-candidates");
 
 function generateSessionId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -127,6 +131,8 @@ const streamCards = [
   lotCard,
   simFormCard,
   simResultCard,
+  defectChartCard,
+  designCandidatesCard,
   predictionCard,
   frontendCard,
 ].filter(Boolean);
@@ -666,6 +672,123 @@ function renderSimResult(payload) {
   }
 }
 
+function renderDefectRateChart(payload = {}) {
+  if (!defectChartEl) {
+    return;
+  }
+  const lots = Array.isArray(payload.lots) ? payload.lots : [];
+  if (!lots.length) {
+    defectChartEl.textContent = "불량률 그래프가 없습니다.";
+    return;
+  }
+  showStreamCard(defectChartCard);
+
+  const stats = payload.stats || {};
+  const maxRate = Math.max(
+    ...lots.map((item) => Number(item.defect_rate) || 0),
+    0.0001
+  );
+
+  defectChartEl.innerHTML = "";
+  if (stats && stats.count) {
+    const meta = document.createElement("div");
+    meta.className = "candidate-meta";
+    const avg = stats.avg ? `${(stats.avg * 100).toFixed(2)}%` : "--";
+    const min = stats.min ? `${(stats.min * 100).toFixed(2)}%` : "--";
+    const max = stats.max ? `${(stats.max * 100).toFixed(2)}%` : "--";
+    meta.textContent = `필터 ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
+    defectChartEl.appendChild(meta);
+  }
+
+  const chart = document.createElement("div");
+  chart.className = "defect-chart";
+  lots.forEach((item) => {
+    const rate = Number(item.defect_rate) || 0;
+    const percent = (rate * 100).toFixed(2);
+    const row = document.createElement("div");
+    row.className = "defect-row";
+    const label = document.createElement("div");
+    label.className = "defect-label";
+    label.textContent = item.lot_id || "-";
+    const bar = document.createElement("div");
+    bar.className = "defect-bar";
+    const fill = document.createElement("div");
+    fill.className = "defect-bar-fill";
+    fill.style.width = `${Math.min(100, (rate / maxRate) * 100)}%`;
+    bar.appendChild(fill);
+    const value = document.createElement("div");
+    value.className = "defect-value";
+    value.textContent = `${percent}%`;
+    row.appendChild(label);
+    row.appendChild(bar);
+    row.appendChild(value);
+    chart.appendChild(row);
+  });
+  defectChartEl.appendChild(chart);
+}
+
+function renderDesignCandidates(payload = {}) {
+  if (!designCandidatesEl) {
+    return;
+  }
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  if (!candidates.length) {
+    designCandidatesEl.textContent = "설계 후보가 없습니다.";
+    return;
+  }
+  showStreamCard(designCandidatesCard);
+  designCandidatesEl.innerHTML = "";
+
+  const offset = payload.offset || 0;
+  const total = payload.total || candidates.length;
+  const meta = document.createElement("div");
+  meta.className = "candidate-meta";
+  meta.textContent = `전체 ${total}건 중 ${offset + 1}~${
+    offset + candidates.length
+  }건 표시`;
+  designCandidatesEl.appendChild(meta);
+
+  const table = document.createElement("table");
+  table.className = "result-table";
+  const thead = document.createElement("thead");
+  thead.innerHTML = `
+    <tr>
+      <th>순번</th>
+      <th>LOT</th>
+      <th>예측 타겟</th>
+      <th>불량률</th>
+      <th>설계값</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  candidates.forEach((item, index) => {
+    const row = document.createElement("tr");
+    const rank = item.rank || offset + index + 1;
+    const defect = item.defect_rate
+      ? `${(item.defect_rate * 100).toFixed(2)}%`
+      : "-";
+    const target = item.predicted_target ?? "-";
+    const design =
+      item.design && typeof item.design === "object"
+        ? Object.entries(item.design)
+            .map(([key, value]) => `${key}=${renderValue(value)}`)
+            .join(", ")
+        : "-";
+    row.innerHTML = `
+      <td>${rank}</td>
+      <td>${item.lot_id || "-"}</td>
+      <td>${target}</td>
+      <td>${defect}</td>
+      <td>${design}</td>
+    `;
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  designCandidatesEl.appendChild(table);
+}
+
 function buildResultTable(result) {
   if (!result || typeof result !== "object") {
     return null;
@@ -793,6 +916,16 @@ function handleEvent(event) {
     addEventLog("추천", `기종: ${modelName}`);
   }
 
+  if (event.type === "defect_rate_chart") {
+    renderDefectRateChart(event.payload);
+    addEventLog("불량률", "그래프 업데이트");
+  }
+
+  if (event.type === "design_candidates") {
+    renderDesignCandidates(event.payload);
+    addEventLog("설계", "후보 업데이트");
+  }
+
   if (event.type === "prediction_result") {
     renderPredictionResult(event.payload);
     const prob = event.payload?.result?.reliability_pass_prob;
@@ -832,7 +965,7 @@ function handleEvent(event) {
 }
 
 const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-const wsUrl = `${wsProtocol}://${window.location.host}/ws`;
+const wsUrl = `${wsProtocol}://${window.location.host}/ws?session_id=${encodeURIComponent(sessionId)}`;
 const socket = new WebSocket(wsUrl);
 
 socket.addEventListener("open", () => {
