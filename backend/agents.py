@@ -178,6 +178,6 @@ triage_agent = _build_agent(
         "- User: <fill>\n"
         "- Assistant: <fill>\n"
     ),
-    tools=[db_agent_tool, simulation_agent_tool],
+    tools=[db_agent_tool, test_simulation_agent_tool],
     **MODEL_KWARGS,
 )

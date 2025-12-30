@@ -8,34 +8,39 @@
   </head>
   <body>
     <div class="app">
-      <aside class="sidebar">
-        <div class="brand">
-          <p>공정 모니터링 데모</p>
+      <aside class="sidebar chatgpt-sidebar">
+        <div class="sidebar-nav">
+          <button id="new-session" type="button" class="sidebar-item new-chat">
+            <span class="item-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20">
+                <path d="M10 4v12" stroke-width="1.5" stroke-linecap="round" />
+                <path d="M4 10h12" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+            </span>
+            <span class="item-label">새 대화</span>
+          </button>
         </div>
-        <div class="status">
+
+        <section class="sidebar-section session-panel">
+          <div id="session-list" class="session-list">
+            <div id="session-empty" class="session-empty">
+              아직 대화 기록이 없습니다.
+            </div>
+          </div>
+        </section>
+
+        <div class="sidebar-footer">
+          <a class="workflow-builder" href="/builder" target="_blank" rel="noopener">
+            워크플로우 빌더 열기
+          </a>
+        </div>
+
+        <div class="status hidden">
           <span id="ws-status" class="status-dot"></span>
           <span id="ws-label">연결 준비</span>
         </div>
-        <div class="status-meta">
+        <div class="status-meta hidden">
           세션: <span id="session-id">--</span>
-        </div>
-        <a class="primary-link" href="/builder" target="_blank" rel="noopener">
-          워크플로우 빌더 열기
-        </a>
-        <div class="workflow-card">
-          <h3>활성 워크플로우</h3>
-          <div id="workflow-name">--</div>
-          <div id="workflow-updated">--</div>
-          <div class="workflow-actions">
-            <button id="load-workflow-json" type="button">
-              워크플로우 JSON 불러오기
-            </button>
-          </div>
-          <pre id="workflow-json" class="workflow-json hidden"></pre>
-          <div class="workflow-list">
-            <h4>저장된 워크플로우</h4>
-            <ul id="workflow-list" class="workflow-items"></ul>
-          </div>
         </div>
       </aside>
 

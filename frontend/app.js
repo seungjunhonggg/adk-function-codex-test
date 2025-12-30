@@ -43,6 +43,15 @@ const recommendationApplyButton = document.getElementById("recommend-apply");
 const recommendationStatusEl = document.getElementById("recommend-status");
 const defectChartEl = document.getElementById("defect-chart");
 const designCandidatesEl = document.getElementById("design-candidates");
+const sessionListEl = document.getElementById("session-list");
+const sessionEmptyEl = document.getElementById("session-empty");
+const sessionCountEl = document.getElementById("session-count");
+const newSessionButton = document.getElementById("new-session");
+
+const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+let socket = null;
+let socketPingInterval = null;
+let suppressSocketCloseNotice = false;
 
 function generateSessionId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -64,18 +73,330 @@ function generateSessionId() {
   return `fallback-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-const sessionId = generateSessionId();
-sessionEl.textContent = sessionId.slice(0, 8);
+const CURRENT_SESSION_KEY = "demo_current_session";
+const LEGACY_SESSION_KEY = "demo_session_id";
+const SESSIONS_STORAGE_KEY = "demo_sessions";
+const HISTORY_STORAGE_PREFIX = "demo_chat_history";
+const HISTORY_LIMIT = 200;
+const SESSION_TITLE_LIMIT = 32;
+const DEFAULT_SESSION_TITLE = "새 대화";
+const LEGACY_SESSION_TITLE = "새 채팅";
+
+let sessions = [];
+let currentSessionId = "";
+sessionEl.textContent = "--";
 let lastLotId = "";
 let isComposing = false;
 let recommendationDirty = false;
 
-function addMessage(role, text) {
+let historyEntries = [];
+
+function loadSessions() {
+  try {
+    const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveSessions(list) {
+  try {
+    localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(list));
+  } catch (error) {
+    // Ignore storage failures.
+  }
+}
+
+function loadCurrentSessionId() {
+  try {
+    const stored = localStorage.getItem(CURRENT_SESSION_KEY);
+    if (stored) {
+      return stored;
+    }
+    const legacy = localStorage.getItem(LEGACY_SESSION_KEY);
+    if (legacy) {
+      localStorage.setItem(CURRENT_SESSION_KEY, legacy);
+      return legacy;
+    }
+  } catch (error) {
+    return "";
+  }
+  return "";
+}
+
+function saveCurrentSessionId(sessionId) {
+  try {
+    localStorage.setItem(CURRENT_SESSION_KEY, sessionId);
+  } catch (error) {
+    // Ignore storage failures.
+  }
+}
+
+function loadHistory(sessionId) {
+  try {
+    const raw = localStorage.getItem(`${HISTORY_STORAGE_PREFIX}:${sessionId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveHistory(sessionId, entries) {
+  try {
+    const trimmed = entries.slice(-HISTORY_LIMIT);
+    localStorage.setItem(
+      `${HISTORY_STORAGE_PREFIX}:${sessionId}`,
+      JSON.stringify(trimmed)
+    );
+  } catch (error) {
+    // Ignore storage failures.
+  }
+}
+
+function clearChatMessages() {
+  messages.innerHTML = "";
+}
+
+function formatSessionTime(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const datePart = date.toLocaleDateString("ko-KR", {
+    month: "short",
+    day: "numeric",
+  });
+  const timePart = date.toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `${datePart} ${timePart}`;
+}
+
+function createSession(title = DEFAULT_SESSION_TITLE, id = generateSessionId()) {
+  return {
+    id,
+    title,
+    updatedAt: new Date().toISOString(),
+    preview: "",
+  };
+}
+
+function ensureSession(sessionId) {
+  let session = sessions.find((item) => item.id === sessionId);
+  if (!session) {
+    session = createSession(DEFAULT_SESSION_TITLE, sessionId);
+    sessions.unshift(session);
+  }
+  return session;
+}
+
+function renderSessionList(list) {
+  if (!sessionListEl) {
+    return;
+  }
+  sessionListEl.querySelectorAll(".session-item").forEach((item) => item.remove());
+  if (sessionCountEl) {
+    sessionCountEl.textContent = String(list.length);
+  }
+  if (!list.length) {
+    if (sessionEmptyEl) {
+      sessionEmptyEl.classList.remove("hidden");
+    }
+    return;
+  }
+  if (sessionEmptyEl) {
+    sessionEmptyEl.classList.add("hidden");
+  }
+  const sorted = list
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
+    );
+  sorted.forEach((session) => {
+    const item = document.createElement("div");
+    item.className = "session-item";
+    if (session.id === currentSessionId) {
+      item.classList.add("active");
+    }
+    item.dataset.sessionId = session.id;
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "session-select";
+    const displayTitle =
+      session.title === LEGACY_SESSION_TITLE
+        ? DEFAULT_SESSION_TITLE
+        : session.title || DEFAULT_SESSION_TITLE;
+    title.textContent = displayTitle;
+    title.title = displayTitle;
+    title.addEventListener("click", () => {
+      setActiveSession(session.id, { focusInput: true });
+    });
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "session-delete";
+    deleteButton.setAttribute("aria-label", "대화 삭제");
+    deleteButton.innerHTML =
+      '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12" stroke-width="1.5" stroke-linecap="round" /><path d="M8 6V4h4v2" stroke-width="1.5" stroke-linecap="round" /><path d="M7 6l1 10h4l1-10" stroke-width="1.5" stroke-linecap="round" /><path d="M9.5 9.5v4" stroke-width="1.5" stroke-linecap="round" /><path d="M11.5 9.5v4" stroke-width="1.5" stroke-linecap="round" /></svg>';
+    deleteButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteSession(session.id);
+    });
+    item.appendChild(title);
+    item.appendChild(deleteButton);
+    sessionListEl.appendChild(item);
+  });
+}
+
+function pickLatestSessionId() {
+  if (!sessions.length) {
+    return "";
+  }
+  const sorted = sessions
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
+    );
+  return sorted[0]?.id || "";
+}
+
+function deleteSession(sessionId) {
+  if (!sessionId) {
+    return;
+  }
+  sessions = sessions.filter((item) => item.id !== sessionId);
+  saveSessions(sessions);
+  try {
+    localStorage.removeItem(`${HISTORY_STORAGE_PREFIX}:${sessionId}`);
+  } catch (error) {
+    // Ignore storage failures.
+  }
+
+  if (currentSessionId === sessionId) {
+    const nextSessionId = pickLatestSessionId();
+    if (nextSessionId) {
+      setActiveSession(nextSessionId, { focusInput: false });
+      return;
+    }
+    const session = createSession();
+    sessions = [session];
+    saveSessions(sessions);
+    setActiveSession(session.id, { focusInput: false });
+    return;
+  }
+
+  renderSessionList(sessions);
+}
+
+function setActiveSession(sessionId, options = {}) {
+  if (!sessionId) {
+    return;
+  }
+  const shouldSwitch = sessionId !== currentSessionId;
+  currentSessionId = sessionId;
+  saveCurrentSessionId(sessionId);
+  sessionEl.textContent = sessionId.slice(0, 8);
+  historyEntries = loadHistory(sessionId);
+  clearChatMessages();
+  historyEntries.forEach((entry) => appendMessageToChat(entry));
+  const session = ensureSession(sessionId);
+  if (!session.preview && historyEntries.length) {
+    updateSessionMeta(sessionId, historyEntries[historyEntries.length - 1]);
+  }
+  renderSessionList(sessions);
+  if (typeof connectWebSocket === "function" && shouldSwitch) {
+    connectWebSocket(sessionId);
+  } else if (typeof connectWebSocket === "function" && !socket) {
+    connectWebSocket(sessionId);
+  }
+  if (options.focusInput && input) {
+    input.focus();
+  }
+}
+
+function updateSessionMeta(sessionId, entry) {
+  const session = ensureSession(sessionId);
+  session.updatedAt = entry.timestamp;
+  if (entry.role !== "system") {
+    session.preview = entry.text;
+  }
+  const hasDefaultTitle =
+    !session.title ||
+    session.title === DEFAULT_SESSION_TITLE ||
+    session.title === LEGACY_SESSION_TITLE;
+  if (entry.role === "user" && hasDefaultTitle) {
+    session.title =
+      entry.text.length > SESSION_TITLE_LIMIT
+        ? `${entry.text.slice(0, SESSION_TITLE_LIMIT)}...`
+        : entry.text;
+  }
+  saveSessions(sessions);
+}
+
+function buildHistoryEntry(role, text) {
+  const id =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return {
+    id,
+    role,
+    text,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function appendMessageToChat(entry) {
   const message = document.createElement("div");
-  message.className = `message ${role}`;
-  message.textContent = text;
+  message.className = `message ${entry.role}`;
+  message.dataset.messageId = entry.id;
+  message.textContent = entry.text;
   messages.appendChild(message);
   messages.scrollTop = messages.scrollHeight;
+}
+
+function addMessage(role, text) {
+  const entry = buildHistoryEntry(role, text);
+  historyEntries.push(entry);
+  saveHistory(currentSessionId, historyEntries);
+  appendMessageToChat(entry);
+  updateSessionMeta(currentSessionId, entry);
+  renderSessionList(sessions);
+}
+
+function initializeSessions() {
+  sessions = loadSessions();
+  currentSessionId = loadCurrentSessionId();
+  if (!currentSessionId && sessions.length) {
+    currentSessionId = sessions[0].id;
+  }
+  if (!currentSessionId) {
+    const session = createSession();
+    sessions = [session];
+    currentSessionId = session.id;
+  }
+  ensureSession(currentSessionId);
+  saveSessions(sessions);
+  saveCurrentSessionId(currentSessionId);
+  setActiveSession(currentSessionId, { focusInput: false });
+}
+
+initializeSessions();
+if (newSessionButton) {
+  newSessionButton.addEventListener("click", () => {
+    const session = createSession();
+    sessions.unshift(session);
+    saveSessions(sessions);
+    setActiveSession(session.id, { focusInput: true });
+  });
 }
 
 function addEventLog(label, detail) {
@@ -354,8 +675,8 @@ async function sendSimulationParams({ run } = { run: false }) {
   setSimStatus("추천 입력 전송 중...");
   const params = collectSimFormParams();
   const payload = run
-    ? { session_id: sessionId }
-    : { session_id: sessionId, ...params };
+    ? { session_id: currentSessionId }
+    : { session_id: currentSessionId, ...params };
   try {
     const response = await fetch(
       run ? "/api/simulation/run" : "/api/simulation/params",
@@ -429,7 +750,7 @@ async function sendRecommendationParams() {
     const response = await fetch("/api/recommendation/params", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, params }),
+    body: JSON.stringify({ session_id: currentSessionId, params }),
     });
     if (!response.ok) {
       setRecommendationStatus("파라미터 반영 실패", true);
@@ -964,36 +1285,52 @@ function handleEvent(event) {
   }
 }
 
-const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-const wsUrl = `${wsProtocol}://${window.location.host}/ws?session_id=${encodeURIComponent(sessionId)}`;
-const socket = new WebSocket(wsUrl);
-
-socket.addEventListener("open", () => {
-  statusDot.classList.add("live");
+function connectWebSocket(sessionId) {
+  if (!sessionId) {
+    return;
+  }
+  if (socket) {
+    suppressSocketCloseNotice = true;
+    socket.close();
+  }
+  const wsUrl = `${wsProtocol}://${window.location.host}/ws?session_id=${encodeURIComponent(sessionId)}`;
+  socket = new WebSocket(wsUrl);
   statusLabel.textContent = "연결 중";
-  addMessage("system", "WebSocket 연결 완료. 이벤트 스트림이 활성화되었습니다.");
-});
 
-socket.addEventListener("close", () => {
-  statusDot.classList.remove("live");
-  statusLabel.textContent = "연결 끊김";
-  addMessage("system", "WebSocket 연결이 종료되었습니다.");
-});
+  socket.addEventListener("open", () => {
+    suppressSocketCloseNotice = false;
+    statusDot.classList.add("live");
+    statusLabel.textContent = "연결 중";
+    addMessage("system", "WebSocket 연결 완료. 이벤트 스트림이 활성화되었습니다.");
+  });
 
-socket.addEventListener("message", (event) => {
-  try {
-    const data = JSON.parse(event.data);
-    handleEvent(data);
-  } catch (error) {
-    addEventLog("WS", "JSON이 아닌 메시지가 수신되었습니다.");
+  socket.addEventListener("close", () => {
+    statusDot.classList.remove("live");
+    statusLabel.textContent = "연결 끊김";
+    if (!suppressSocketCloseNotice) {
+      addMessage("system", "WebSocket 연결이 종료되었습니다.");
+    }
+    suppressSocketCloseNotice = false;
+  });
+
+  socket.addEventListener("message", (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      handleEvent(data);
+    } catch (error) {
+      addEventLog("WS", "JSON이 아닌 메시지가 수신되었습니다.");
+    }
+  });
+
+  if (socketPingInterval) {
+    clearInterval(socketPingInterval);
   }
-});
-
-setInterval(() => {
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send("ping");
-  }
-}, 20000);
+  socketPingInterval = setInterval(() => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send("ping");
+    }
+  }, 20000);
+}
 
 async function sendChatMessage(message) {
   addMessage("user", message);
@@ -1004,7 +1341,7 @@ async function sendChatMessage(message) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, message }),
+      body: JSON.stringify({ session_id: currentSessionId, message }),
     });
 
     if (!response.ok) {
@@ -1164,7 +1501,7 @@ if (testButton) {
       const response = await fetch("/api/test/trigger", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId }),
+        body: JSON.stringify({ session_id: currentSessionId }),
       });
 
       if (!response.ok) {
