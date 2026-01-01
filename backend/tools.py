@@ -221,6 +221,7 @@ def collect_simulation_params(
     size: float | None = None,
     capacity: float | None = None,
     production_mode: str | None = None,
+    model_name: str | None = None,
 ) -> dict:
     session_id = current_session_id.get()
     params = simulation_store.update(
@@ -230,6 +231,7 @@ def collect_simulation_params(
         size=size,
         capacity=capacity,
         production_mode=production_mode,
+        model_name=model_name,
     )
     missing = simulation_store.missing(session_id)
     return {"params": params, "missing": missing}
@@ -423,6 +425,7 @@ async def update_simulation_params(
     size: float | None = None,
     capacity: float | None = None,
     production_mode: str | None = None,
+    model_name: str | None = None,
 ) -> dict:
     """Update simulation params from user input and emit missing fields to the UI."""
     await _log_tool_call(
@@ -433,6 +436,7 @@ async def update_simulation_params(
         size=size,
         capacity=capacity,
         production_mode=production_mode,
+        model_name=model_name,
     )
     parsed = extract_simulation_params(message) if message else {}
     if temperature is not None:
@@ -445,6 +449,8 @@ async def update_simulation_params(
         parsed["capacity"] = capacity
     if production_mode is not None:
         parsed["production_mode"] = production_mode
+    if model_name is not None:
+        parsed["model_name"] = model_name
 
     result = collect_simulation_params(**parsed)
     await emit_simulation_form(result["params"], result["missing"])

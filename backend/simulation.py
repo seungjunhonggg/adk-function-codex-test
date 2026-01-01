@@ -3,7 +3,7 @@ from typing import Dict, List
 
 import httpx
 
-from .config import PREDICT_API_URL, SIM_API_URL
+from .config import GRID_SEARCH_API_URL, PREDICT_API_URL, SIM_API_URL
 
 
 REQUIRED_KEYS = (
@@ -23,6 +23,11 @@ class SimulationStore:
     def update(self, session_id: str, **kwargs: object) -> Dict[str, float | str]:
         record: Dict[str, float | str] = self._data.get(session_id, {})
         for key, value in kwargs.items():
+            if key == "model_name":
+                text = str(value).strip() if value is not None else ""
+                if text:
+                    record[key] = text
+                continue
             if key == "production_mode":
                 mode = _normalize_production_mode(value)
                 if mode is not None:
@@ -108,6 +113,20 @@ async def call_prediction_api(params: Dict[str, float | str]) -> Dict[str, float
     return _predict_locally(params)
 
 
+async def call_grid_search_api(payload: dict) -> list[dict]:
+    if GRID_SEARCH_API_URL:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(GRID_SEARCH_API_URL, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and isinstance(data.get("results"), list):
+                return data["results"]
+            if isinstance(data, list):
+                return data
+            return []
+    return _simulate_grid_search(payload)
+
+
 def _predict_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:
     values = []
     for value in params.values():
@@ -146,6 +165,14 @@ def extract_simulation_params(message: str) -> dict:
         params["production_mode"] = "mass"
     elif re.search(r"(개발|dev|development)", lowered):
         params["production_mode"] = "dev"
+
+    model_match = re.search(
+        r"(?:model|모델|기종|제품)\s*[:=]?\s*([a-z0-9-_]+)",
+        message,
+        re.IGNORECASE,
+    )
+    if model_match:
+        params["model_name"] = model_match.group(1)
 
     numeric_keys = ("temperature", "voltage", "size", "capacity")
     numeric_count = sum(1 for key in numeric_keys if key in params)
@@ -194,6 +221,50 @@ def _normalize_production_mode(value: object) -> str | None:
     if text in {"dev", "development", "개발", "false", "0"}:
         return "dev"
     return None
+
+
+def _simulate_grid_search(payload: dict) -> list[dict]:
+    grid = payload.get("grid") if isinstance(payload, dict) else None
+    if not isinstance(grid, dict):
+        return []
+    keys = list(grid.keys())
+    if not keys:
+        return []
+
+    def _values(key: str) -> list[float]:
+        values = grid.get(key, [])
+        return [float(value) for value in values if _to_float(value) is not None]
+
+    values_list = [_values(key) for key in keys]
+    if not all(values_list):
+        return []
+
+    results = []
+    base = 0.0
+    for values in values_list:
+        base += sum(values) / len(values)
+
+    def _recurse(index: int, current: dict) -> None:
+        if index == len(keys):
+            score = base + sum(current.values()) * 0.01
+            results.append(
+                {
+                    "design": dict(current),
+                    "predicted_target": round(score, 4),
+                }
+            )
+            return
+        key = keys[index]
+        for value in values_list[index]:
+            current[key] = value
+            _recurse(index + 1, current)
+        current.pop(key, None)
+
+    _recurse(0, {})
+    results.sort(key=lambda item: item.get("predicted_target", 0), reverse=True)
+    max_results = payload.get("max_results") if isinstance(payload, dict) else None
+    limit = int(max_results) if isinstance(max_results, int) and max_results > 0 else 100
+    return results[:limit]
 
 
 

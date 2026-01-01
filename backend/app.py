@@ -1,5 +1,6 @@
 ﻿import json
 from pathlib import Path
+import re
 
 from agents import Runner, SQLiteSession
 from agents.tracing import set_tracing_disabled
@@ -15,7 +16,20 @@ from .db_connections import connect_and_save, get_schema, list_connections, prel
 from .db import init_db
 from .events import event_bus
 from .observability import WorkflowRunHooks
-from .simulation import extract_simulation_params, recommendation_store, simulation_store
+from .pipeline_store import pipeline_store
+from .reference_lot import (
+    build_grid_values,
+    load_reference_rules,
+    normalize_reference_rules,
+    select_reference_lot,
+    select_reference_lot_by_id,
+)
+from .simulation import (
+    call_grid_search_api,
+    extract_simulation_params,
+    recommendation_store,
+    simulation_store,
+)
 from .tools import (
     collect_simulation_params,
     emit_lot_info,
@@ -81,6 +95,7 @@ class SimulationParamsRequest(BaseModel):
     size: float | None = None
     capacity: float | None = None
     production_mode: str | None = None
+    model_name: str | None = None
 
 
 class SimulationRunRequest(BaseModel):
@@ -119,42 +134,25 @@ async def builder() -> FileResponse:
 async def chat(request: ChatRequest) -> dict:
     session = SQLiteSession(request.session_id, SESSION_DB_PATH)
     token = current_session_id.set(request.session_id)
-    # try:
-    #     workflow = load_workflow()
-    #     workflow_run = await execute_workflow(
-    #         workflow,
-    #         request.message,
-    #         request.session_id,
-    #         session,
-    #         allow_llm=bool(OPENAI_API_KEY),
-    #     )
-    #     if workflow_run is not None:
-    #         await _maybe_update_simulation_from_message(
-    #             request.message, request.session_id
-    #         )
-    #         return {"assistant_message": workflow_run.assistant_message}
+    try:
+        sim_response = await _maybe_handle_simulation_message(
+            request.message, request.session_id
+        )
+        if sim_response is not None:
+            await _append_user_message(request.session_id, request.message)
+            await _append_assistant_message(request.session_id, sim_response)
+            return {"assistant_message": sim_response}
 
-    #     if not OPENAI_API_KEY:
-    #         await _maybe_update_simulation_from_message(
-    #             request.message, request.session_id
-    #         )
-    #         return {
-    #             "assistant_message": (
-    #                 "OPENAI_API_KEY가 설정되지 않았습니다. "
-    #                 "환경 변수로 설정한 뒤 재시작해주세요."
-    #             )
-    #         }
-
-    result = await Runner.run(
-        triage_agent,
-        input=request.message,
-        session=session,
-        hooks=WorkflowRunHooks(),
-    )
-    await _maybe_update_simulation_from_message(request.message, request.session_id)
-    return {"assistant_message": result.final_output}
-# finally:
-    current_session_id.reset(token)
+        result = await Runner.run(
+            triage_agent,
+            input=request.message,
+            session=session,
+            hooks=WorkflowRunHooks(),
+        )
+        await _maybe_update_simulation_from_message(request.message, request.session_id)
+        return {"assistant_message": result.final_output}
+    finally:
+        current_session_id.reset(token)
 
 
 async def _maybe_update_simulation_from_message(message: str, session_id: str) -> None:
@@ -178,6 +176,7 @@ def _format_simulation_params(params: dict) -> str:
     if not params:
         return "입력 없음"
     mapping = [
+        ("model_name", "기종명"),
         ("temperature", "온도"),
         ("voltage", "전압"),
         ("size", "크기"),
@@ -233,6 +232,11 @@ def _format_missing_fields(missing: list[str]) -> str:
 async def _append_system_note(session_id: str, content: str) -> None:
     session = SQLiteSession(session_id, SESSION_DB_PATH)
     await session.add_items([{"role": "system", "content": content}])
+
+
+async def _append_user_message(session_id: str, content: str) -> None:
+    session = SQLiteSession(session_id, SESSION_DB_PATH)
+    await session.add_items([{"role": "user", "content": content}])
 
 
 async def _append_assistant_message(session_id: str, content: str) -> None:
@@ -292,6 +296,318 @@ async def _generate_simulation_auto_message(
             "예측 시뮬레이션도 진행할까요?"
         )
     return "추천 입력을 확인해 주세요."
+
+
+def _format_prediction_result(result: dict | None) -> str:
+    if not result:
+        return "결과 없음"
+    parts = []
+    capacity = result.get("predicted_capacity")
+    dc_capacity = result.get("predicted_dc_capacity")
+    reliability = result.get("reliability_pass_prob")
+    if capacity is not None:
+        parts.append(f"예측 용량={capacity}")
+    if dc_capacity is not None:
+        parts.append(f"예측 DC 용량={dc_capacity}")
+    if reliability is not None:
+        parts.append(f"신뢰성 통과확률={reliability}")
+    return ", ".join(parts) if parts else "결과 수신"
+
+
+async def _generate_prediction_auto_message(result: dict | None) -> str:
+    summary = _format_prediction_result(result)
+    return f"예측 결과가 나왔습니다. {summary}."
+
+
+def _contains_any(message: str, tokens: tuple[str, ...]) -> bool:
+    lowered = (message or "").lower()
+    return any(token in lowered for token in tokens)
+
+
+def _extract_lot_id(message: str) -> str | None:
+    match = re.search(r"(lot[-_ ]?[a-z0-9-]+)", message or "", re.IGNORECASE)
+    if not match:
+        return None
+    raw = match.group(1)
+    return raw.upper().replace("_", "-").replace(" ", "")
+
+
+def _is_affirmative(message: str) -> bool:
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return False
+    affirmative = {
+        "yes",
+        "y",
+        "ok",
+        "okay",
+        "sure",
+        "yep",
+        "네",
+        "예",
+        "응",
+        "그래",
+        "좋아",
+        "가능",
+        "진행",
+        "실행",
+        "해줘",
+    }
+    if lowered in affirmative:
+        return True
+    return any(token in lowered for token in affirmative)
+
+
+def _is_recommendation_intent(message: str) -> bool:
+    tokens = (
+        "추천",
+        "인접",
+        "시뮬",
+        "simulation",
+        "simulate",
+        "what-if",
+        "예측",
+    )
+    return _contains_any(message, tokens)
+
+
+def _extract_grid_overrides(message: str) -> dict[str, float]:
+    overrides: dict[str, float] = {}
+    mapping = {
+        "sheet_t": [r"sheet\s*t", r"sheet_t", r"시트"],
+        "laydown": [r"laydown", r"레이다운"],
+        "active_layer": [r"active\s*layer", r"active_layer", r"액티브"],
+    }
+    for name, patterns in mapping.items():
+        for pattern in patterns:
+            match = re.search(
+                rf"{pattern}\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)",
+                message,
+                re.IGNORECASE,
+            )
+            if match:
+                try:
+                    overrides[name] = float(match.group(1))
+                except (TypeError, ValueError):
+                    continue
+                break
+    return overrides
+
+
+def _should_rerun_grid(message: str) -> bool:
+    tokens = ("다시", "재실행", "리런", "run", "grid", "그리드", "예측")
+    return _contains_any(message, tokens)
+
+
+async def _run_reference_pipeline(
+    session_id: str,
+    params: dict,
+    model_override: str | None = None,
+    reference_override: str | None = None,
+    grid_overrides: dict | None = None,
+) -> dict:
+    rules = normalize_reference_rules(load_reference_rules())
+    model_name = model_override
+    simulation_result = None
+
+    if not model_name:
+        simulation_result = await execute_simulation()
+        inner = simulation_result.get("result") if isinstance(simulation_result, dict) else {}
+        model_name = inner.get("recommended_model")
+
+    if not model_name:
+        return {
+            "message": "추천 기종을 확인하지 못했습니다. 입력 파라미터를 다시 확인해 주세요."
+        }
+
+    reference_result = select_reference_lot(model_name)
+    if reference_override:
+        reference_result = select_reference_lot_by_id(reference_override)
+
+    if reference_result.get("status") != "ok":
+        return {
+            "message": "레퍼런스 LOT를 찾지 못했습니다. 조건 또는 DB 설정을 확인해 주세요."
+        }
+
+    pipeline_store.set_reference(session_id, reference_result)
+    lot_payload = {
+        "lot_id": reference_result.get("lot_id"),
+        "columns": reference_result.get("columns", []),
+        "rows": [reference_result.get("row")],
+        "source": reference_result.get("source") or "postgresql",
+    }
+    await event_bus.broadcast({"type": "lot_result", "payload": lot_payload})
+
+    if simulation_result is None:
+        synthetic = {
+            "recommended_model": model_name,
+            "representative_lot": reference_result.get("lot_id"),
+            "params": {},
+        }
+        await event_bus.broadcast(
+            {"type": "simulation_result", "payload": {"params": params, "result": synthetic}}
+        )
+        simulation_result = {"status": "ok", "result": synthetic}
+
+    defect_rates = reference_result.get("defect_rates", [])
+    if defect_rates:
+        stats = {
+            "count": len(defect_rates),
+            "avg": sum(item["defect_rate"] for item in defect_rates) / len(defect_rates),
+        }
+        await event_bus.broadcast(
+            {
+                "type": "defect_rate_chart",
+                "payload": {
+                    "lots": defect_rates[:50],
+                    "filters": {"chip_prod_id": model_name},
+                    "stats": stats,
+                },
+            }
+        )
+
+    grid_overrides = grid_overrides or {}
+    grid_values = build_grid_values(reference_result.get("row", {}), rules, grid_overrides)
+    grid_payload = {
+        "chip_prod_id": model_name,
+        "lot_id": reference_result.get("lot_id"),
+        "grid": grid_values,
+        "max_results": rules.get("grid_search", {}).get("max_results", 100),
+    }
+    grid_results = await call_grid_search_api(grid_payload)
+    top_k = rules.get("grid_search", {}).get("top_k", 10)
+    top_k = max(1, int(top_k))
+    top_candidates = grid_results[:top_k]
+    for idx, item in enumerate(top_candidates, start=1):
+        item["rank"] = idx
+
+    pipeline_store.set_grid(
+        session_id,
+        {
+            "chip_prod_id": model_name,
+            "lot_id": reference_result.get("lot_id"),
+            "results": grid_results,
+            "top": top_candidates,
+            "overrides": grid_overrides,
+        },
+    )
+
+    await event_bus.broadcast(
+        {
+            "type": "design_candidates",
+            "payload": {
+                "candidates": top_candidates,
+                "total": len(grid_results),
+                "offset": 0,
+                "limit": len(top_candidates),
+                "target": model_name,
+            },
+        }
+    )
+
+    if simulation_result and simulation_result.get("result"):
+        summary = _format_simulation_result(simulation_result.get("result"))
+        return {
+            "message": (
+            f"추천 기종은 {model_name}입니다. 기준 LOT를 선정했고 그리드 서치를 완료했습니다. "
+            f"추천 결과 요약: {summary}. 상위 후보를 확인해 주세요."
+            ),
+            "simulation_result": simulation_result,
+        }
+    return {
+        "message": (
+            f"기종 {model_name} 기준으로 레퍼런스 LOT를 선정하고 그리드 서치를 완료했습니다. "
+            "상위 후보를 확인해 주세요."
+        ),
+        "simulation_result": simulation_result,
+    }
+
+
+async def _handle_pipeline_edit_message(
+    message: str, session_id: str
+) -> str | None:
+    state = pipeline_store.get(session_id)
+    if not state:
+        return None
+
+    grid_overrides = _extract_grid_overrides(message)
+    reference_override = None
+    lot_id = _extract_lot_id(message)
+    if lot_id and _contains_any(message, ("기준", "레퍼런스", "reference")):
+        reference_override = lot_id
+
+    if not grid_overrides and not reference_override and not _should_rerun_grid(message):
+        return None
+
+    params = simulation_store.get(session_id)
+    model_override = params.get("model_name")
+    result = await _run_reference_pipeline(
+        session_id,
+        params,
+        model_override=model_override,
+        reference_override=reference_override,
+        grid_overrides=grid_overrides or (state.get("grid") or {}).get("overrides"),
+    )
+    return result.get("message")
+
+
+async def _handle_pipeline_run_message(
+    message: str, session_id: str
+) -> str | None:
+    params = extract_simulation_params(message)
+    has_params = bool(params)
+    intent = _is_recommendation_intent(message)
+    if simulation_store.is_active(session_id) and not (has_params or intent):
+        if _is_affirmative(message):
+            stored_params = simulation_store.get(session_id)
+            model_override = stored_params.get("model_name")
+            missing = simulation_store.missing(session_id)
+            if missing and not model_override:
+                return await _generate_simulation_auto_message(
+                    stored_params, missing, None
+                )
+            result = await _run_reference_pipeline(
+                session_id, stored_params, model_override=model_override
+            )
+            return result.get("message")
+        return None
+
+    if not (has_params or intent):
+        return None
+
+    if has_params:
+        update_result = collect_simulation_params(**params)
+    else:
+        update_result = {
+            "params": simulation_store.get(session_id),
+            "missing": simulation_store.missing(session_id),
+        }
+    await emit_simulation_form(
+        update_result.get("params", {}), update_result.get("missing", [])
+    )
+
+    model_override = update_result.get("params", {}).get("model_name")
+    missing = update_result.get("missing", [])
+    if missing and not model_override:
+        return await _generate_simulation_auto_message(
+            update_result.get("params", {}), missing, None
+        )
+
+    result = await _run_reference_pipeline(
+        session_id,
+        update_result.get("params", {}),
+        model_override=model_override,
+    )
+    return result.get("message")
+
+
+async def _maybe_handle_simulation_message(
+    message: str, session_id: str
+) -> str | None:
+    edit_message = await _handle_pipeline_edit_message(message, session_id)
+    if edit_message is not None:
+        return edit_message
+    return await _handle_pipeline_run_message(message, session_id)
 
 
 @app.post("/api/test/trigger")
@@ -397,6 +713,7 @@ async def update_simulation_params_route(request: SimulationParamsRequest) -> di
             size=request.size,
             capacity=request.capacity,
             production_mode=request.production_mode,
+            model_name=request.model_name,
         )
         await emit_simulation_form(
             update_result["params"], update_result["missing"]
@@ -436,23 +753,26 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
             request.session_id,
             f"추천 실행 요청(패널): {params_summary}. 누락: {missing_text}.",
         )
-        if missing:
+        model_override = params.get("model_name")
+        if missing and not model_override:
             auto_message = await _generate_simulation_auto_message(params, missing, None)
             await _emit_chat_message(request.session_id, auto_message)
             return {"status": "missing", "missing": missing, "params": params}
-        result = await execute_simulation()
+        pipeline_result = await _run_reference_pipeline(
+            request.session_id, params, model_override=model_override
+        )
         await _append_system_note(
-            request.session_id,
-            f"추천 실행 완료: {_format_simulation_result(result.get('result'))}.",
+            request.session_id, "추천 파이프라인 실행 완료."
         )
-        auto_message = await _generate_simulation_auto_message(
-            params, [], result.get("result")
-        )
-        await _emit_chat_message(request.session_id, auto_message)
+        message = pipeline_result.get("message")
+        if message:
+            await _emit_chat_message(request.session_id, message)
+        simulation_result = pipeline_result.get("simulation_result") or {}
+        inner = simulation_result.get("result") if isinstance(simulation_result, dict) else {}
         return {
-            "status": result.get("status"),
+            "status": simulation_result.get("status") or "ok",
             "params": params,
-            "result": result.get("result"),
+            "result": inner,
         }
     finally:
         current_session_id.reset(token)
@@ -491,6 +811,10 @@ async def update_recommendation_params_route(
             request.session_id,
             f"추천 파라미터 업데이트: {len(result_payload.get('params', {}))}개.",
         )
+        auto_message = await _generate_simulation_auto_message(
+            payload.get("params", {}), [], payload.get("result")
+        )
+        await _emit_chat_message(request.session_id, auto_message)
         return {"status": "ok", **payload}
     finally:
         current_session_id.reset(token)

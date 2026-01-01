@@ -1,0 +1,78 @@
+{
+  "db": {
+    "connection_id": "",
+    "schema": "public",
+    "table": "",
+    "lot_id_column": "lot_id",
+    "chip_prod_id_column": "chip_prod_id",
+    "input_date_column": "input_date"
+  },
+  "selection": {
+    "max_candidates": 500
+  },
+  "conditions": {
+    "screen_durable_spec": {
+      "column": "screen_durable_spec_name",
+      "contains_any": ["Normal", "MF"],
+      "min_length": null
+    },
+    "required_not_null": [
+      "sintering_l_size",
+      "sintering_w_size"
+    ],
+    "design_factor_columns": [
+      "design_factor_1",
+      "design_factor_2",
+      "design_factor_3",
+      "design_factor_4",
+      "design_factor_5",
+      "design_factor_6",
+      "design_factor_7",
+      "design_factor_8",
+      "design_factor_9",
+      "design_factor_10",
+      "design_factor_11",
+      "design_factor_12",
+      "design_factor_13",
+      "design_factor_14"
+    ],
+    "defect_metrics": [
+      { "column": "defect_metric_1", "min": 0 },
+      { "column": "defect_metric_2", "min": 0 },
+      { "column": "defect_metric_3", "min": 0 },
+      { "column": "defect_metric_4", "min": 0 },
+      { "column": "defect_metric_5", "min": 0 },
+      { "column": "defect_metric_6", "min": 0 },
+      { "column": "defect_metric_7", "min": 0 },
+      { "column": "defect_metric_8", "min": 0 },
+      { "column": "defect_metric_9", "min": 0 },
+      { "column": "defect_metric_10", "min": 0 },
+      { "column": "defect_metric_11", "min": 0 }
+    ]
+  },
+  "grid_search": {
+    "factors": [
+      { "name": "sheet_t", "column": "sheet_t", "range_percent": 10, "points": 5 },
+      { "name": "laydown", "column": "laydown", "range_percent": 10, "points": 5 },
+      { "name": "active_layer", "column": "active_layer", "range_percent": 10, "points": 5 }
+    ],
+    "max_results": 100,
+    "top_k": 10
+  },
+  "defect_rate_aggregate": {
+    "columns": [
+      "defect_metric_1",
+      "defect_metric_2",
+      "defect_metric_3",
+      "defect_metric_4",
+      "defect_metric_5",
+      "defect_metric_6",
+      "defect_metric_7",
+      "defect_metric_8",
+      "defect_metric_9",
+      "defect_metric_10",
+      "defect_metric_11"
+    ],
+    "mode": "avg"
+  }
+}

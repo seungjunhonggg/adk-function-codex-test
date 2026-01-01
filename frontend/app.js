@@ -31,6 +31,7 @@ const predictionCard = document.getElementById("prediction-card");
 const frontendCard = document.getElementById("frontend-card");
 const eventLogCard = document.getElementById("event-log-card");
 const eventEmptyEl = document.getElementById("event-empty");
+const simModelInput = document.getElementById("sim-model");
 const simTemperatureInput = document.getElementById("sim-temperature");
 const simVoltageInput = document.getElementById("sim-voltage");
 const simSizeInput = document.getElementById("sim-size");
@@ -596,6 +597,7 @@ function updateMissingInputs(missing = []) {
 
 function updateFilledInputs() {
   const mapping = [
+    simModelInput,
     simTemperatureInput,
     simVoltageInput,
     simSizeInput,
@@ -617,6 +619,7 @@ function renderSimulationForm(payload = {}) {
   }
   showOnlyStreamCards([simFormCard]);
   const params = payload.params || {};
+  applyInputValue(simModelInput, params.model_name);
   applyInputValue(simTemperatureInput, params.temperature);
   applyInputValue(simVoltageInput, params.voltage);
   applyInputValue(simSizeInput, params.size);
@@ -645,6 +648,7 @@ function renderSimulationForm(payload = {}) {
 }
 
 function collectSimFormParams() {
+  const modelName = simModelInput?.value.trim();
   const temperature = simTemperatureInput?.value.trim();
   const voltage = simVoltageInput?.value.trim();
   const size = simSizeInput?.value.trim();
@@ -660,6 +664,7 @@ function collectSimFormParams() {
   };
 
   return {
+    model_name: modelName || null,
     temperature: temperature || null,
     voltage: parseNumber(voltage),
     size: parseNumber(size),
