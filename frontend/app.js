@@ -90,6 +90,10 @@ function generateSessionId() {
   return `fallback-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function generateMessageId() {
+  return generateSessionId();
+}
+
 const CURRENT_SESSION_KEY = "demo_current_session";
 const LEGACY_SESSION_KEY = "demo_session_id";
 const SESSIONS_STORAGE_KEY = "demo_sessions";
@@ -108,6 +112,15 @@ let recommendationDirty = false;
 let hasFinalBriefing = false;
 let activeChatStatusSource = "";
 let statusMessageEl = null;
+let statusTextEl = null;
+let statusEllipsisEl = null;
+let statusEllipsisTimer = null;
+let statusEllipsisIndex = 0;
+const STATUS_ELLIPSIS_FRAMES = ["", ".", "..", "..."];
+const streamingMessages = new Map();
+const completedStreamIds = new Set();
+const pendingStreamFallbacks = new Map();
+const STREAM_FALLBACK_DELAY = 1500;
 
 let historyEntries = [];
 
@@ -179,6 +192,10 @@ function saveHistory(sessionId, entries) {
 function clearChatMessages() {
   messages.innerHTML = "";
   clearChatStatus();
+  streamingMessages.clear();
+  completedStreamIds.clear();
+  pendingStreamFallbacks.forEach((timer) => clearTimeout(timer));
+  pendingStreamFallbacks.clear();
 }
 
 function formatSessionTime(value) {
@@ -378,6 +395,29 @@ function buildHistoryEntry(role, text) {
   };
 }
 
+function findHistoryEntry(messageId) {
+  if (!messageId) {
+    return null;
+  }
+  return historyEntries.find((item) => item.id === messageId) || null;
+}
+
+function findMessageElement(messageId) {
+  if (!messageId) {
+    return null;
+  }
+  return messages.querySelector(`[data-message-id="${messageId}"]`);
+}
+
+function buildHistoryEntryWithId(role, text, messageId) {
+  return {
+    id: messageId,
+    role,
+    text,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 function appendMessageToChat(entry) {
   const message = document.createElement("div");
   message.className = `message ${entry.role}`;
@@ -389,6 +429,126 @@ function appendMessageToChat(entry) {
     messages.appendChild(message);
   }
   messages.scrollTop = messages.scrollHeight;
+  return message;
+}
+
+function clearStreamFallback(messageId) {
+  if (!messageId) {
+    return;
+  }
+  const timer = pendingStreamFallbacks.get(messageId);
+  if (timer) {
+    clearTimeout(timer);
+    pendingStreamFallbacks.delete(messageId);
+  }
+}
+
+function queueStreamFallback(messageId, text) {
+  if (!messageId || pendingStreamFallbacks.has(messageId)) {
+    return;
+  }
+  const timer = setTimeout(() => {
+    if (streamingMessages.has(messageId) || completedStreamIds.has(messageId)) {
+      pendingStreamFallbacks.delete(messageId);
+      return;
+    }
+    addMessageWithId("assistant", text, messageId);
+    completedStreamIds.add(messageId);
+    pendingStreamFallbacks.delete(messageId);
+  }, STREAM_FALLBACK_DELAY);
+  pendingStreamFallbacks.set(messageId, timer);
+}
+
+function addMessageWithId(role, text, messageId) {
+  if (!messageId) {
+    addMessage(role, text);
+    return null;
+  }
+  if (role === "assistant") {
+    clearChatStatus();
+  }
+  const existing = findHistoryEntry(messageId);
+  if (existing) {
+    existing.text = text;
+    const existingEl = findMessageElement(messageId);
+    if (existingEl) {
+      existingEl.textContent = text;
+    }
+    return existing;
+  }
+  const entry = buildHistoryEntryWithId(role, text, messageId);
+  historyEntries.push(entry);
+  saveHistory(currentSessionId, historyEntries);
+  appendMessageToChat(entry);
+  updateSessionMeta(currentSessionId, entry);
+  renderSessionList(sessions);
+  return entry;
+}
+
+function startStreamedMessage(messageId, role = "assistant") {
+  if (!messageId || completedStreamIds.has(messageId)) {
+    return null;
+  }
+  clearStreamFallback(messageId);
+  let record = streamingMessages.get(messageId);
+  if (record) {
+    return record;
+  }
+  let entry = findHistoryEntry(messageId);
+  if (!entry) {
+    entry = buildHistoryEntryWithId(role, "", messageId);
+    historyEntries.push(entry);
+  } else if (entry.role !== role) {
+    entry.role = role;
+  }
+  let element = findMessageElement(messageId);
+  if (!element) {
+    element = appendMessageToChat(entry);
+  }
+  record = { entry, element };
+  streamingMessages.set(messageId, record);
+  return record;
+}
+
+function updateStreamedMessage(messageId, delta) {
+  if (!messageId || !delta || completedStreamIds.has(messageId)) {
+    return;
+  }
+  clearStreamFallback(messageId);
+  const record = startStreamedMessage(messageId);
+  if (!record) {
+    return;
+  }
+  record.entry.text += delta;
+  const element = record.element || findMessageElement(messageId);
+  if (element) {
+    element.textContent = record.entry.text;
+  }
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function finalizeStreamedMessage(messageId, content) {
+  if (!messageId) {
+    return;
+  }
+  clearStreamFallback(messageId);
+  const record = startStreamedMessage(messageId);
+  if (!record) {
+    return;
+  }
+  if (typeof content === "string" && content.length) {
+    record.entry.text = content;
+    const element = record.element || findMessageElement(messageId);
+    if (element) {
+      element.textContent = content;
+    }
+  }
+  streamingMessages.delete(messageId);
+  completedStreamIds.add(messageId);
+  saveHistory(currentSessionId, historyEntries);
+  updateSessionMeta(currentSessionId, record.entry);
+  renderSessionList(sessions);
+  clearChatStatus("chat");
 }
 
 function addMessage(role, text) {
@@ -439,6 +599,53 @@ function addEventLog(label, detail) {
   eventLogEl.prepend(row);
 }
 
+function ensureStatusMessageElements() {
+  if (!statusMessageEl) {
+    statusMessageEl = document.createElement("div");
+    statusMessageEl.className = "message assistant status";
+    messages.appendChild(statusMessageEl);
+  }
+  const existingSpinner = statusMessageEl.querySelector(".status-spinner");
+  if (!existingSpinner || !statusTextEl || !statusEllipsisEl) {
+    statusMessageEl.textContent = "";
+    const spinner = document.createElement("span");
+    spinner.className = "status-spinner";
+    statusTextEl = document.createElement("span");
+    statusTextEl.className = "status-text";
+    statusEllipsisEl = document.createElement("span");
+    statusEllipsisEl.className = "status-ellipsis";
+    statusMessageEl.append(spinner, statusTextEl, statusEllipsisEl);
+  }
+}
+
+function startStatusEllipsis() {
+  if (!statusEllipsisEl) {
+    return;
+  }
+  if (statusEllipsisTimer) {
+    return;
+  }
+  statusEllipsisIndex = 0;
+  statusEllipsisEl.textContent = STATUS_ELLIPSIS_FRAMES[statusEllipsisIndex];
+  statusEllipsisTimer = setInterval(() => {
+    statusEllipsisIndex =
+      (statusEllipsisIndex + 1) % STATUS_ELLIPSIS_FRAMES.length;
+    if (statusEllipsisEl) {
+      statusEllipsisEl.textContent = STATUS_ELLIPSIS_FRAMES[statusEllipsisIndex];
+    }
+  }, 450);
+}
+
+function stopStatusEllipsis() {
+  if (statusEllipsisTimer) {
+    clearInterval(statusEllipsisTimer);
+    statusEllipsisTimer = null;
+  }
+  if (statusEllipsisEl) {
+    statusEllipsisEl.textContent = "";
+  }
+}
+
 function setChatStatus(message, source = "system") {
   if (!message) {
     clearChatStatus(source);
@@ -448,12 +655,12 @@ function setChatStatus(message, source = "system") {
     return;
   }
   activeChatStatusSource = source;
-  if (!statusMessageEl) {
-    statusMessageEl = document.createElement("div");
-    statusMessageEl.className = "message assistant status";
-    messages.appendChild(statusMessageEl);
+  ensureStatusMessageElements();
+  const baseMessage = String(message).replace(/\.+$/, "").trim();
+  if (statusTextEl) {
+    statusTextEl.textContent = baseMessage;
   }
-  statusMessageEl.textContent = message;
+  startStatusEllipsis();
   messages.scrollTop = messages.scrollHeight;
 }
 
@@ -461,10 +668,13 @@ function clearChatStatus(source = "") {
   if (source && activeChatStatusSource && source !== activeChatStatusSource) {
     return;
   }
+  stopStatusEllipsis();
   if (statusMessageEl && statusMessageEl.parentNode) {
     statusMessageEl.parentNode.removeChild(statusMessageEl);
   }
   statusMessageEl = null;
+  statusTextEl = null;
+  statusEllipsisEl = null;
   activeChatStatusSource = "";
 }
 
@@ -1587,6 +1797,24 @@ function handleEvent(event) {
     return;
   }
 
+  if (event.type === "chat_stream_start") {
+    const messageId = event.payload?.message_id;
+    const role = event.payload?.role || "assistant";
+    startStreamedMessage(messageId, role);
+  }
+
+  if (event.type === "chat_stream_delta") {
+    const messageId = event.payload?.message_id;
+    const delta = event.payload?.delta || "";
+    updateStreamedMessage(messageId, delta);
+  }
+
+  if (event.type === "chat_stream_end") {
+    const messageId = event.payload?.message_id;
+    const content = event.payload?.content || "";
+    finalizeStreamedMessage(messageId, content);
+  }
+
   if (event.type === "chat_message") {
     const role = event.payload?.role || "assistant";
     const content = event.payload?.content || "";
@@ -1744,12 +1972,17 @@ async function sendChatMessage(message) {
   input.style.height = "auto";
   const startedAt = performance.now();
   setChatStatus("응답 생성 중...", "chat");
+  const messageId = generateMessageId();
 
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: currentSessionId, message }),
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        message,
+        message_id: messageId,
+      }),
     });
 
     if (!response.ok) {
@@ -1758,7 +1991,23 @@ async function sendChatMessage(message) {
     }
 
     const data = await response.json();
-    addMessage("assistant", data.assistant_message || "(응답 없음)");
+    const responseMessageId = data.message_id || messageId;
+    const assistantMessage = data.assistant_message || "(응답 없음)";
+    if (data.streamed) {
+      const hasStream =
+        streamingMessages.has(responseMessageId) ||
+        completedStreamIds.has(responseMessageId);
+      if (!hasStream) {
+        const wsReady = socket && socket.readyState === WebSocket.OPEN;
+        if (wsReady) {
+          queueStreamFallback(responseMessageId, assistantMessage);
+        } else {
+          addMessageWithId("assistant", assistantMessage, responseMessageId);
+        }
+      }
+      return;
+    }
+    addMessageWithId("assistant", assistantMessage, responseMessageId);
   } catch (error) {
     addMessage("assistant", "네트워크 오류입니다. 백엔드 상태를 확인해 주세요.");
   } finally {

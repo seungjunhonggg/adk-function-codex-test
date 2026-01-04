@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 import asyncio
+from uuid import uuid4
 
 from agents import Runner, SQLiteSession
 from agents.tracing import set_tracing_disabled
@@ -80,6 +81,7 @@ app = FastAPI(title="공정 모니터링 데모")
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    message_id: str | None = None
 
 
 class TestRequest(BaseModel):
@@ -153,6 +155,7 @@ async def builder() -> FileResponse:
 async def chat(request: ChatRequest) -> dict:
     session = SQLiteSession(request.session_id, SESSION_DB_PATH)
     token = current_session_id.set(request.session_id)
+    message_id = request.message_id or str(uuid4())
     try:
         route_command = await _route_message(request.message, request.session_id)
         if route_command.get("needs_clarification") and route_command.get("clarifying_question"):
@@ -170,7 +173,12 @@ async def chat(request: ChatRequest) -> dict:
             await emit_workflow_log("FLOW", "clarification_requested")
             await _append_user_message(request.session_id, request.message)
             await _append_assistant_message(request.session_id, clarifying)
-            return {"assistant_message": clarifying}
+            await _emit_chat_stream_message(request.session_id, message_id, clarifying)
+            return {
+                "assistant_message": clarifying,
+                "message_id": message_id,
+                "streamed": True,
+            }
 
         primary_intent = route_command.get("primary_intent")
         await emit_workflow_log(
@@ -189,7 +197,12 @@ async def chat(request: ChatRequest) -> dict:
                 request.message, request.session_id, route_command
             )
             await _append_assistant_message(request.session_id, response)
-            return {"assistant_message": response}
+            await _emit_chat_stream_message(request.session_id, message_id, response)
+            return {
+                "assistant_message": response,
+                "message_id": message_id,
+                "streamed": True,
+            }
         if primary_intent == "chart_edit":
             await emit_workflow_log("FLOW", "chart_edit -> apply_chart_config")
             await _append_user_message(request.session_id, request.message)
@@ -197,7 +210,12 @@ async def chat(request: ChatRequest) -> dict:
                 request.message, request.session_id, route_command
             )
             await _append_assistant_message(request.session_id, response)
-            return {"assistant_message": response}
+            await _emit_chat_stream_message(request.session_id, message_id, response)
+            return {
+                "assistant_message": response,
+                "message_id": message_id,
+                "streamed": True,
+            }
 
         if primary_intent == "simulation_edit":
             await emit_workflow_log("FLOW", "simulation_edit -> edit_intent")
@@ -207,7 +225,14 @@ async def chat(request: ChatRequest) -> dict:
             if edit_response is not None:
                 await _append_user_message(request.session_id, request.message)
                 await _append_assistant_message(request.session_id, edit_response)
-                return {"assistant_message": edit_response}
+                await _emit_chat_stream_message(
+                    request.session_id, message_id, edit_response
+                )
+                return {
+                    "assistant_message": edit_response,
+                    "message_id": message_id,
+                    "streamed": True,
+                }
             await emit_workflow_log("FLOW", "simulation_edit -> pipeline")
             sim_response = await _maybe_handle_simulation_message(
                 request.message, request.session_id
@@ -215,7 +240,14 @@ async def chat(request: ChatRequest) -> dict:
             if sim_response is not None:
                 await _append_user_message(request.session_id, request.message)
                 await _append_assistant_message(request.session_id, sim_response)
-                return {"assistant_message": sim_response}
+                await _emit_chat_stream_message(
+                    request.session_id, message_id, sim_response
+                )
+                return {
+                    "assistant_message": sim_response,
+                    "message_id": message_id,
+                    "streamed": True,
+                }
 
         if primary_intent == "simulation_run":
             await emit_workflow_log("FLOW", "simulation_run -> edit_intent")
@@ -225,7 +257,14 @@ async def chat(request: ChatRequest) -> dict:
             if edit_response is not None:
                 await _append_user_message(request.session_id, request.message)
                 await _append_assistant_message(request.session_id, edit_response)
-                return {"assistant_message": edit_response}
+                await _emit_chat_stream_message(
+                    request.session_id, message_id, edit_response
+                )
+                return {
+                    "assistant_message": edit_response,
+                    "message_id": message_id,
+                    "streamed": True,
+                }
 
             await emit_workflow_log("FLOW", "simulation_run -> pipeline")
             sim_response = await _maybe_handle_simulation_message(
@@ -234,30 +273,44 @@ async def chat(request: ChatRequest) -> dict:
             if sim_response is not None:
                 await _append_user_message(request.session_id, request.message)
                 await _append_assistant_message(request.session_id, sim_response)
-                return {"assistant_message": sim_response}
+                await _emit_chat_stream_message(
+                    request.session_id, message_id, sim_response
+                )
+                return {
+                    "assistant_message": sim_response,
+                    "message_id": message_id,
+                    "streamed": True,
+                }
 
         if primary_intent == "chat":
             await emit_workflow_log("FLOW", "chat -> conversation_agent")
             await _append_user_message(request.session_id, request.message)
-            convo = await Runner.run(
-                conversation_agent,
-                input=request.message,
-                session=session,
-                hooks=WorkflowRunHooks(),
+            response, streamed = await _run_conversation_streamed(
+                request.message,
+                session,
+                request.session_id,
+                message_id,
             )
-            response = (convo.final_output or "").strip()
             await _append_assistant_message(request.session_id, response)
-            return {"assistant_message": response}
+            return {
+                "assistant_message": response,
+                "message_id": message_id,
+                "streamed": streamed,
+            }
 
         await emit_workflow_log("FLOW", "fallback -> conversation_agent")
-        fallback = await Runner.run(
-            conversation_agent,
-            input=request.message,
-            session=session,
-            hooks=WorkflowRunHooks(),
+        response, streamed = await _run_conversation_streamed(
+            request.message,
+            session,
+            request.session_id,
+            message_id,
         )
         await _maybe_update_simulation_from_message(request.message, request.session_id)
-        return {"assistant_message": (fallback.final_output or "").strip()}
+        return {
+            "assistant_message": response,
+            "message_id": message_id,
+            "streamed": streamed,
+        }
     finally:
         current_session_id.reset(token)
 
@@ -354,10 +407,92 @@ async def _append_assistant_message(session_id: str, content: str) -> None:
 async def _emit_chat_message(session_id: str, content: str) -> None:
     if not content:
         return
+    message_id = str(uuid4())
     await _append_assistant_message(session_id, content)
+    await _emit_chat_stream_message(session_id, message_id, content)
+
+
+async def _emit_chat_stream_start(session_id: str, message_id: str) -> None:
     await event_bus.broadcast(
-        {"type": "chat_message", "payload": {"role": "assistant", "content": content}}
+        {
+            "type": "chat_stream_start",
+            "payload": {"message_id": message_id, "role": "assistant"},
+        },
+        session_id=session_id,
     )
+
+
+async def _emit_chat_stream_delta(session_id: str, message_id: str, delta: str) -> None:
+    if not delta:
+        return
+    await event_bus.broadcast(
+        {"type": "chat_stream_delta", "payload": {"message_id": message_id, "delta": delta}},
+        session_id=session_id,
+    )
+
+
+async def _emit_chat_stream_end(session_id: str, message_id: str, content: str) -> None:
+    await event_bus.broadcast(
+        {"type": "chat_stream_end", "payload": {"message_id": message_id, "content": content}},
+        session_id=session_id,
+    )
+
+
+async def _emit_chat_stream_message(session_id: str, message_id: str, content: str) -> None:
+    if not content:
+        return
+    length = len(content)
+    if length <= 120:
+        chunk_size = 6
+        delay = 0.03
+    elif length <= 300:
+        chunk_size = 12
+        delay = 0.025
+    else:
+        chunk_size = 24
+        delay = 0.02
+    await _emit_chat_stream_start(session_id, message_id)
+    for idx in range(0, length, chunk_size):
+        await _emit_chat_stream_delta(session_id, message_id, content[idx : idx + chunk_size])
+        if idx + chunk_size < length:
+            await asyncio.sleep(delay)
+    await _emit_chat_stream_end(session_id, message_id, content)
+
+
+async def _run_conversation_streamed(
+    message: str,
+    session: SQLiteSession,
+    session_id: str,
+    message_id: str,
+) -> tuple[str, bool]:
+    run = Runner.run_streamed(
+        conversation_agent,
+        input=message,
+        session=session,
+        hooks=WorkflowRunHooks(),
+    )
+    chunks: list[str] = []
+    started = False
+    async for event in run.stream_events():
+        if getattr(event, "type", None) != "raw_response_event":
+            continue
+        data = getattr(event, "data", None)
+        if getattr(data, "type", None) != "response.output_text.delta":
+            continue
+        delta = data.delta
+        if not delta:
+            continue
+        if not started:
+            started = True
+            await _emit_chat_stream_start(session_id, message_id)
+        chunks.append(delta)
+        await _emit_chat_stream_delta(session_id, message_id, delta)
+    response_text = (run.final_output or "".join(chunks) or "").strip()
+    if started:
+        await _emit_chat_stream_end(session_id, message_id, response_text)
+    elif response_text:
+        await _emit_chat_stream_message(session_id, message_id, response_text)
+    return response_text, True
 
 
 async def _emit_pipeline_status(stage: str, message: str, done: bool = False) -> None:
