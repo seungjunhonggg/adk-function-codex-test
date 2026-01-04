@@ -783,6 +783,14 @@ body::before {
   font-size: 12px;
 }
 
+.message.status {
+  background: transparent;
+  color: #b0b0b0;
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 0;
+}
+
 .composer {
   border-top: 1px solid rgba(15, 15, 15, 0.08);
   padding: 14px 18px;
@@ -1097,6 +1105,43 @@ body::before {
   gap: 8px;
 }
 
+.defect-histogram {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  height: 160px;
+  padding: 8px 4px 4px;
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.defect-bin {
+  flex: 1;
+  min-width: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.defect-bin-bar {
+  width: 100%;
+  min-height: 6px;
+  background: var(--accent-2);
+  border-radius: 6px 6px 4px 4px;
+}
+
+.defect-bin-label {
+  font-size: 10px;
+  color: var(--text-soft);
+  text-align: center;
+}
+
+.defect-bin-value {
+  font-size: 10px;
+  color: var(--text-soft);
+}
+
 .defect-row {
   display: grid;
   grid-template-columns: 70px 1fr 60px;
@@ -1270,6 +1315,7 @@ body::before {
     transform: translateY(0);
   }
 }
+
 
 @media (max-width: 1100px) {
   .app {

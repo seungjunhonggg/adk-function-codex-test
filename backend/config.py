@@ -8,14 +8,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", )
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 if OPENAI_API_KEY and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5-nano")
-TRACING_ENABLED = _env_bool("OPENAI_AGENTS_TRACING_ENABLED", True)
+TRACING_ENABLED = _env_bool("OPENAI_AGENTS_TRACING_ENABLED", False)
 SIM_API_URL = os.getenv("SIM_API_URL", "")
 PREDICT_API_URL = os.getenv("PREDICT_API_URL", "")
 GRID_SEARCH_API_URL = os.getenv("GRID_SEARCH_API_URL", "")
+DEMO_LATENCY_SECONDS = float(os.getenv("DEMO_LATENCY_SECONDS", "2.5"))
 SESSION_DB_PATH = os.getenv("SESSION_DB_PATH", "sessions.db")
 DB_PATH = os.getenv("DB_PATH", "process_data.db")
 WORKFLOW_PATH = os.getenv("WORKFLOW_PATH", "workflow.json")

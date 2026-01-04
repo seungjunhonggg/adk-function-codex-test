@@ -19,6 +19,45 @@ class PipelineStateStore:
     def clear(self, session_id: str) -> None:
         self._data.pop(session_id, None)
 
+    def add_status(self, session_id: str, stage: str, message: str, done: bool = False) -> dict[str, Any]:
+        record = dict(self._data.get(session_id, {}))
+        history = list(record.get("status_history", []))
+        history.append(
+            {"stage": stage, "message": message, "done": bool(done)}
+        )
+        record["status_history"] = history[-60:]
+        status = dict(record.get("status", {}))
+        status[stage] = {"message": message, "done": bool(done)}
+        record["status"] = status
+        self._data[session_id] = record
+        return dict(record)
+
+    def get_status_history(self, session_id: str) -> list[dict[str, Any]]:
+        record = self._data.get(session_id, {})
+        history = record.get("status_history", [])
+        return list(history) if isinstance(history, list) else []
+
+    def get_status(self, session_id: str) -> dict[str, Any]:
+        record = self._data.get(session_id, {})
+        status = record.get("status", {})
+        return dict(status) if isinstance(status, dict) else {}
+
+    def get_events(self, session_id: str) -> dict[str, Any]:
+        record = self._data.get(session_id, {})
+        events = record.get("events", {})
+        return dict(events) if isinstance(events, dict) else {}
+
+    def get_event(self, session_id: str, event_type: str) -> Any | None:
+        return self.get_events(session_id).get(event_type)
+
+    def set_event(self, session_id: str, event_type: str, payload: Any) -> dict[str, Any]:
+        record = dict(self._data.get(session_id, {}))
+        events = dict(record.get("events", {}))
+        events[event_type] = payload
+        record["events"] = events
+        self._data[session_id] = record
+        return dict(record)
+
     def set_reference(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.update(session_id, reference=payload, stage="reference")
 

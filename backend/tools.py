@@ -19,6 +19,27 @@ KNOWLEDGE_BASE = [
     },
 ]
 
+STAGE_EVENT_MAP = {
+    "recommendation": ["simulation_result"],
+    "reference": ["lot_result", "defect_rate_chart"],
+    "grid": ["design_candidates"],
+    "final": ["final_briefing"],
+}
+
+STAGE_ALIASES = {
+    "추천": "recommendation",
+    "추천결과": "recommendation",
+    "레퍼런스": "reference",
+    "기준": "reference",
+    "기준lot": "reference",
+    "reference": "reference",
+    "grid": "grid",
+    "그리드": "grid",
+    "최종": "final",
+    "브리핑": "final",
+    "final": "final",
+}
+
 from .context import current_session_id
 from .config import (
     LOT_DB_COLUMNS,
@@ -38,6 +59,7 @@ from .db import query_process_data
 from .db_connections import execute_table_query, execute_table_query_multi
 from .events import event_bus
 from .observability import emit_workflow_log
+from .pipeline_store import pipeline_store
 from .lot_store import lot_store
 from .db_view_profile import (
     get_filter_column_names,
@@ -107,8 +129,115 @@ def _format_filters(filters: list[dict]) -> str:
     return ", ".join(parts) if parts else "no_filters"
 
 
+def _normalize_stage(stage: str | None) -> str:
+    if not stage:
+        return ""
+    raw = str(stage).strip().lower()
+    if raw in STAGE_EVENT_MAP:
+        return raw
+    for key, value in STAGE_ALIASES.items():
+        if key.lower() in raw:
+            return value
+    return ""
+
+
+def _available_stages(events: dict) -> list[str]:
+    available = []
+    for stage, event_types in STAGE_EVENT_MAP.items():
+        if any(event_type in events for event_type in event_types):
+            available.append(stage)
+    return available
+
+
+def _coerce_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_defect_values(payload: dict) -> list[float]:
+    values = []
+    for item in payload.get("lots", []) if isinstance(payload, dict) else []:
+        rate = _coerce_float(item.get("defect_rate") if isinstance(item, dict) else None)
+        if rate is None:
+            continue
+        values.append(rate)
+    return values
+
+
+def _build_series_from_lots(lots: list[dict], value_unit: str | None) -> list[dict]:
+    series = []
+    for idx, item in enumerate(lots, start=1):
+        if not isinstance(item, dict):
+            continue
+        rate = _coerce_float(item.get("defect_rate"))
+        if rate is None:
+            continue
+        if value_unit == "percent":
+            rate = rate * 100
+        series.append(
+            {
+                "x": idx,
+                "y": rate,
+                "lot_id": item.get("lot_id"),
+            }
+        )
+    return series
+
+
+def _compute_histogram(
+    values: list[float],
+    bins: int,
+    range_min: float | None,
+    range_max: float | None,
+    normalize: str,
+    value_unit: str | None,
+) -> dict:
+    if not values:
+        return {"bins": [], "normalize": normalize, "value_unit": value_unit}
+
+    values_min = min(values)
+    values_max = max(values)
+    lower = values_min if range_min is None else range_min
+    upper = values_max if range_max is None else range_max
+    if lower == upper:
+        upper = lower + 1e-6
+    bins = max(1, int(bins))
+
+    width = (upper - lower) / bins
+    counts = [0 for _ in range(bins)]
+    for value in values:
+        if value < lower or value > upper:
+            continue
+        idx = int((value - lower) / width)
+        if idx >= bins:
+            idx = bins - 1
+        counts[idx] += 1
+
+    total = max(1, sum(counts))
+    bin_entries = []
+    for idx, count in enumerate(counts):
+        start = lower + idx * width
+        end = start + width
+        entry = {"start": start, "end": end, "count": count}
+        if normalize == "percent":
+            entry["value"] = round((count / total) * 100, 3)
+        elif normalize == "ratio":
+            entry["value"] = round(count / total, 6)
+        bin_entries.append(entry)
+
+    return {
+        "bins": bin_entries,
+        "normalize": normalize,
+        "value_unit": value_unit,
+    }
+
+
 async def _log_route(route: str, detail: str) -> None:
-    await emit_workflow_log("ROUTE", f"{route}: {detail}")
+    await emit_workflow_log("STATE", f"{route}: {detail}")
 
 
 async def _log_tool_call(name: str, **kwargs: object) -> None:
@@ -203,6 +332,7 @@ async def emit_lot_info(lot_id: str = "", limit: int = 12) -> dict:
             {"lot_id": lot_id, "row": rows[0], "rows": rows},
         )
     await event_bus.broadcast({"type": "lot_result", "payload": payload})
+    pipeline_store.set_event(current_session_id.get(), "lot_result", payload)
     if rows:
         message = f"LOT {lot_id} 조회 결과를 표시했습니다."
     else:
@@ -258,6 +388,11 @@ async def execute_simulation() -> dict:
             "payload": {"params": params, "result": result},
         }
     )
+    pipeline_store.set_event(
+        session_id,
+        "simulation_result",
+        {"params": params, "result": result},
+    )
     await emit_frontend_trigger(
         "인접기종 추천 결과가 도착했습니다.",
         {"params": params, "result": result},
@@ -285,7 +420,217 @@ async def emit_simulation_form(params: dict, missing: list[str]) -> dict:
     simulation_store.activate(session_id)
     event = {"type": "simulation_form", "payload": {"params": params, "missing": missing}}
     await event_bus.broadcast(event)
+    pipeline_store.set_event(session_id, "simulation_form", event["payload"])
     return event["payload"]
+
+
+async def show_simulation_stage_impl(stage: str = "") -> dict:
+    """Re-display a stored simulation stage UI on the event panel."""
+    await _log_tool_call("show_simulation_stage", stage=stage)
+    session_id = current_session_id.get()
+    events = pipeline_store.get_events(session_id)
+    if not events:
+        message = "저장된 단계 결과가 없습니다. 먼저 시뮬레이션을 실행해 주세요."
+        await _log_tool_result("show_simulation_stage", "status=missing events=0")
+        return {"status": "missing", "message": message, "available": []}
+
+    stage_key = _normalize_stage(stage)
+    if not stage_key:
+        available = _available_stages(events)
+        message = "어떤 단계 화면을 보여드릴까요? (추천/레퍼런스/그리드/최종)"
+        await _log_tool_result(
+            "show_simulation_stage", f"status=missing stage=unknown available={len(available)}"
+        )
+        return {"status": "missing", "message": message, "available": available}
+
+    event_types = STAGE_EVENT_MAP.get(stage_key, [])
+    sent = []
+    for event_type in event_types:
+        payload = events.get(event_type)
+        if payload:
+            await event_bus.broadcast({"type": event_type, "payload": payload})
+            sent.append(event_type)
+
+    if not sent:
+        available = _available_stages(events)
+        message = "해당 단계의 저장된 결과가 없습니다."
+        await _log_tool_result(
+            "show_simulation_stage", f"status=missing stage={stage_key} available={len(available)}"
+        )
+        return {"status": "missing", "message": message, "available": available}
+
+    await _log_tool_result(
+        "show_simulation_stage", f"status=ok stage={stage_key} sent={len(sent)}"
+    )
+    return {"status": "ok", "stage": stage_key, "sent": sent, "available": _available_stages(events)}
+
+
+@function_tool
+async def show_simulation_stage(stage: str = "") -> dict:
+    """Re-display a stored simulation stage UI on the event panel."""
+    return await show_simulation_stage_impl(stage)
+
+
+async def get_simulation_progress_impl() -> dict:
+    """Show stored pipeline progress in the event log."""
+    await _log_tool_call("get_simulation_progress")
+    session_id = current_session_id.get()
+    history = pipeline_store.get_status_history(session_id)
+    if not history:
+        message = "No progress history is available."
+        await _log_tool_result("get_simulation_progress", "status=missing history=0")
+        return {"status": "missing", "message": message, "history": []}
+
+    for entry in history[-12:]:
+        stage = entry.get("stage", "-")
+        text = entry.get("message", "")
+        await emit_workflow_log("PROGRESS", f"{stage}: {text}")
+
+    await _log_tool_result(
+        "get_simulation_progress", f"status=ok history={len(history)}"
+    )
+    return {"status": "ok", "history": history[-12:]}
+
+
+@function_tool
+async def get_simulation_progress() -> dict:
+    """Show stored pipeline progress in the event log."""
+    return await get_simulation_progress_impl()
+
+
+async def reset_simulation_state_impl(reason: str | None = None) -> dict:
+    """Reset simulation/session state and clear cached UI events."""
+    await _log_tool_call("reset_simulation_state", reason=reason)
+    session_id = current_session_id.get()
+    simulation_store.clear(session_id)
+    recommendation_store.clear(session_id)
+    pipeline_store.clear(session_id)
+    test_simulation_store.clear(session_id)
+    await emit_frontend_trigger("Simulation state reset.", {"reason": reason or ""})
+    await _log_tool_result("reset_simulation_state", "status=ok")
+    return {"status": "ok", "message": "reset"}
+
+
+@function_tool
+async def reset_simulation_state(reason: str | None = None) -> dict:
+    """Reset simulation/session state and clear cached UI events."""
+    return await reset_simulation_state_impl(reason=reason)
+
+
+async def apply_chart_config_impl(
+    chart_type: str | None = None,
+    bins: int | None = None,
+    range_min: float | None = None,
+    range_max: float | None = None,
+    normalize: str | None = None,
+    value_unit: str | None = None,
+    reset: bool = False,
+    note: str | None = None,
+) -> dict:
+    """Update the defect-rate chart (histogram only)."""
+    await _log_route("chart", "apply_chart_config")
+    await _log_tool_call(
+        "apply_chart_config",
+        chart_type=chart_type,
+        bins=bins,
+        range_min=range_min,
+        range_max=range_max,
+        normalize=normalize,
+        value_unit=value_unit,
+        reset=reset,
+        note=note,
+    )
+    session_id = current_session_id.get()
+    payload = pipeline_store.get_event(session_id, "defect_rate_chart")
+    if not isinstance(payload, dict):
+        message = "아직 불량률 차트 데이터가 없습니다. 시뮬레이션을 먼저 실행해 주세요."
+        await _log_tool_result("apply_chart_config", "status=missing chart=none")
+        return {"status": "missing", "message": message}
+
+    chart_type = (chart_type or "histogram").lower()
+    supported_types = {"histogram", "bar", "line", "scatter", "area"}
+    if chart_type not in supported_types:
+        message = "Unsupported chart type."
+        await _log_tool_result("apply_chart_config", f"status=unsupported type={chart_type}")
+        return {"status": "unsupported", "message": message, "chart_type": chart_type}
+
+    lots = payload.get("lots", []) if isinstance(payload, dict) else []
+    values = _extract_defect_values(payload)
+    if not values:
+        message = "No defect rate values available."
+        await _log_tool_result("apply_chart_config", "status=missing values=0")
+        return {"status": "missing", "message": message}
+
+    default_bins = max(6, min(18, int(len(values) ** 0.5)))
+    if reset:
+        bins = default_bins
+        range_min = None
+        range_max = None
+        normalize = "count"
+        value_unit = None
+
+    bins = bins if isinstance(bins, int) and bins > 0 else default_bins
+    normalize = (normalize or "count").lower()
+    if normalize not in ("count", "percent", "ratio"):
+        normalize = "count"
+    value_unit = (value_unit or "").lower() or None
+
+    if value_unit == "percent":
+        values = [value * 100 for value in values]
+
+    histogram = None
+    if chart_type == "histogram":
+        histogram = _compute_histogram(values, bins, range_min, range_max, normalize, value_unit)
+
+    series = None
+    if chart_type in {"line", "scatter", "area"}:
+        series = _build_series_from_lots(lots, value_unit)
+    config = {
+        "chart_type": chart_type,
+        "bins": bins,
+        "range_min": range_min,
+        "range_max": range_max,
+        "normalize": normalize,
+        "value_unit": value_unit,
+    }
+    updated_payload = dict(payload)
+    updated_payload["chart_type"] = chart_type
+    if histogram is not None:
+        updated_payload["histogram"] = histogram
+    else:
+        updated_payload.pop("histogram", None)
+    if series is not None:
+        updated_payload["series"] = series
+    updated_payload["config"] = config
+    await event_bus.broadcast({"type": "defect_rate_chart", "payload": updated_payload})
+    pipeline_store.set_event(session_id, "defect_rate_chart", updated_payload)
+    pipeline_store.update(session_id, chart_config=config)
+    await _log_tool_result("apply_chart_config", f"status=ok bins={bins} normalize={normalize}")
+    return {"status": "ok", "chart_type": chart_type, "config": config}
+
+
+@function_tool(strict_mode=False)
+async def apply_chart_config(
+    chart_type: str | None = None,
+    bins: int | None = None,
+    range_min: float | None = None,
+    range_max: float | None = None,
+    normalize: str | None = None,
+    value_unit: str | None = None,
+    reset: bool = False,
+    note: str | None = None,
+) -> dict:
+    """Update the defect-rate chart (histogram only)."""
+    return await apply_chart_config_impl(
+        chart_type=chart_type,
+        bins=bins,
+        range_min=range_min,
+        range_max=range_max,
+        normalize=normalize,
+        value_unit=value_unit,
+        reset=reset,
+        note=note,
+    )
 
 
 def _search_knowledge_base(query: str, top_k: int) -> list[dict]:
@@ -529,6 +874,7 @@ async def run_prediction_simulation() -> dict:
     result = await call_prediction_api(params)
     payload = {"recommendation": recommendation, "result": result}
     await event_bus.broadcast({"type": "prediction_result", "payload": payload})
+    pipeline_store.set_event(current_session_id.get(), "prediction_result", payload)
     await emit_frontend_trigger(
         "예측 시뮬레이션 결과가 도착했습니다.",
         payload,
@@ -627,6 +973,11 @@ async def filter_lots_by_defect_rate(
             },
         }
     )
+    pipeline_store.set_event(
+        session_id,
+        "defect_rate_chart",
+        {"lots": chart_lots, "filters": {"min_rate": min_rate, "max_rate": max_rate}, "stats": stats},
+    )
 
     if not filtered:
         await emit_frontend_trigger("불량률 조건에 맞는 LOT가 없습니다.")
@@ -718,6 +1069,17 @@ async def run_design_grid_search(
                 "target": target_value,
             },
         }
+    )
+    pipeline_store.set_event(
+        session_id,
+        "design_candidates",
+        {
+            "candidates": top_candidates,
+            "total": len(results),
+            "offset": 0,
+            "limit": top_count,
+            "target": target_value,
+        },
     )
     await emit_frontend_trigger(
         f"설계 후보 {len(results)}건 중 상위 {len(top_candidates)}건을 표시했습니다.",
@@ -811,6 +1173,7 @@ async def open_simulation_form() -> dict:
     params = simulation_store.get(session_id)
     missing = simulation_store.missing(session_id)
     await emit_simulation_form(params, missing)
+    pipeline_store.set_event(session_id, "simulation_form", {"params": params, "missing": missing})
     await _log_tool_result(
         "open_simulation_form",
         f"missing={len(missing)} params={len(params)}",
@@ -818,8 +1181,7 @@ async def open_simulation_form() -> dict:
     return {"params": params, "missing": missing}
 
 
-@function_tool
-async def run_lot_simulation(lot_id: str = "") -> dict:
+async def run_lot_simulation_impl(lot_id: str = "") -> dict:
     """Fetch LOT data, derive params, run simulation, and emit the result to the UI."""
     session_id = current_session_id.get()
     lot_payload = None
@@ -872,6 +1234,12 @@ async def run_lot_simulation(lot_id: str = "") -> dict:
     payload["params"] = simulation_store.get(session_id)
     await _log_tool_result("run_lot_simulation", "status=ok")
     return payload
+
+
+@function_tool
+async def run_lot_simulation(lot_id: str = "") -> dict:
+    """Fetch LOT data, derive params, run simulation, and emit the result to the UI."""
+    return await run_lot_simulation_impl(lot_id=lot_id)
 
 
 @function_tool(strict_mode=False)

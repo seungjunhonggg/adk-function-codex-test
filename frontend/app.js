@@ -27,6 +27,7 @@ const lotCard = document.getElementById("lot-card");
 const simResultCard = document.getElementById("sim-result-card");
 const defectChartCard = document.getElementById("defect-chart-card");
 const designCandidatesCard = document.getElementById("design-candidates-card");
+const finalBriefingCard = document.getElementById("final-briefing-card");
 const predictionCard = document.getElementById("prediction-card");
 const frontendCard = document.getElementById("frontend-card");
 const eventLogCard = document.getElementById("event-log-card");
@@ -44,6 +45,21 @@ const recommendationApplyButton = document.getElementById("recommend-apply");
 const recommendationStatusEl = document.getElementById("recommend-status");
 const defectChartEl = document.getElementById("defect-chart");
 const designCandidatesEl = document.getElementById("design-candidates");
+const finalBriefingEl = document.getElementById("final-briefing");
+const defaultLotResultText = lotResultEl ? lotResultEl.textContent : "";
+const defaultSimResultText = simResultEl ? simResultEl.textContent : "";
+const defaultPredictionResultText = predictionResultEl ? predictionResultEl.textContent : "";
+const defaultFrontendTriggerText = frontendTriggerEl ? frontendTriggerEl.textContent : "";
+const defaultCurrentLotText = currentLotEl ? currentLotEl.textContent : "";
+const defaultSimFormStatusText = simFormStatus ? simFormStatus.textContent : "";
+const defaultRecommendationStatusText = recommendationStatusEl
+  ? recommendationStatusEl.textContent
+  : "";
+const defaultDefectChartText = defectChartEl ? defectChartEl.textContent : "";
+const defaultDesignCandidatesText = designCandidatesEl
+  ? designCandidatesEl.textContent
+  : "";
+const defaultFinalBriefingText = finalBriefingEl ? finalBriefingEl.textContent : "";
 const sessionListEl = document.getElementById("session-list");
 const sessionEmptyEl = document.getElementById("session-empty");
 const sessionCountEl = document.getElementById("session-count");
@@ -89,6 +105,9 @@ sessionEl.textContent = "--";
 let lastLotId = "";
 let isComposing = false;
 let recommendationDirty = false;
+let hasFinalBriefing = false;
+let activeChatStatusSource = "";
+let statusMessageEl = null;
 
 let historyEntries = [];
 
@@ -159,6 +178,7 @@ function saveHistory(sessionId, entries) {
 
 function clearChatMessages() {
   messages.innerHTML = "";
+  clearChatStatus();
 }
 
 function formatSessionTime(value) {
@@ -307,6 +327,9 @@ function setActiveSession(sessionId, options = {}) {
   sessionEl.textContent = sessionId.slice(0, 8);
   historyEntries = loadHistory(sessionId);
   clearChatMessages();
+  if (shouldSwitch) {
+    resetEventPanel();
+  }
   historyEntries.forEach((entry) => appendMessageToChat(entry));
   const session = ensureSession(sessionId);
   if (!session.preview && historyEntries.length) {
@@ -360,11 +383,18 @@ function appendMessageToChat(entry) {
   message.className = `message ${entry.role}`;
   message.dataset.messageId = entry.id;
   message.textContent = entry.text;
-  messages.appendChild(message);
+  if (statusMessageEl && statusMessageEl.parentNode === messages) {
+    messages.insertBefore(message, statusMessageEl);
+  } else {
+    messages.appendChild(message);
+  }
   messages.scrollTop = messages.scrollHeight;
 }
 
 function addMessage(role, text) {
+  if (role === "assistant") {
+    clearChatStatus();
+  }
   const entry = buildHistoryEntry(role, text);
   historyEntries.push(entry);
   saveHistory(currentSessionId, historyEntries);
@@ -409,6 +439,35 @@ function addEventLog(label, detail) {
   eventLogEl.prepend(row);
 }
 
+function setChatStatus(message, source = "system") {
+  if (!message) {
+    clearChatStatus(source);
+    return;
+  }
+  if (activeChatStatusSource === "pipeline" && source === "chat") {
+    return;
+  }
+  activeChatStatusSource = source;
+  if (!statusMessageEl) {
+    statusMessageEl = document.createElement("div");
+    statusMessageEl.className = "message assistant status";
+    messages.appendChild(statusMessageEl);
+  }
+  statusMessageEl.textContent = message;
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function clearChatStatus(source = "") {
+  if (source && activeChatStatusSource && source !== activeChatStatusSource) {
+    return;
+  }
+  if (statusMessageEl && statusMessageEl.parentNode) {
+    statusMessageEl.parentNode.removeChild(statusMessageEl);
+  }
+  statusMessageEl = null;
+  activeChatStatusSource = "";
+}
+
 function setLotStatus(message, isError = false) {
   if (!lotStatusEl) {
     return;
@@ -449,12 +508,79 @@ function setCurrentLot(lotId) {
   }
 }
 
+function resetEventPanel() {
+  hideAllStreamCards();
+  if (eventLogEl) {
+    eventLogEl.innerHTML = "";
+  }
+  if (lotResultEl) {
+    lotResultEl.textContent = defaultLotResultText;
+  }
+  if (simResultEl) {
+    simResultEl.textContent = defaultSimResultText;
+  }
+  if (predictionResultEl) {
+    predictionResultEl.textContent = defaultPredictionResultText;
+  }
+  if (defectChartEl) {
+    defectChartEl.textContent = defaultDefectChartText;
+  }
+  if (designCandidatesEl) {
+    designCandidatesEl.textContent = defaultDesignCandidatesText;
+  }
+  if (finalBriefingEl) {
+    finalBriefingEl.textContent = defaultFinalBriefingText;
+  }
+  if (frontendTriggerEl) {
+    frontendTriggerEl.textContent = defaultFrontendTriggerText;
+  }
+  if (currentLotEl) {
+    currentLotEl.textContent = defaultCurrentLotText;
+  }
+  if (lotStatusEl) {
+    lotStatusEl.textContent = "";
+    lotStatusEl.classList.remove("error");
+  }
+  if (simFormStatus) {
+    simFormStatus.textContent = defaultSimFormStatusText;
+    simFormStatus.classList.remove("error");
+  }
+  if (recommendationStatusEl) {
+    recommendationStatusEl.textContent = defaultRecommendationStatusText;
+    recommendationStatusEl.classList.remove("error");
+  }
+  if (simModelInput) {
+    simModelInput.value = "";
+  }
+  if (simTemperatureInput) {
+    simTemperatureInput.value = "";
+  }
+  if (simVoltageInput) {
+    simVoltageInput.value = "";
+  }
+  if (simSizeInput) {
+    simSizeInput.value = "";
+  }
+  if (simCapacityInput) {
+    simCapacityInput.value = "";
+  }
+  if (simProductionSelect) {
+    simProductionSelect.value = "";
+  }
+  updateMissingInputs([]);
+  updateFilledInputs();
+  lastLotId = "";
+  recommendationDirty = false;
+  hasFinalBriefing = false;
+  updateEventEmpty();
+}
 const streamCards = [
   lotCard,
   simFormCard,
   simResultCard,
   defectChartCard,
   designCandidatesCard,
+  finalBriefingCard,
   predictionCard,
   frontendCard,
 ].filter(Boolean);
@@ -502,6 +628,20 @@ function showOnlyStreamCards(cards = []) {
     }
   });
   updateEventEmpty();
+}
+
+function focusStage(stage) {
+  const stageCards = {
+    recommendation: [simResultCard],
+    reference: [lotCard, defectChartCard],
+    grid: [designCandidatesCard],
+    final: [finalBriefingCard],
+  };
+  const cards = stageCards[stage];
+  if (!cards) {
+    return;
+  }
+  showOnlyStreamCards(cards.filter(Boolean));
 }
 
 function toggleEventLog() {
@@ -617,6 +757,7 @@ function renderSimulationForm(payload = {}) {
   if (!payload || !simFormCard) {
     return;
   }
+  hasFinalBriefing = false;
   showOnlyStreamCards([simFormCard]);
   const params = payload.params || {};
   applyInputValue(simModelInput, params.model_name);
@@ -701,8 +842,10 @@ async function sendSimulationParams({ run } = { run: false }) {
       return;
     }
     if (data.result) {
-      renderSimResult({ params: data.params || params, result: data.result });
-      setSimStatus("추천 실행 완료");
+      if (!run) {
+        renderSimResult({ params: data.params || params, result: data.result });
+      }
+      setSimStatus("추천 결과 수신 완료");
       updateMissingInputs([]);
       return;
     }
@@ -854,7 +997,9 @@ function renderSimResult(payload) {
     return;
   }
 
-  showOnlyStreamCards([simResultCard]);
+  if (!hasFinalBriefing) {
+    showOnlyStreamCards([simResultCard]);
+  }
   recommendationDirty = false;
 
   const params = payload.params || {};
@@ -1002,19 +1147,19 @@ function renderDefectRateChart(payload = {}) {
   if (!defectChartEl) {
     return;
   }
+  const histogram = payload.histogram;
   const lots = Array.isArray(payload.lots) ? payload.lots : [];
-  if (!lots.length) {
+  const config = payload.config || {};
+  const chartType = String(
+    payload.chart_type || config.chart_type || (histogram ? "histogram" : "bar")
+  ).toLowerCase();
+  if (!histogram && !lots.length) {
     defectChartEl.textContent = "불량률 그래프가 없습니다.";
     return;
   }
   showStreamCard(defectChartCard);
 
   const stats = payload.stats || {};
-  const maxRate = Math.max(
-    ...lots.map((item) => Number(item.defect_rate) || 0),
-    0.0001
-  );
-
   defectChartEl.innerHTML = "";
   if (stats && stats.count) {
     const meta = document.createElement("div");
@@ -1026,6 +1171,144 @@ function renderDefectRateChart(payload = {}) {
     defectChartEl.appendChild(meta);
   }
 
+  if (
+    chartType === "histogram" &&
+    histogram &&
+    Array.isArray(histogram.bins) &&
+    histogram.bins.length
+  ) {
+    const bins = histogram.bins;
+    const maxCount = Math.max(
+      ...bins.map((bin) => Number(bin.count) || 0),
+      1
+    );
+    const unit = histogram.value_unit === "percent" ? "%" : "";
+    const normalize = histogram.normalize || "count";
+    const formatRange = (value) => {
+      if (value === null || value === undefined) {
+        return "-";
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return "-";
+      }
+      return unit ? num.toFixed(1) : num.toFixed(3);
+    };
+
+    const chart = document.createElement("div");
+    chart.className = "defect-histogram";
+    bins.forEach((bin) => {
+      const count = Number(bin.count) || 0;
+      const value = Number(bin.value);
+      const displayValue =
+        normalize === "count" || Number.isNaN(value)
+          ? String(count)
+          : normalize === "percent"
+          ? `${value.toFixed(1)}%`
+          : value.toFixed(3);
+
+      const item = document.createElement("div");
+      item.className = "defect-bin";
+      const bar = document.createElement("div");
+      bar.className = "defect-bin-bar";
+      bar.style.height = `${(count / maxCount) * 100}%`;
+      bar.title = `${formatRange(bin.start)}-${formatRange(bin.end)}${unit} · ${displayValue}`;
+      const label = document.createElement("div");
+      label.className = "defect-bin-label";
+      label.textContent = `${formatRange(bin.start)}-${formatRange(bin.end)}${unit}`;
+      const valueEl = document.createElement("div");
+      valueEl.className = "defect-bin-value";
+      valueEl.textContent = displayValue;
+      item.appendChild(bar);
+      item.appendChild(label);
+      item.appendChild(valueEl);
+      chart.appendChild(item);
+    });
+  defectChartEl.appendChild(chart);
+  return;
+  }
+
+  if (["line", "scatter", "area"].includes(chartType)) {
+    const series = Array.isArray(payload.series)
+      ? payload.series
+      : lots
+          .map((item, index) => ({
+            x: index + 1,
+            y: Number(item.defect_rate),
+            lot_id: item.lot_id,
+          }))
+          .filter((point) => Number.isFinite(point.y));
+
+    if (!series.length) {
+      defectChartEl.textContent = "No chart points available.";
+      return;
+    }
+
+    const values = series.map((point) => point.y);
+    const minY = Math.min(...values);
+    const maxY = Math.max(...values);
+    const spread = maxY - minY || 1;
+    const width = 520;
+    const height = 170;
+    const padding = 18;
+    const step = series.length > 1 ? (width - padding * 2) / (series.length - 1) : 0;
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("class", "defect-line-chart");
+
+    const points = series.map((point, index) => {
+      const x = padding + step * index;
+      const y =
+        height - padding - ((point.y - minY) / spread) * (height - padding * 2);
+      return { x, y, raw: point };
+    });
+
+    if (chartType === "area") {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const d =
+        points
+          .map((point, index) => `${index === 0 ? "M" : "L"}${point.x},${point.y}`)
+          .join(" ") +
+        ` L${points[points.length - 1].x},${height - padding}` +
+        ` L${points[0].x},${height - padding} Z`;
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "rgba(66, 99, 235, 0.18)");
+      path.setAttribute("stroke", "rgba(66, 99, 235, 0.6)");
+      path.setAttribute("stroke-width", "2");
+      svg.appendChild(path);
+    } else if (chartType === "line") {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const d = points
+        .map((point, index) => `${index === 0 ? "M" : "L"}${point.x},${point.y}`)
+        .join(" ");
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "rgba(66, 99, 235, 0.7)");
+      path.setAttribute("stroke-width", "2");
+      svg.appendChild(path);
+    }
+
+    points.forEach((point) => {
+      const circle = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "circle"
+      );
+      circle.setAttribute("cx", point.x);
+      circle.setAttribute("cy", point.y);
+      circle.setAttribute("r", chartType === "scatter" ? "3.5" : "2.5");
+      circle.setAttribute("fill", "rgba(66, 99, 235, 0.85)");
+      svg.appendChild(circle);
+    });
+
+    defectChartEl.appendChild(svg);
+    return;
+  }
+
+  const maxRate = Math.max(
+    ...lots.map((item) => Number(item.defect_rate) || 0),
+    0.0001
+  );
   const chart = document.createElement("div");
   chart.className = "defect-chart";
   lots.forEach((item) => {
@@ -1113,6 +1396,95 @@ function renderDesignCandidates(payload = {}) {
   });
   table.appendChild(tbody);
   designCandidatesEl.appendChild(table);
+}
+
+function renderFinalBriefing(payload = {}) {
+  if (!finalBriefingEl) {
+    return;
+  }
+  hasFinalBriefing = true;
+  const cards = [finalBriefingCard];
+  if (payload.defect_stats && payload.defect_stats.count) {
+    cards.push(defectChartCard);
+  }
+  if (Array.isArray(payload.top_candidates) && payload.top_candidates.length) {
+    cards.push(designCandidatesCard);
+  }
+  showOnlyStreamCards(cards);
+  finalBriefingEl.innerHTML = "";
+
+  const modelName = payload.model_name || "-";
+  const referenceLot = payload.reference_lot || "-";
+  const candidateTotal =
+    payload.candidate_total !== undefined ? payload.candidate_total : "-";
+  const defectStats = payload.defect_stats || {};
+
+  const kpiRow = document.createElement("div");
+  kpiRow.className = "kpi-row";
+  kpiRow.appendChild(createKpiCard("추천 기종", modelName, "accent"));
+  kpiRow.appendChild(createKpiCard("레퍼런스 LOT", referenceLot));
+  if (candidateTotal !== "-") {
+    kpiRow.appendChild(createKpiCard("그리드 후보", candidateTotal));
+  }
+  if (defectStats && defectStats.count) {
+    const avg = `${(defectStats.avg * 100).toFixed(2)}%`;
+    kpiRow.appendChild(createKpiCard("불량률 평균", avg));
+  }
+  finalBriefingEl.appendChild(kpiRow);
+
+  if (defectStats && defectStats.count) {
+    const meta = document.createElement("div");
+    meta.className = "candidate-meta";
+    const avg = `${(defectStats.avg * 100).toFixed(2)}%`;
+    const min = `${(defectStats.min * 100).toFixed(2)}%`;
+    const max = `${(defectStats.max * 100).toFixed(2)}%`;
+    meta.textContent = `불량률 ${defectStats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
+    finalBriefingEl.appendChild(meta);
+  }
+
+  const candidates = Array.isArray(payload.top_candidates)
+    ? payload.top_candidates
+    : [];
+  if (!candidates.length) {
+    const empty = document.createElement("div");
+    empty.className = "candidate-meta";
+    empty.textContent = "상위 후보가 아직 없습니다.";
+    finalBriefingEl.appendChild(empty);
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "result-table";
+  const thead = document.createElement("thead");
+  thead.innerHTML = `
+    <tr>
+      <th>순위</th>
+      <th>예측 지표</th>
+      <th>설계 값</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  candidates.forEach((item, index) => {
+    const row = document.createElement("tr");
+    const rank = item.rank || index + 1;
+    const target = item.predicted_target ?? "-";
+    const design =
+      item.design && typeof item.design === "object"
+        ? Object.entries(item.design)
+            .map(([key, value]) => `${key}=${renderValue(value)}`)
+            .join(", ")
+        : "-";
+    row.innerHTML = `
+      <td>${rank}</td>
+      <td>${target}</td>
+      <td>${design}</td>
+    `;
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  finalBriefingEl.appendChild(table);
 }
 
 function buildResultTable(result) {
@@ -1252,6 +1624,16 @@ function handleEvent(event) {
     addEventLog("설계", "후보 업데이트");
   }
 
+  if (event.type === "final_briefing") {
+    renderFinalBriefing(event.payload);
+    addEventLog("브리핑", "최종 브리핑 업데이트");
+  }
+
+  if (event.type === "stage_focus") {
+    const stage = event.payload?.stage || "";
+    focusStage(stage);
+  }
+
   if (event.type === "prediction_result") {
     renderPredictionResult(event.payload);
     const prob = event.payload?.result?.reliability_pass_prob;
@@ -1259,10 +1641,29 @@ function handleEvent(event) {
     addEventLog("예측", detail);
   }
 
+  if (event.type === "pipeline_status") {
+    const message = event.payload?.message || "";
+    const done = Boolean(event.payload?.done);
+    if (message) {
+      setChatStatus(message, "pipeline");
+    }
+    if (done) {
+      setTimeout(() => clearChatStatus("pipeline"), 1200);
+    }
+  }
+
   if (event.type === "workflow_log") {
     const label = event.payload?.label || "LOG";
     const detail = event.payload?.detail || "";
-    addEventLog(label, detail);
+    const meta = event.payload?.meta;
+    let metaText = "";
+    if (meta && typeof meta === "object") {
+      metaText = Object.entries(meta)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(", ");
+    }
+    const combined = metaText ? `${detail} | ${metaText}` : detail;
+    addEventLog(label, combined);
     updateEventEmpty();
   }
 
@@ -1341,6 +1742,8 @@ async function sendChatMessage(message) {
   addMessage("user", message);
   input.value = "";
   input.style.height = "auto";
+  const startedAt = performance.now();
+  setChatStatus("응답 생성 중...", "chat");
 
   try {
     const response = await fetch("/api/chat", {
@@ -1358,6 +1761,10 @@ async function sendChatMessage(message) {
     addMessage("assistant", data.assistant_message || "(응답 없음)");
   } catch (error) {
     addMessage("assistant", "네트워크 오류입니다. 백엔드 상태를 확인해 주세요.");
+  } finally {
+    const elapsed = Math.round(performance.now() - startedAt);
+    addEventLog("CLIENT", `chat ${elapsed}ms`);
+    clearChatStatus("chat");
   }
 }
 

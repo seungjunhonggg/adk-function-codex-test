@@ -1,6 +1,7 @@
 ﻿import json
 from pathlib import Path
 import re
+import asyncio
 
 from agents import Runner, SQLiteSession
 from agents.tracing import set_tracing_disabled
@@ -9,13 +10,26 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .agents import auto_message_agent, triage_agent
-from .config import LOT_DB_CONNECTION_ID, OPENAI_API_KEY, SESSION_DB_PATH, TRACING_ENABLED
+from .agents import (
+    auto_message_agent,
+    chart_agent,
+    conversation_agent,
+    edit_intent_agent,
+    route_agent,
+    stage_resolver_agent,
+)
+from .config import (
+    LOT_DB_CONNECTION_ID,
+    OPENAI_API_KEY,
+    SESSION_DB_PATH,
+    TRACING_ENABLED,
+    DEMO_LATENCY_SECONDS,
+)
 from .context import current_session_id
 from .db_connections import connect_and_save, get_schema, list_connections, preload_schema
 from .db import init_db
 from .events import event_bus
-from .observability import WorkflowRunHooks
+from .observability import WorkflowRunHooks, emit_workflow_log
 from .pipeline_store import pipeline_store
 from .reference_lot import (
     build_grid_values,
@@ -32,10 +46,15 @@ from .simulation import (
 )
 from .tools import (
     collect_simulation_params,
+    apply_chart_config_impl,
     emit_lot_info,
     emit_simulation_form,
     execute_simulation,
-    run_lot_simulation,
+    get_simulation_progress_impl,
+    reset_simulation_state_impl,
+    run_lot_simulation_impl,
+    show_simulation_stage_impl,
+    STAGE_EVENT_MAP,
 )
 from .workflow import (
     apply_saved_workflow,
@@ -135,22 +154,110 @@ async def chat(request: ChatRequest) -> dict:
     session = SQLiteSession(request.session_id, SESSION_DB_PATH)
     token = current_session_id.set(request.session_id)
     try:
-        sim_response = await _maybe_handle_simulation_message(
-            request.message, request.session_id
-        )
-        if sim_response is not None:
+        route_command = await _route_message(request.message, request.session_id)
+        if route_command.get("needs_clarification") and route_command.get("clarifying_question"):
+            clarifying = route_command.get("clarifying_question")
+            await emit_workflow_log(
+                "ROUTE",
+                "clarify",
+                meta={
+                    "primary": route_command.get("primary_intent"),
+                    "secondary": route_command.get("secondary_intents"),
+                    "confidence": route_command.get("confidence"),
+                    "reason": route_command.get("reason"),
+                },
+            )
+            await emit_workflow_log("FLOW", "clarification_requested")
             await _append_user_message(request.session_id, request.message)
-            await _append_assistant_message(request.session_id, sim_response)
-            return {"assistant_message": sim_response}
+            await _append_assistant_message(request.session_id, clarifying)
+            return {"assistant_message": clarifying}
 
-        result = await Runner.run(
-            triage_agent,
+        primary_intent = route_command.get("primary_intent")
+        await emit_workflow_log(
+            "ROUTE",
+            f"primary={primary_intent}",
+            meta={
+                "secondary": route_command.get("secondary_intents"),
+                "confidence": route_command.get("confidence"),
+                "reason": route_command.get("reason"),
+            },
+        )
+        if primary_intent == "stage_view":
+            await emit_workflow_log("FLOW", "stage_view -> show_simulation_stage")
+            await _append_user_message(request.session_id, request.message)
+            response = await _handle_stage_view_request(
+                request.message, request.session_id, route_command
+            )
+            await _append_assistant_message(request.session_id, response)
+            return {"assistant_message": response}
+        if primary_intent == "chart_edit":
+            await emit_workflow_log("FLOW", "chart_edit -> apply_chart_config")
+            await _append_user_message(request.session_id, request.message)
+            response = await _handle_chart_request(
+                request.message, request.session_id, route_command
+            )
+            await _append_assistant_message(request.session_id, response)
+            return {"assistant_message": response}
+
+        if primary_intent == "simulation_edit":
+            await emit_workflow_log("FLOW", "simulation_edit -> edit_intent")
+            edit_response = await _maybe_handle_edit_intent(
+                request.message, request.session_id
+            )
+            if edit_response is not None:
+                await _append_user_message(request.session_id, request.message)
+                await _append_assistant_message(request.session_id, edit_response)
+                return {"assistant_message": edit_response}
+            await emit_workflow_log("FLOW", "simulation_edit -> pipeline")
+            sim_response = await _maybe_handle_simulation_message(
+                request.message, request.session_id
+            )
+            if sim_response is not None:
+                await _append_user_message(request.session_id, request.message)
+                await _append_assistant_message(request.session_id, sim_response)
+                return {"assistant_message": sim_response}
+
+        if primary_intent == "simulation_run":
+            await emit_workflow_log("FLOW", "simulation_run -> edit_intent")
+            edit_response = await _maybe_handle_edit_intent(
+                request.message, request.session_id
+            )
+            if edit_response is not None:
+                await _append_user_message(request.session_id, request.message)
+                await _append_assistant_message(request.session_id, edit_response)
+                return {"assistant_message": edit_response}
+
+            await emit_workflow_log("FLOW", "simulation_run -> pipeline")
+            sim_response = await _maybe_handle_simulation_message(
+                request.message, request.session_id
+            )
+            if sim_response is not None:
+                await _append_user_message(request.session_id, request.message)
+                await _append_assistant_message(request.session_id, sim_response)
+                return {"assistant_message": sim_response}
+
+        if primary_intent == "chat":
+            await emit_workflow_log("FLOW", "chat -> conversation_agent")
+            await _append_user_message(request.session_id, request.message)
+            convo = await Runner.run(
+                conversation_agent,
+                input=request.message,
+                session=session,
+                hooks=WorkflowRunHooks(),
+            )
+            response = (convo.final_output or "").strip()
+            await _append_assistant_message(request.session_id, response)
+            return {"assistant_message": response}
+
+        await emit_workflow_log("FLOW", "fallback -> conversation_agent")
+        fallback = await Runner.run(
+            conversation_agent,
             input=request.message,
             session=session,
             hooks=WorkflowRunHooks(),
         )
         await _maybe_update_simulation_from_message(request.message, request.session_id)
-        return {"assistant_message": result.final_output}
+        return {"assistant_message": (fallback.final_output or "").strip()}
     finally:
         current_session_id.reset(token)
 
@@ -253,6 +360,13 @@ async def _emit_chat_message(session_id: str, content: str) -> None:
     )
 
 
+async def _emit_pipeline_status(stage: str, message: str, done: bool = False) -> None:
+    pipeline_store.add_status(current_session_id.get(), stage, message, done)
+    await event_bus.broadcast(
+        {"type": "pipeline_status", "payload": {"stage": stage, "message": message, "done": done}}
+    )
+
+
 async def _generate_simulation_auto_message(
     params: dict, missing: list[str], result: dict | None
 ) -> str:
@@ -298,6 +412,34 @@ async def _generate_simulation_auto_message(
     return "추천 입력을 확인해 주세요."
 
 
+async def _generate_edit_auto_message(
+    action: str, context: dict, fallback: str
+) -> str:
+    if not OPENAI_API_KEY:
+        return fallback
+
+    payload = {"action": action, "context": context}
+    prompt = (
+        "다음 JSON을 참고해 한국어로 1~2문장 답변을 작성하세요. "
+        "규칙: 도구/라우팅 언급 금지, 과한 추측 금지. "
+        "missing_fields가 있으면 그 항목만 질문하세요. "
+        "pipeline_message가 있으면 자연스럽게 요약하세요. "
+        "result가 있으면 recommended_model, representative_lot, param_count를 짧게 언급하세요. "
+        "ask_prediction=true 일 때만 추가 시뮬레이션 여부를 질문하세요. "
+        f"JSON: {json.dumps(payload, ensure_ascii=False)}"
+    )
+    try:
+        run = await Runner.run(
+            conversation_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+        message = (run.final_output or "").strip()
+    except Exception:
+        message = ""
+    return message or fallback
+
+
 def _format_prediction_result(result: dict | None) -> str:
     if not result:
         return "결과 없음"
@@ -322,6 +464,858 @@ async def _generate_prediction_auto_message(result: dict | None) -> str:
 def _contains_any(message: str, tokens: tuple[str, ...]) -> bool:
     lowered = (message or "").lower()
     return any(token in lowered for token in tokens)
+
+
+def _keyword_hits(message: str, tokens: tuple[str, ...]) -> list[str]:
+    lowered = (message or "").lower()
+    hits: list[str] = []
+    for token in tokens:
+        if token.lower() in lowered:
+            hits.append(token)
+    return hits
+
+
+STAGE_NOUN_KEYWORDS = (
+    "추천",
+    "레퍼런스",
+    "reference",
+    "그리드",
+    "grid",
+    "최종",
+    "final",
+)
+STAGE_ACTION_KEYWORDS = (
+    "show",
+    "replay",
+    "stage",
+    "화면",
+    "보여",
+    "다시",
+    "이전",
+    "직전",
+    "방금",
+)
+CHART_KEYWORDS = (
+    "chart",
+    "graph",
+    "histogram",
+    "bin",
+    "plot",
+    "bar",
+    "차트",
+    "그래프",
+    "히스토그램",
+    "분포",
+    "막대",
+    "빈",
+    "불량률",
+)
+SIM_RUN_KEYWORDS = (
+    "추천",
+    "인접",
+    "시뮬",
+    "simulation",
+    "simulate",
+    "예측",
+    "실행",
+    "시작",
+)
+SIM_EDIT_KEYWORDS = (
+    "수정",
+    "바꿔",
+    "변경",
+    "업데이트",
+    "재실행",
+    "다시 계산",
+    "리셋",
+    "reset",
+    "rerun",
+)
+DB_KEYWORDS = (
+    "lot",
+    "db",
+    "조회",
+    "데이터",
+    "공정",
+    "라인",
+    "설비",
+    "불량",
+    "품질",
+    "조회해",
+    "검색",
+    "기록",
+    "테이블",
+    "컬럼",
+    "view",
+)
+
+
+def _is_chart_request(message: str) -> bool:
+    return _contains_any(message, CHART_KEYWORDS)
+
+
+def _is_db_request(message: str) -> bool:
+    return _contains_any(message, DB_KEYWORDS)
+
+
+def _as_dict(value: object) -> dict:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump()
+            return dumped if isinstance(dumped, dict) else {}
+        except Exception:
+            return {}
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _normalize_route_command(raw: object) -> dict:
+    data = _as_dict(raw)
+    primary = str(data.get("primary_intent") or "unknown").lower()
+    allowed = {
+        "simulation_edit",
+        "simulation_run",
+        "stage_view",
+        "db_query",
+        "chart_edit",
+        "chat",
+        "unknown",
+    }
+    if primary not in allowed:
+        primary = "unknown"
+
+    secondary = data.get("secondary_intents")
+    if not isinstance(secondary, list):
+        secondary = []
+    filtered_secondary = [item for item in secondary if item in allowed and item != primary]
+
+    needs_clarification = bool(data.get("needs_clarification"))
+    clarifying_question = str(data.get("clarifying_question") or "")
+    confidence = data.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.0
+    reason = str(data.get("reason") or "")
+    stage = str(data.get("stage") or "unknown").lower()
+    allowed_stages = {"recommendation", "reference", "grid", "final", "unknown"}
+    if stage not in allowed_stages:
+        stage = "unknown"
+    return {
+        "primary_intent": primary,
+        "secondary_intents": filtered_secondary,
+        "stage": stage,
+        "needs_clarification": needs_clarification,
+        "clarifying_question": clarifying_question,
+        "confidence": confidence_value,
+        "reason": reason,
+    }
+
+
+def _normalize_stage_resolution(raw: object) -> dict:
+    data = _as_dict(raw)
+    stage = str(data.get("stage") or "unknown").lower()
+    allowed = {"recommendation", "reference", "grid", "final", "unknown"}
+    if stage not in allowed:
+        stage = "unknown"
+    needs_clarification = bool(data.get("needs_clarification"))
+    clarifying_question = str(data.get("clarifying_question") or "")
+    confidence = data.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.0
+    return {
+        "stage": stage,
+        "needs_clarification": needs_clarification,
+        "clarifying_question": clarifying_question,
+        "confidence": confidence_value,
+    }
+
+
+def _fallback_route(message: str) -> dict:
+    if _is_stage_view_request(message):
+        return {
+            "primary_intent": "stage_view",
+            "secondary_intents": [],
+            "stage": _extract_stage_label(message) or "unknown",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "confidence": 0.55,
+            "reason": "stage_view_keyword",
+        }
+    if _is_chart_request(message):
+        return {
+            "primary_intent": "chart_edit",
+            "secondary_intents": [],
+            "stage": "unknown",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "confidence": 0.55,
+            "reason": "keyword_match",
+        }
+    if _is_recommendation_intent(message):
+        return {
+            "primary_intent": "simulation_run",
+            "secondary_intents": [],
+            "stage": "unknown",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "confidence": 0.5,
+            "reason": "simulation_keyword",
+        }
+    if _is_db_request(message):
+        return {
+            "primary_intent": "db_query",
+            "secondary_intents": [],
+            "stage": "unknown",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "confidence": 0.45,
+            "reason": "db_keyword",
+        }
+    return {
+        "primary_intent": "unknown",
+        "secondary_intents": [],
+        "stage": "unknown",
+        "needs_clarification": False,
+        "clarifying_question": "",
+        "confidence": 0.2,
+        "reason": "fallback",
+    }
+
+
+def _normalize_chart_decision(raw: object) -> dict:
+    data = _as_dict(raw)
+    chart_type = str(data.get("chart_type") or "auto").lower()
+    if chart_type == "auto":
+        chart_type = "histogram"
+    bins = data.get("bins")
+    try:
+        bins_value = int(bins) if bins is not None else None
+    except (TypeError, ValueError):
+        bins_value = None
+    range_min = data.get("range_min")
+    range_max = data.get("range_max")
+    try:
+        range_min_value = float(range_min) if range_min is not None else None
+    except (TypeError, ValueError):
+        range_min_value = None
+    try:
+        range_max_value = float(range_max) if range_max is not None else None
+    except (TypeError, ValueError):
+        range_max_value = None
+    normalize = str(data.get("normalize") or "auto").lower()
+    if normalize == "auto":
+        normalize = None
+    value_unit = str(data.get("value_unit") or "auto").lower()
+    if value_unit == "auto":
+        value_unit = None
+    reset = bool(data.get("reset"))
+    note = str(data.get("note") or "")
+    return {
+        "chart_type": chart_type,
+        "bins": bins_value,
+        "range_min": range_min_value,
+        "range_max": range_max_value,
+        "normalize": normalize,
+        "value_unit": value_unit,
+        "reset": reset,
+        "note": note,
+    }
+
+
+def _normalize_edit_decision(raw: object) -> dict:
+    data = _as_dict(raw)
+    intent = str(data.get("intent") or "none").lower()
+    allowed = {
+        "none",
+        "update_params",
+        "update_recommendation_params",
+        "update_grid",
+        "update_reference",
+        "show_stage",
+        "show_progress",
+        "reset",
+        "rerun",
+        "new_simulation",
+    }
+    if intent not in allowed:
+        intent = "none"
+
+    updates = data.get("updates")
+    updates = updates if isinstance(updates, dict) else {}
+    grid_overrides = data.get("grid_overrides")
+    grid_overrides = grid_overrides if isinstance(grid_overrides, dict) else {}
+    reference_lot_id = data.get("reference_lot_id")
+    reference_lot_id = str(reference_lot_id).strip() if reference_lot_id else None
+
+    stage = str(data.get("stage") or "unknown").lower()
+    if stage not in {"recommendation", "reference", "grid", "final", "any", "unknown"}:
+        stage = "unknown"
+
+    rerun = bool(data.get("rerun"))
+    needs_clarification = bool(data.get("needs_clarification"))
+    note = str(data.get("note") or "")
+    confidence = data.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.0
+    return {
+        "intent": intent,
+        "updates": updates,
+        "grid_overrides": grid_overrides,
+        "reference_lot_id": reference_lot_id,
+        "stage": stage,
+        "rerun": rerun,
+        "needs_clarification": needs_clarification,
+        "note": note,
+        "confidence": confidence_value,
+    }
+
+
+EDIT_INTENT_ALIAS_PATTERNS = [
+    (
+        r"(시트\s*t|시트티|시트\s*두께|성형\s*두께|성형두께|sheet\s*t|sheet\s*thickness)",
+        "sheet_t",
+    ),
+    (r"(레이다운|레이\s*다운|lay\s*down|laydown|도포량|코팅량)", "laydown"),
+    (r"(액티브\s*레이어|액티브|활성\s*층|활성층|active\s*layer)", "active_layer"),
+    (r"(온도|공정\s*온도|소성\s*온도|temp|temperature)", "temperature"),
+    (r"(전압|인가\s*전압|테스트\s*전압|정격\s*전압|volt|voltage)", "voltage"),
+    (r"(사이즈|크기|치수|외형|l\s*/\s*w|l\s*x\s*w|lxw|길이|폭|size)", "size"),
+    (r"(용량|정전\s*용량|정전용량|cap|capacitance|capacity)", "capacity"),
+    (r"(기종명|기종|모델명|모델|제품명|타입|품번|part|chip_prod_id|model)", "model_name"),
+]
+
+
+def _normalize_edit_intent_message(message: str) -> str:
+    if not message:
+        return ""
+    normalized = message
+    normalized = re.sub(
+        r"(파라미터|parameter|param|p)\s*-?\s*([0-9]{1,2})",
+        r"param\2",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"(양산|생산|mp|mass)",
+        "production_mode mass",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"(개발|샘플|시제|proto|prototype|dev|pilot)",
+        "production_mode dev",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    for pattern, replacement in EDIT_INTENT_ALIAS_PATTERNS:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    normalized = re.sub(
+        r"(temperature)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)(?:\s*°?\s*c)?",
+        r"\1 \2",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"(voltage)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)(?:\s*v|volt)?",
+        r"\1 \2",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"(size)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)(?:\s*(mm|cm|um|µm))?",
+        r"\1 \2",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"(capacity)\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)(?:\s*(pf|nf|uf|µf))?",
+        r"\1 \2",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    return normalized
+
+
+def _build_simulation_summary(session_id: str) -> dict:
+    params = simulation_store.get(session_id)
+    missing = simulation_store.missing(session_id)
+    rec = recommendation_store.get(session_id)
+    rec_params = rec.get("params") if isinstance(rec, dict) else {}
+    rec_param_count = len(rec_params) if isinstance(rec_params, dict) else 0
+    state = pipeline_store.get(session_id)
+    events = pipeline_store.get_events(session_id)
+    status = pipeline_store.get_status(session_id)
+    return {
+        "params": params,
+        "missing": missing,
+        "simulation_active": simulation_store.is_active(session_id),
+        "has_recommendation": bool(rec),
+        "recommendation_param_count": rec_param_count,
+        "events": list(events.keys()),
+        "status": status,
+        "last_stage_request": state.get("last_stage_request"),
+    }
+
+
+def _build_route_summary(session_id: str) -> dict:
+    summary = _build_simulation_summary(session_id)
+    missing = summary.get("missing", [])
+    summary = dict(summary)
+    summary["missing_count"] = len(missing) if isinstance(missing, list) else 0
+    summary.pop("missing", None)
+    return summary
+
+
+async def _route_message(message: str, session_id: str) -> dict:
+    if not OPENAI_API_KEY:
+        return _fallback_route(message)
+    summary = _build_route_summary(session_id)
+    keyword_hints = {
+        "stage_keyword_hits": _keyword_hits(message, STAGE_NOUN_KEYWORDS),
+        "stage_action_hits": _keyword_hits(message, STAGE_ACTION_KEYWORDS),
+        "chart_keyword_hits": _keyword_hits(message, CHART_KEYWORDS),
+        "simulation_run_hits": _keyword_hits(message, SIM_RUN_KEYWORDS),
+        "simulation_edit_hits": _keyword_hits(message, SIM_EDIT_KEYWORDS),
+        "db_keyword_hits": _keyword_hits(message, DB_KEYWORDS),
+    }
+    meta = {
+        "simulation_active": simulation_store.is_active(session_id),
+        "summary": summary,
+        "keyword_hints": keyword_hints,
+    }
+    prompt = (
+        "Return JSON only. Decide the primary intent and any secondary intents. "
+        "Output keys: primary_intent, secondary_intents, needs_clarification, clarifying_question, confidence, reason. "
+        "Intents: simulation_run, simulation_edit, stage_view, db_query, chart_edit, chat, unknown. "
+        "Guidelines: "
+        "- chart_edit when user wants to change or redraw charts/graphs/histograms. "
+        "- simulation_edit when user wants to modify existing simulation inputs/results, "
+        "replay stages, check progress, or reset. "
+        "- stage_view when user asks to show/replay a stage screen "
+        "(추천/레퍼런스/그리드/최종/화면). If stage_view, set stage to "
+        "recommendation/reference/grid/final if possible. "
+        "- simulation_run when user wants to start/restart a simulation with new inputs. "
+        "- Do not set needs_clarification just because params are missing; "
+        "for simulation_run, proceed and let the pipeline collect missing inputs. "
+        "- db_query for LOT/process database lookups. "
+        "- chat for casual or unrelated conversation. "
+        "Use keyword_hints as soft signals: "
+        "1) If stage_keyword_hits or stage_action_hits are present and chart_keyword_hits are empty, "
+        "prefer stage_view. "
+        "2) If both stage_* and chart_keyword_hits are present, ask for clarification. "
+        "3) If simulation_active and simulation_edit_hits are present, prefer simulation_edit. "
+        "4) If simulation_run_hits are present and simulation_active is false, prefer simulation_run. "
+        "5) If db_keyword_hits are present and simulation keywords are weak, prefer db_query. "
+        "If ambiguous between db_query and simulation_edit, ask a short Korean clarification. "
+        f"Context: {json.dumps(meta, ensure_ascii=False)}\n"
+        f"User message: {message}"
+    )
+    try:
+        run = await Runner.run(
+            route_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+        return _normalize_route_command(run.final_output)
+    except Exception:
+        return _fallback_route(message)
+
+
+async def _heuristic_chart_update(message: str, session_id: str) -> str:
+    if not pipeline_store.get_event(session_id, "defect_rate_chart"):
+        return "\uc544\uc9c1 \ubd88\ub7c9\ub960 \ucc28\ud2b8 \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4. \uba3c\uc800 \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud574 \uc8fc\uc138\uc694."
+
+    reset = bool(re.search(r"\ucd08\uae30\ud654|\uae30\ubcf8|reset", message, re.IGNORECASE))
+    chart_type = "histogram"
+    if re.search(r"line|\uc120", message, re.IGNORECASE):
+        chart_type = "line"
+    elif re.search(r"scatter|\uc0c1\uc810", message, re.IGNORECASE):
+        chart_type = "scatter"
+    elif re.search(r"bar|\ub9c9\ub300", message, re.IGNORECASE):
+        chart_type = "bar"
+    bins = None
+    bins_match = re.search(r"(\d+)\s*(?:bins?|bin|\uad6c\uac04|\uac1c)", message, re.IGNORECASE)
+    if bins_match:
+        try:
+            bins = int(bins_match.group(1))
+        except ValueError:
+            bins = None
+
+    range_min = None
+    range_max = None
+    range_match = re.search(
+        r"([-+]?\d+(?:\.\d+)?)\s*%?\s*[-~]\s*([-+]?\d+(?:\.\d+)?)\s*%?",
+        message,
+        re.IGNORECASE,
+    )
+    if range_match:
+        try:
+            range_min = float(range_match.group(1))
+            range_max = float(range_match.group(2))
+        except ValueError:
+            range_min = None
+            range_max = None
+
+    normalize = None
+    if re.search(r"\ube44\uc728|percent|%|\ud37c\uc13c\ud2b8", message, re.IGNORECASE):
+        normalize = "percent"
+    elif re.search(r"\ube44\uc911|ratio|\uc815\uaddc\ud654", message, re.IGNORECASE):
+        normalize = "ratio"
+    elif re.search(r"count|\uac1c\uc218", message, re.IGNORECASE):
+        normalize = "count"
+
+    value_unit = None
+    if re.search(r"%|\ud37c\uc13c\ud2b8", message, re.IGNORECASE):
+        value_unit = "percent"
+
+    result = await apply_chart_config_impl(
+        chart_type=chart_type,
+        bins=bins,
+        range_min=range_min,
+        range_max=range_max,
+        normalize=normalize,
+        value_unit=value_unit,
+        reset=reset,
+    )
+    status = result.get("status")
+    if status == "ok":
+        return "\ubd88\ub7c9\ub960 \ucc28\ud2b8\ub97c \uc694\uccad\ud558\uc2e0 \ud615\ud0dc\ub85c \uc5c5\ub370\uc774\ud2b8\ud588\uc5b4\uc694."
+    return result.get("message") or "\ucc28\ud2b8 \uc5c5\ub370\uc774\ud2b8\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4."
+
+
+async def _handle_chart_request(
+    message: str, session_id: str, route_command: dict
+) -> str:
+    if not OPENAI_API_KEY:
+        return await _heuristic_chart_update(message, session_id)
+
+    state = pipeline_store.get(session_id)
+    context_payload = {
+        "route": route_command,
+        "chart_config": state.get("chart_config") or {},
+        "has_defect_chart": bool(pipeline_store.get_event(session_id, "defect_rate_chart")),
+    }
+    prompt = (
+        "Extract chart update intent from the user message. "
+        "Return only JSON with chart_type, bins, range_min, range_max, normalize, value_unit, reset, note. "
+        f"Context JSON: {json.dumps(context_payload, ensure_ascii=False)}\n"
+        f"User message: {message}"
+    )
+    try:
+        run = await Runner.run(
+            chart_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+        decision = _normalize_chart_decision(run.final_output)
+        result = await apply_chart_config_impl(**decision)
+        if result.get("status") == "ok":
+            return "차트를 업데이트했어요."
+        return result.get("message") or "차트 업데이트에 실패했습니다."
+    except Exception:
+        pass
+    return await _heuristic_chart_update(message, session_id)
+
+
+async def _apply_edit_decision(
+    decision: dict, message: str, session_id: str
+) -> str | None:
+    intent = decision.get("intent")
+    if intent == "none":
+        return None
+
+    if intent in {"reset", "new_simulation"}:
+        await reset_simulation_state_impl(reason=message)
+        missing = simulation_store.missing(session_id)
+        await emit_simulation_form({}, missing)
+        missing_text = _format_missing_fields(missing)
+        fallback = f"시뮬레이션을 초기화했어요. 필요한 값: {missing_text}"
+        return await _generate_edit_auto_message(
+            "reset",
+            {"missing_fields": missing, "ask_prediction": False},
+            fallback,
+        )
+
+    if intent == "show_progress":
+        progress = await get_simulation_progress_impl()
+        history = progress.get("history", []) if isinstance(progress, dict) else []
+        fallback = "진행 상태를 이벤트 로그에 표시했어요."
+        return await _generate_edit_auto_message(
+            "show_progress",
+            {"history": history[-6:], "ask_prediction": False},
+            fallback,
+        )
+
+    if intent == "show_stage":
+        stage = decision.get("stage") or ""
+        if stage in {"any", "unknown"}:
+            stage = message
+        result = await show_simulation_stage_impl(stage)
+        fallback = result.get("message") or "요청하신 단계를 다시 표시했어요."
+        return await _generate_edit_auto_message(
+            "show_stage",
+            {"stage": stage, "result": result, "ask_prediction": False},
+            fallback,
+        )
+
+    updates = decision.get("updates") if isinstance(decision.get("updates"), dict) else {}
+    grid_overrides = (
+        decision.get("grid_overrides")
+        if isinstance(decision.get("grid_overrides"), dict)
+        else {}
+    )
+
+    if intent == "update_recommendation_params":
+        current = recommendation_store.get(session_id)
+        if not current:
+            fallback = "추천 결과가 아직 없습니다. 먼저 추천을 실행해 주세요."
+            return await _generate_edit_auto_message(
+                "update_recommendation_params",
+                {"missing_fields": ["추천 결과"], "ask_prediction": False},
+                fallback,
+            )
+        params = {
+            key: value
+            for key, value in updates.items()
+            if isinstance(key, str) and key.startswith("param")
+        }
+        updated = recommendation_store.update_params(session_id, params)
+        result_payload = {
+            "recommended_model": updated.get("recommended_model"),
+            "representative_lot": updated.get("representative_lot"),
+            "param_count": len(updated.get("params") or {}),
+        }
+        payload = {"params": updated.get("input_params") or {}, "result": result_payload}
+        await event_bus.broadcast({"type": "simulation_result", "payload": payload})
+        pipeline_store.set_event(session_id, "simulation_result", payload)
+        param_count = result_payload.get("param_count", 0)
+        model_name = result_payload.get("recommended_model")
+        rep_lot = result_payload.get("representative_lot")
+        fallback_parts = ["추천 파라미터를 갱신했어요."]
+        if model_name:
+            fallback_parts.append(f"추천 기종={model_name}")
+        if rep_lot:
+            fallback_parts.append(f"대표 LOT={rep_lot}")
+        fallback_parts.append(f"파라미터={param_count}개")
+        fallback = " ".join(fallback_parts)
+        return await _generate_edit_auto_message(
+            "update_recommendation_params",
+            {"result": result_payload, "ask_prediction": False},
+            fallback,
+        )
+
+    if intent in {"update_params", "rerun"}:
+        sim_updates = {
+            key: value
+            for key, value in updates.items()
+            if key in {"temperature", "voltage", "size", "capacity", "production_mode", "model_name"}
+        }
+        if sim_updates:
+            update_result = collect_simulation_params(**sim_updates)
+            await emit_simulation_form(
+                update_result.get("params", {}), update_result.get("missing", [])
+            )
+            if update_result.get("missing") and not update_result.get("params", {}).get("model_name"):
+                missing = update_result.get("missing", [])
+                missing_text = _format_missing_fields(missing)
+                fallback = f"추천을 실행하려면 {missing_text} 값을 알려주세요."
+                return await _generate_edit_auto_message(
+                    "update_params_missing",
+                    {"missing_fields": missing, "ask_prediction": False},
+                    fallback,
+                )
+            if decision.get("rerun"):
+                result = await _run_reference_pipeline(
+                    session_id,
+                    update_result.get("params", {}),
+                    model_override=update_result.get("params", {}).get("model_name"),
+                )
+                sim_result = (
+                    result.get("simulation_result", {}).get("result")
+                    if isinstance(result.get("simulation_result"), dict)
+                    else None
+                )
+                result_payload = None
+                if isinstance(sim_result, dict):
+                    result_payload = {
+                        "recommended_model": sim_result.get("recommended_model"),
+                        "representative_lot": sim_result.get("representative_lot"),
+                        "param_count": len(sim_result.get("params") or {}),
+                    }
+                fallback = result.get("message") or "요청하신 조건으로 다시 계산했습니다."
+                return await _generate_edit_auto_message(
+                    "rerun",
+                    {
+                        "pipeline_message": result.get("message", ""),
+                        "result": result_payload,
+                        "ask_prediction": False,
+                    },
+                    fallback,
+                )
+            missing = update_result.get("missing", [])
+            missing_text = _format_missing_fields(missing)
+            fallback = (
+                f"입력을 갱신했어요. {missing_text} 값을 추가로 알려주세요."
+                if missing
+                else "입력을 갱신했어요. 이어서 추천을 진행할까요?"
+            )
+            return await _generate_edit_auto_message(
+                "update_params",
+                {"missing_fields": missing, "ask_prediction": False},
+                fallback,
+            )
+
+    if intent == "update_grid":
+        overrides = {}
+        for key in ("sheet_t", "laydown", "active_layer"):
+            value = grid_overrides.get(key)
+            if value is None:
+                continue
+            try:
+                overrides[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        params = simulation_store.get(session_id)
+        if not params:
+            missing = simulation_store.missing(session_id)
+            missing_text = _format_missing_fields(missing)
+            fallback = f"시뮬레이션 입력이 부족합니다. {missing_text} 값을 알려주세요."
+            return await _generate_edit_auto_message(
+                "update_grid_missing",
+                {"missing_fields": missing, "ask_prediction": False},
+                fallback,
+            )
+        result = await _run_reference_pipeline(
+            session_id,
+            params,
+            model_override=params.get("model_name"),
+            grid_overrides=overrides,
+        )
+        sim_result = (
+            result.get("simulation_result", {}).get("result")
+            if isinstance(result.get("simulation_result"), dict)
+            else None
+        )
+        result_payload = None
+        if isinstance(sim_result, dict):
+            result_payload = {
+                "recommended_model": sim_result.get("recommended_model"),
+                "representative_lot": sim_result.get("representative_lot"),
+                "param_count": len(sim_result.get("params") or {}),
+            }
+        fallback = result.get("message") or "그리드 조건을 반영해 다시 계산했습니다."
+        return await _generate_edit_auto_message(
+            "update_grid",
+            {
+                "pipeline_message": result.get("message", ""),
+                "result": result_payload,
+                "ask_prediction": False,
+            },
+            fallback,
+        )
+
+    if intent == "update_reference":
+        reference_lot_id = decision.get("reference_lot_id")
+        if not reference_lot_id:
+            fallback = "레퍼런스 LOT ID를 알려주세요."
+            return await _generate_edit_auto_message(
+                "update_reference_missing",
+                {"missing_fields": ["레퍼런스 LOT ID"], "ask_prediction": False},
+                fallback,
+            )
+        params = simulation_store.get(session_id)
+        if not params:
+            missing = simulation_store.missing(session_id)
+            missing_text = _format_missing_fields(missing)
+            fallback = f"시뮬레이션 입력이 부족합니다. {missing_text} 값을 알려주세요."
+            return await _generate_edit_auto_message(
+                "update_reference_missing",
+                {"missing_fields": missing, "ask_prediction": False},
+                fallback,
+            )
+        result = await _run_reference_pipeline(
+            session_id,
+            params,
+            model_override=params.get("model_name"),
+            reference_override=reference_lot_id,
+        )
+        sim_result = (
+            result.get("simulation_result", {}).get("result")
+            if isinstance(result.get("simulation_result"), dict)
+            else None
+        )
+        result_payload = None
+        if isinstance(sim_result, dict):
+            result_payload = {
+                "recommended_model": sim_result.get("recommended_model"),
+                "representative_lot": sim_result.get("representative_lot"),
+                "param_count": len(sim_result.get("params") or {}),
+            }
+        fallback = result.get("message") or "레퍼런스 LOT를 반영해 다시 계산했습니다."
+        return await _generate_edit_auto_message(
+            "update_reference",
+            {
+                "pipeline_message": result.get("message", ""),
+                "result": result_payload,
+                "ask_prediction": False,
+            },
+            fallback,
+        )
+
+    return None
+
+
+async def _maybe_handle_edit_intent(
+    message: str, session_id: str
+) -> str | None:
+    if not OPENAI_API_KEY:
+        return None
+    summary = _build_simulation_summary(session_id)
+    normalized_message = _normalize_edit_intent_message(message)
+    prompt = (
+        "Return JSON only. "
+        "Parse the user request into a structured edit intent. "
+        f"Current state: {json.dumps(summary, ensure_ascii=False)}\n"
+        f"User message: {message}\n"
+        f"Normalized message: {normalized_message}"
+    )
+    try:
+        run = await Runner.run(
+            edit_intent_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+        decision = _normalize_edit_decision(run.final_output)
+    except Exception:
+        return None
+    await emit_workflow_log(
+        "INTENT",
+        f"{decision.get('intent')}",
+        meta={
+            "updates": list((decision.get("updates") or {}).keys()),
+            "grid_overrides": list((decision.get("grid_overrides") or {}).keys()),
+            "stage": decision.get("stage"),
+            "rerun": decision.get("rerun"),
+            "confidence": decision.get("confidence"),
+        },
+    )
+    if decision.get("needs_clarification") and decision.get("note"):
+        return decision.get("note")
+    return await _apply_edit_decision(decision, message, session_id)
 
 
 def _extract_lot_id(message: str) -> str | None:
@@ -359,16 +1353,134 @@ def _is_affirmative(message: str) -> bool:
 
 
 def _is_recommendation_intent(message: str) -> bool:
+    return _contains_any(
+        message,
+        (
+            "추천",
+            "인접",
+            "시뮬",
+            "simulation",
+            "simulate",
+            "what-if",
+            "예측",
+        ),
+    )
+
+
+def _is_progress_request(message: str) -> bool:
     tokens = (
-        "추천",
-        "인접",
-        "시뮬",
-        "simulation",
-        "simulate",
-        "what-if",
-        "예측",
+        "progress",
+        "status",
+        "stage",
+        "timeline",
+        "history",
+        "진행",
+        "상태",
+        "단계",
+        "기록",
     )
     return _contains_any(message, tokens)
+
+
+def _is_reset_request(message: str) -> bool:
+    tokens = (
+        "reset",
+        "restart",
+        "over",
+        "초기화",
+        "다시 처음",
+        "처음부터",
+        "리셋",
+    )
+    return _contains_any(message, tokens)
+
+
+def _extract_stage_label(message: str) -> str:
+    lowered = (message or "").lower()
+    stage_aliases = {
+        "recommendation": ("추천", "recommendation", "모델추천", "인접기종"),
+        "reference": ("레퍼런스", "reference", "기준 lot", "기준lot", "대표 lot", "대표lot"),
+        "grid": ("그리드", "grid", "design candidates"),
+        "final": ("최종", "final", "브리핑", "요약"),
+    }
+    for stage, aliases in stage_aliases.items():
+        for alias in aliases:
+            if alias.lower() in lowered:
+                return stage
+    return ""
+
+
+def _available_stages_from_events(events: dict) -> list[str]:
+    available = []
+    for stage, event_types in STAGE_EVENT_MAP.items():
+        if any(event_type in events for event_type in event_types):
+            available.append(stage)
+    return available
+
+
+async def _resolve_stage_with_llm(
+    message: str, session_id: str, route_command: dict
+) -> dict | None:
+    if not OPENAI_API_KEY:
+        return None
+    events = pipeline_store.get_events(session_id)
+    available = _available_stages_from_events(events)
+    last_stage = pipeline_store.get(session_id).get("last_stage_request")
+    payload = {
+        "message": message,
+        "available_stages": available,
+        "last_stage_request": last_stage,
+        "keyword_hints": {
+            "stage_keyword_hits": _keyword_hits(message, STAGE_NOUN_KEYWORDS),
+            "stage_action_hits": _keyword_hits(message, STAGE_ACTION_KEYWORDS),
+            "chart_keyword_hits": _keyword_hits(message, CHART_KEYWORDS),
+        },
+        "route_hint": {
+            "primary_intent": route_command.get("primary_intent"),
+            "stage": route_command.get("stage"),
+        },
+    }
+    prompt = (
+        "Return JSON only. Map the user request to a stage UI screen. "
+        "Keys: stage, needs_clarification, clarifying_question, confidence. "
+        "Stage must be one of recommendation, reference, grid, final, unknown. "
+        "If available_stages has exactly one entry and the user is vague, choose it. "
+        "If ambiguous between chart_edit and stage_view, ask a short Korean clarification. "
+        f"Context: {json.dumps(payload, ensure_ascii=False)}"
+    )
+    try:
+        run = await Runner.run(
+            stage_resolver_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+        return _normalize_stage_resolution(run.final_output)
+    except Exception:
+        return None
+
+
+def _is_stage_view_request(message: str) -> bool:
+    display_tokens = (
+        "show",
+        "replay",
+        "stage",
+        "화면",
+        "보여",
+        "다시",
+        "단계",
+        "이전",
+        "중간",
+    )
+    if not _contains_any(message, display_tokens):
+        return False
+    if _extract_stage_label(message):
+        return True
+    fallback_tokens = ("이전", "그거", "직전", "방금")
+    return _contains_any(message, fallback_tokens)
+
+
+def _is_stage_request(message: str) -> bool:
+    return _is_stage_view_request(message)
 
 
 def _extract_grid_overrides(message: str) -> dict[str, float]:
@@ -399,6 +1511,40 @@ def _should_rerun_grid(message: str) -> bool:
     return _contains_any(message, tokens)
 
 
+def _build_final_briefing_payload(
+    model_name: str,
+    reference_result: dict,
+    grid_results: list[dict],
+    top_candidates: list[dict],
+    defect_stats: dict,
+) -> dict:
+    preview = []
+    for item in top_candidates[:5]:
+        if not isinstance(item, dict):
+            continue
+        preview.append(
+            {
+                "rank": item.get("rank"),
+                "predicted_target": item.get("predicted_target"),
+                "design": item.get("design"),
+            }
+        )
+    return {
+        "model_name": model_name,
+        "reference_lot": reference_result.get("lot_id"),
+        "candidate_total": len(grid_results),
+        "top_candidates": preview,
+        "defect_stats": defect_stats,
+        "source": reference_result.get("source") or "postgresql",
+    }
+
+
+async def _maybe_demo_sleep() -> None:
+    if DEMO_LATENCY_SECONDS <= 0:
+        return
+    await asyncio.sleep(DEMO_LATENCY_SECONDS)
+
+
 async def _run_reference_pipeline(
     session_id: str,
     params: dict,
@@ -411,20 +1557,30 @@ async def _run_reference_pipeline(
     simulation_result = None
 
     if not model_name:
+        await _emit_pipeline_status("recommendation", "추천 계산 중...")
         simulation_result = await execute_simulation()
+        await _maybe_demo_sleep()
         inner = simulation_result.get("result") if isinstance(simulation_result, dict) else {}
         model_name = inner.get("recommended_model")
 
     if not model_name:
+        await _emit_pipeline_status(
+            "recommendation", "추천 기종을 확인하지 못했습니다.", done=True
+        )
         return {
             "message": "추천 기종을 확인하지 못했습니다. 입력 파라미터를 다시 확인해 주세요."
         }
+    await _emit_pipeline_status("recommendation", "추천 완료", done=True)
 
+    await _emit_pipeline_status("reference", "레퍼런스 LOT 조회 중...")
     reference_result = select_reference_lot(model_name)
     if reference_override:
         reference_result = select_reference_lot_by_id(reference_override)
 
     if reference_result.get("status") != "ok":
+        await _emit_pipeline_status(
+            "reference", "레퍼런스 LOT을 찾지 못했습니다.", done=True
+        )
         return {
             "message": "레퍼런스 LOT를 찾지 못했습니다. 조건 또는 DB 설정을 확인해 주세요."
         }
@@ -437,6 +1593,9 @@ async def _run_reference_pipeline(
         "source": reference_result.get("source") or "postgresql",
     }
     await event_bus.broadcast({"type": "lot_result", "payload": lot_payload})
+    pipeline_store.set_event(session_id, "lot_result", lot_payload)
+    await _maybe_demo_sleep()
+    await _emit_pipeline_status("reference", "레퍼런스 LOT 조회 완료", done=True)
 
     if simulation_result is None:
         synthetic = {
@@ -447,14 +1606,21 @@ async def _run_reference_pipeline(
         await event_bus.broadcast(
             {"type": "simulation_result", "payload": {"params": params, "result": synthetic}}
         )
+        pipeline_store.set_event(
+            session_id,
+            "simulation_result",
+            {"params": params, "result": synthetic},
+        )
         simulation_result = {"status": "ok", "result": synthetic}
 
     defect_rates = reference_result.get("defect_rates", [])
+    defect_stats = {}
     if defect_rates:
         stats = {
             "count": len(defect_rates),
             "avg": sum(item["defect_rate"] for item in defect_rates) / len(defect_rates),
         }
+        defect_stats = stats
         await event_bus.broadcast(
             {
                 "type": "defect_rate_chart",
@@ -465,6 +1631,15 @@ async def _run_reference_pipeline(
                 },
             }
         )
+        pipeline_store.set_event(
+            session_id,
+            "defect_rate_chart",
+            {
+                "lots": defect_rates[:50],
+                "filters": {"chip_prod_id": model_name},
+                "stats": stats,
+            },
+        )
 
     grid_overrides = grid_overrides or {}
     grid_values = build_grid_values(reference_result.get("row", {}), rules, grid_overrides)
@@ -474,7 +1649,9 @@ async def _run_reference_pipeline(
         "grid": grid_values,
         "max_results": rules.get("grid_search", {}).get("max_results", 100),
     }
+    await _emit_pipeline_status("grid", "그리드 탐색 중...")
     grid_results = await call_grid_search_api(grid_payload)
+    await _maybe_demo_sleep()
     top_k = rules.get("grid_search", {}).get("top_k", 10)
     top_k = max(1, int(top_k))
     top_candidates = grid_results[:top_k]
@@ -504,6 +1681,23 @@ async def _run_reference_pipeline(
             },
         }
     )
+    pipeline_store.set_event(
+        session_id,
+        "design_candidates",
+        {
+            "candidates": top_candidates,
+            "total": len(grid_results),
+            "offset": 0,
+            "limit": len(top_candidates),
+            "target": model_name,
+        },
+    )
+    summary_payload = _build_final_briefing_payload(
+        model_name, reference_result, grid_results, top_candidates, defect_stats
+    )
+    await event_bus.broadcast({"type": "final_briefing", "payload": summary_payload})
+    pipeline_store.set_event(session_id, "final_briefing", summary_payload)
+    await _emit_pipeline_status("grid", "그리드 탐색 완료", done=True)
 
     if simulation_result and simulation_result.get("result"):
         summary = _format_simulation_result(simulation_result.get("result"))
@@ -601,9 +1795,57 @@ async def _handle_pipeline_run_message(
     return result.get("message")
 
 
+def _resolve_stage_request(
+    message: str, session_id: str, route_stage: str | None
+) -> str:
+    if route_stage and route_stage not in {"unknown", "none"}:
+        return route_stage
+    stage = _extract_stage_label(message)
+    if stage:
+        return stage
+    if _contains_any(message, ("이전", "그거", "직전", "방금", "다시")):
+        stored = pipeline_store.get(session_id).get("last_stage_request")
+        if isinstance(stored, str) and stored:
+            return stored
+    return ""
+
+
+async def _handle_stage_view_request(
+    message: str, session_id: str, route_command: dict
+) -> str:
+    stage = _resolve_stage_request(message, session_id, route_command.get("stage"))
+    if not stage:
+        resolved = await _resolve_stage_with_llm(message, session_id, route_command)
+        if resolved:
+            if resolved.get("needs_clarification") and resolved.get("clarifying_question"):
+                pipeline_store.update(session_id, last_stage_request="")
+                return resolved["clarifying_question"]
+            stage = resolved.get("stage") if resolved.get("stage") != "unknown" else ""
+    if not stage:
+        pipeline_store.update(session_id, last_stage_request="")
+        return "어떤 단계 화면을 보여드릴까요? (추천/레퍼런스/그리드/최종) 중 하나를 말씀해 주세요."
+    pipeline_store.update(session_id, last_stage_request=stage)
+    await event_bus.broadcast({"type": "stage_focus", "payload": {"stage": stage}})
+    result = await show_simulation_stage_impl(stage)
+    return result.get("message") or "요청하신 화면을 다시 표시했어요."
+
+
 async def _maybe_handle_simulation_message(
     message: str, session_id: str
 ) -> str | None:
+    if _is_reset_request(message):
+        await reset_simulation_state_impl(reason=message)
+        missing = simulation_store.missing(session_id)
+        await emit_simulation_form({}, missing)
+        return "Simulation reset. Please enter parameters again."
+
+    if _is_stage_request(message):
+        return await _handle_stage_view_request(message, session_id, {"stage": "unknown"})
+
+    if _is_progress_request(message):
+        await get_simulation_progress_impl()
+        return "Progress history is shown in the event log."
+
     edit_message = await _handle_pipeline_edit_message(message, session_id)
     if edit_message is not None:
         return edit_message
@@ -616,7 +1858,7 @@ async def trigger_test(request: TestRequest) -> dict:
     try:
         if request.query:
             await emit_lot_info(request.query, limit=1)
-            result = await run_lot_simulation(request.query)
+            result = await run_lot_simulation_impl(request.query)
         else:
             params = request.params or {
                 "temperature": 120,
@@ -807,6 +2049,7 @@ async def update_recommendation_params_route(
             "result": result_payload,
         }
         await event_bus.broadcast({"type": "simulation_result", "payload": payload})
+        pipeline_store.set_event(request.session_id, "simulation_result", payload)
         await _append_system_note(
             request.session_id,
             f"추천 파라미터 업데이트: {len(result_payload.get('params', {}))}개.",

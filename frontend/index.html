@@ -17,14 +17,14 @@
                 <path d="M4 10h12" stroke-width="1.5" stroke-linecap="round" />
               </svg>
             </span>
-            <span class="item-label">새 대화</span>
+            <span class="item-label">새 채팅</span>
           </button>
         </div>
 
         <section class="sidebar-section session-panel">
           <div id="session-list" class="session-list">
             <div id="session-empty" class="session-empty">
-              아직 대화 기록이 없습니다.
+              아직 저장된 기록이 없습니다.
             </div>
           </div>
         </section>
@@ -58,7 +58,7 @@
           <form id="chat-form" class="composer">
             <textarea
               id="chat-input"
-              placeholder="LOT ID를 입력하거나 인접기종 추천을 요청하세요."
+              placeholder="LOT ID를 입력하거나 인접기종 추천을 요청해 보세요."
             ></textarea>
             <button type="submit">전송</button>
           </form>
@@ -154,7 +154,7 @@
                   파라미터 반영
                 </button>
                 <div id="recommend-status" class="sim-status">
-                  파라미터를 수정해 반영할 수 있습니다.
+                  파라미터를 설정해 반영해 주세요.
                 </div>
               </div>
             </div>
@@ -168,12 +168,16 @@
               <h3>설계 후보</h3>
               <div id="design-candidates">설계 후보가 없습니다.</div>
             </div>
+            <div class="card stream-card hidden" id="final-briefing-card">
+              <h3>최종 브리핑</h3>
+              <div id="final-briefing">최종 브리핑이 없습니다.</div>
+            </div>
             <div class="card stream-card hidden" id="prediction-card">
               <h3>예측 시뮬레이션 결과</h3>
               <div id="prediction-result">예측 결과가 없습니다.</div>
             </div>
             <div class="card stream-card hidden" id="frontend-card">
-              <h3>프론트 트리거</h3>
+              <h3>프론트엔드 트리거</h3>
               <div id="frontend-trigger">아직 트리거가 없습니다.</div>
             </div>
             <div class="card stream-card hidden" id="event-log-card">

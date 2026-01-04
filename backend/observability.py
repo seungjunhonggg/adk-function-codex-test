@@ -7,6 +7,8 @@ from agents import RunHooks
 
 from .events import event_bus
 
+LOG_LABEL_ALLOWLIST = {"ROUTE", "INTENT", "FLOW", "PROGRESS", "STATE"}
+
 
 def _safe_name(value: Any, fallback: str) -> str:
     if isinstance(value, str) and value.strip():
@@ -29,6 +31,8 @@ async def emit_workflow_log(
     detail: str,
     meta: dict | None = None,
 ) -> dict:
+    if label not in LOG_LABEL_ALLOWLIST:
+        return {"label": label, "detail": detail, "meta": meta or {}}
     payload = {"label": label, "detail": detail}
     if meta:
         payload["meta"] = meta
