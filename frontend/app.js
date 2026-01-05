@@ -108,6 +108,9 @@ let recommendationDirty = false;
 let hasFinalBriefing = false;
 let activeChatStatusSource = "";
 let statusMessageEl = null;
+let statusMessageTextEl = null;
+let statusMessageDotsEl = null;
+let statusAnimationInterval = null;
 
 let historyEntries = [];
 
@@ -451,9 +454,36 @@ function setChatStatus(message, source = "system") {
   if (!statusMessageEl) {
     statusMessageEl = document.createElement("div");
     statusMessageEl.className = "message assistant status";
+    const spinner = document.createElement("span");
+    spinner.className = "status-spinner";
+    statusMessageTextEl = document.createElement("span");
+    statusMessageTextEl.className = "status-text";
+    statusMessageDotsEl = document.createElement("span");
+    statusMessageDotsEl.className = "status-dots";
+    statusMessageDotsEl.setAttribute("aria-hidden", "true");
+    statusMessageEl.appendChild(spinner);
+    statusMessageEl.appendChild(statusMessageTextEl);
+    statusMessageEl.appendChild(statusMessageDotsEl);
     messages.appendChild(statusMessageEl);
   }
-  statusMessageEl.textContent = message;
+  const baseMessage = message.replace(/\s*\.{1,3}\s*$/, "") || message;
+  if (statusMessageTextEl) {
+    statusMessageTextEl.textContent = baseMessage;
+  }
+  if (statusMessageDotsEl) {
+    statusMessageDotsEl.textContent = "";
+  }
+  if (statusAnimationInterval) {
+    clearInterval(statusAnimationInterval);
+  }
+  const dotFrames = [" .", " ..", " ..."];
+  let dotIndex = 0;
+  statusAnimationInterval = setInterval(() => {
+    if (statusMessageDotsEl) {
+      statusMessageDotsEl.textContent = dotFrames[dotIndex % dotFrames.length];
+    }
+    dotIndex += 1;
+  }, 450);
   messages.scrollTop = messages.scrollHeight;
 }
 
@@ -465,6 +495,12 @@ function clearChatStatus(source = "") {
     statusMessageEl.parentNode.removeChild(statusMessageEl);
   }
   statusMessageEl = null;
+  statusMessageTextEl = null;
+  statusMessageDotsEl = null;
+  if (statusAnimationInterval) {
+    clearInterval(statusAnimationInterval);
+    statusAnimationInterval = null;
+  }
   activeChatStatusSource = "";
 }
 
