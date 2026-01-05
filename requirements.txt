@@ -4,3 +4,4 @@ openai-agents
 httpx
 pydantic
 psycopg[binary]
+pymysql
