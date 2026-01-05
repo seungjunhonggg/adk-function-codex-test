@@ -24,14 +24,39 @@ def load_reference_rules() -> dict:
 def normalize_reference_rules(rules: dict | None) -> dict:
     normalized = dict(rules or {})
     normalized.setdefault("db", {})
+    normalized.setdefault("param_columns", {})
+    normalized.setdefault("param_value_map", {})
     normalized.setdefault("selection", {})
+    normalized.setdefault("value1_not_null_columns", [])
+    normalized.setdefault("defect_conditions", [])
+    normalized.setdefault("detail_columns", [])
     normalized.setdefault("conditions", {})
     normalized.setdefault("grid_search", {})
     normalized.setdefault("defect_rate_aggregate", {})
     normalized["selection"].setdefault("max_candidates", 500)
+    param_columns = normalized.get("param_columns")
+    if not isinstance(param_columns, dict):
+        param_columns = {}
+        normalized["param_columns"] = param_columns
+    param_columns.setdefault("temperature", "temperature")
+    param_columns.setdefault("voltage", "voltage")
+    param_columns.setdefault("size", "size")
+    param_columns.setdefault("capacity", "capacity")
+    param_columns.setdefault("production_mode", "production_mode")
+    param_value_map = normalized.get("param_value_map")
+    if not isinstance(param_value_map, dict):
+        normalized["param_value_map"] = {}
+    value1_not_null = normalized.get("value1_not_null_columns")
+    if not isinstance(value1_not_null, list):
+        value1_not_null = []
+        normalized["value1_not_null_columns"] = value1_not_null
     normalized["conditions"].setdefault("required_not_null", [])
     normalized["conditions"].setdefault("design_factor_columns", [])
     normalized["conditions"].setdefault("defect_metrics", [])
+    if not value1_not_null and normalized["conditions"].get("required_not_null"):
+        normalized["value1_not_null_columns"] = list(
+            normalized["conditions"].get("required_not_null", [])
+        )
     normalized["grid_search"].setdefault("factors", [])
     normalized["grid_search"].setdefault("max_results", 100)
     normalized["grid_search"].setdefault("top_k", 10)
@@ -126,6 +151,120 @@ def _aggregate_defect_rate(row: dict, columns: list[str]) -> float | None:
     return sum(values) / len(values)
 
 
+def _get_value(row: dict, column: str | None) -> Any:
+    if not column:
+        return None
+    if column in row:
+        return row.get(column)
+    lowered = column.lower()
+    if lowered in row:
+        return row.get(lowered)
+    return None
+
+
+def _normalize_defect_conditions(rules: dict) -> list[dict]:
+    conditions = rules.get("defect_conditions") or []
+    normalized: list[dict] = []
+    for item in conditions:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        if not column:
+            continue
+        operator = item.get("operator") or "="
+        value = item.get("value")
+        if value is None and operator not in {"is_null", "is_not_null"}:
+            continue
+        key = str(item.get("key") or column)
+        label = str(item.get("label") or key)
+        normalized.append(
+            {
+                "key": key,
+                "label": label,
+                "column": column,
+                "operator": operator,
+                "value": value,
+            }
+        )
+    return normalized
+
+
+def _build_param_filters(params: dict, rules: dict) -> list[dict]:
+    param_columns = rules.get("param_columns") or {}
+    value_map = rules.get("param_value_map") or {}
+    filters: list[dict] = []
+    for param_key, column in param_columns.items():
+        if not column:
+            continue
+        value = params.get(param_key)
+        if value is None or value == "":
+            continue
+        mapped = value
+        mapping = value_map.get(param_key)
+        if isinstance(mapping, dict):
+            if value in mapping:
+                mapped = mapping[value]
+            else:
+                mapped = mapping.get(str(value), value)
+        filters.append({"column": column, "operator": "=", "value": mapped})
+    return filters
+
+
+def _build_not_null_filters(columns: list[str]) -> list[dict]:
+    filters = []
+    for column in columns:
+        if column:
+            filters.append({"column": column, "operator": "is_not_null"})
+    return filters
+
+
+def _build_defect_filters(conditions: list[dict]) -> list[dict]:
+    filters = []
+    for condition in conditions:
+        column = condition.get("column")
+        if not column:
+            continue
+        filters.append(
+            {
+                "column": column,
+                "operator": condition.get("operator") or "=",
+                "value": condition.get("value"),
+            }
+        )
+    return filters
+
+
+def _count_by_key(rows: list[dict], key_column: str, id_column: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        key = _get_value(row, key_column)
+        if key is None:
+            continue
+        key_text = str(key)
+        lot_id = _get_value(row, id_column)
+        if lot_id is not None:
+            token = (key_text, str(lot_id))
+            if token in seen:
+                continue
+            seen.add(token)
+        counts[key_text] = counts.get(key_text, 0) + 1
+    return counts
+
+
+def _select_latest_row(rows: list[dict], date_column: str) -> dict | None:
+    latest = None
+    latest_dt = None
+    for row in rows:
+        dt = _parse_datetime(_get_value(row, date_column))
+        if dt is None:
+            continue
+        if latest_dt is None or dt > latest_dt:
+            latest = row
+            latest_dt = dt
+    return latest
+
+
 def _build_columns(rules: dict) -> list[str]:
     columns = set()
     db = rules.get("db", {})
@@ -136,6 +275,8 @@ def _build_columns(rules: dict) -> list[str]:
             db.get("input_date_column") or "input_date",
         }
     )
+    columns.update(rules.get("value1_not_null_columns", []) or [])
+    columns.update(rules.get("detail_columns", []) or [])
     conditions = rules.get("conditions", {})
     screen = conditions.get("screen_durable_spec") or {}
     if screen.get("column"):
@@ -152,6 +293,339 @@ def _build_columns(rules: dict) -> list[str]:
         if column:
             columns.add(column)
     return [column for column in columns if column]
+
+
+def _matches_filter(row: dict, item: dict) -> bool:
+    column = item.get("column")
+    operator = (item.get("operator") or "=").lower()
+    value = item.get("value")
+    row_value = _get_value(row, column)
+    if operator == "is_null":
+        return row_value is None or row_value == ""
+    if operator == "is_not_null":
+        return row_value is not None and row_value != ""
+    if row_value is None:
+        return False
+    if operator in {"like", "ilike"}:
+        haystack = str(row_value)
+        needle = str(value or "")
+        if operator == "ilike":
+            return needle.lower() in haystack.lower()
+        return needle in haystack
+    if operator == "in":
+        if not isinstance(value, list):
+            return False
+        return row_value in value or str(row_value) in [str(v) for v in value]
+    if operator == "between":
+        if not isinstance(value, list) or len(value) != 2:
+            return False
+        low = _coerce_float(value[0])
+        high = _coerce_float(value[1])
+        current = _coerce_float(row_value)
+        if low is None or high is None or current is None:
+            return False
+        return low <= current <= high
+    if operator in {">", ">=", "<", "<="}:
+        current = _coerce_float(row_value)
+        target = _coerce_float(value)
+        if current is None or target is None:
+            return False
+        if operator == ">":
+            return current > target
+        if operator == ">=":
+            return current >= target
+        if operator == "<":
+            return current < target
+        if operator == "<=":
+            return current <= target
+    if operator == "=":
+        if value is None:
+            return False
+        current = _coerce_float(row_value)
+        target = _coerce_float(value)
+        if current is not None and target is not None:
+            return current == target
+        return str(row_value) == str(value)
+    return False
+
+
+def _apply_demo_filters(rows: list[dict], filters: list[dict]) -> None:
+    if not rows:
+        return
+    row = rows[0]
+    for item in filters:
+        column = item.get("column")
+        operator = (item.get("operator") or "=").lower()
+        value = item.get("value")
+        if not column:
+            continue
+        if operator == "is_null":
+            row[column] = None
+            continue
+        if operator == "is_not_null":
+            if row.get(column) in (None, ""):
+                row[column] = 1
+            continue
+        if operator in {"like", "ilike"}:
+            row[column] = value or "demo"
+            continue
+        if operator == "in":
+            if isinstance(value, list) and value:
+                row[column] = value[0]
+            continue
+        if operator == "between":
+            if isinstance(value, list) and len(value) == 2:
+                low = _coerce_float(value[0])
+                high = _coerce_float(value[1])
+                if low is not None and high is not None:
+                    row[column] = (low + high) / 2
+            continue
+        if value is None:
+            continue
+        row[column] = value
+
+
+def _filter_demo_rows(rows: list[dict], filters: list[dict]) -> list[dict]:
+    if not filters:
+        return rows
+    filtered = []
+    for row in rows:
+        if all(_matches_filter(row, item) for item in filters):
+            filtered.append(row)
+    return filtered
+
+
+def _query_rows_for_filters(
+    rules: dict,
+    filters: list[dict],
+    columns: list[str],
+    limit: int,
+) -> tuple[str, list[dict]]:
+    db = rules.get("db", {})
+    connection_id = db.get("connection_id")
+    table_name = db.get("table")
+    if not connection_id or not table_name:
+        chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
+        lot_id_column = db.get("lot_id_column") or "lot_id"
+        filter_column = chip_prod_column
+        filter_value = "DEMO-CHIP"
+        for item in filters:
+            if item.get("column") == lot_id_column and item.get("value"):
+                filter_column = lot_id_column
+                filter_value = str(item.get("value"))
+                break
+        if filter_column != lot_id_column:
+            for item in filters:
+                if item.get("column") == chip_prod_column and item.get("value"):
+                    filter_column = chip_prod_column
+                    filter_value = str(item.get("value"))
+                    break
+        demo_columns = list(
+            dict.fromkeys(
+                columns
+                + [
+                    item.get("column")
+                    for item in filters
+                    if isinstance(item, dict) and item.get("column")
+                ]
+            )
+        )
+        rows = [dict(row) for row in _build_demo_rows(rules, demo_columns, filter_column, filter_value)]
+        desired_chip = None
+        for item in filters:
+            if item.get("column") == chip_prod_column and item.get("value"):
+                desired_chip = str(item.get("value"))
+                break
+        if not desired_chip:
+            desired_chip = filter_value if filter_column == chip_prod_column else "DEMO-CHIP"
+        for row in rows:
+            if chip_prod_column and desired_chip:
+                row[chip_prod_column] = desired_chip
+        _apply_demo_filters(rows, filters)
+        filtered = _filter_demo_rows(rows, filters)
+        if not filtered:
+            filtered = rows
+        row_limit = limit if isinstance(limit, int) and limit > 0 else 12
+        return "demo", filtered[:row_limit]
+    result = execute_table_query_multi(
+        connection_id=connection_id,
+        schema_name=db.get("schema") or "public",
+        table_name=table_name,
+        columns=columns,
+        filters=filters,
+        limit=limit,
+    )
+    rows = result.get("rows", []) if isinstance(result, dict) else []
+    return "postgresql", rows
+
+
+def select_reference_from_params(params: dict, model_override: str | None = None) -> dict:
+    rules = normalize_reference_rules(load_reference_rules())
+    db = rules.get("db", {})
+    chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
+    lot_id_column = db.get("lot_id_column") or "lot_id"
+    input_date_column = db.get("input_date_column") or "input_date"
+    max_candidates = rules.get("selection", {}).get("max_candidates", 500)
+    limit = max_candidates if isinstance(max_candidates, int) and max_candidates > 0 else 0
+
+    param_filters = _build_param_filters(params, rules)
+    if model_override:
+        param_filters.append(
+            {"column": chip_prod_column, "operator": "=", "value": model_override}
+        )
+
+    base_columns = [chip_prod_column, lot_id_column, input_date_column]
+    source, chip_prod_rows = _query_rows_for_filters(
+        rules,
+        param_filters,
+        [chip_prod_column],
+        limit,
+    )
+    chip_prod_ids = sorted(
+        {
+            str(_get_value(row, chip_prod_column))
+            for row in chip_prod_rows
+            if _get_value(row, chip_prod_column) is not None
+        }
+    )
+    if not chip_prod_ids:
+        return {
+            "status": "missing",
+            "error": "조건에 맞는 chip_prod_id가 없습니다.",
+            "chip_prod_ids": [],
+            "source": source,
+        }
+
+    value1_filters = param_filters + _build_not_null_filters(
+        rules.get("value1_not_null_columns", []) or []
+    )
+    _, value1_rows = _query_rows_for_filters(
+        rules,
+        value1_filters,
+        base_columns,
+        limit,
+    )
+    value1_counts = _count_by_key(value1_rows, chip_prod_column, lot_id_column)
+
+    defect_conditions = _normalize_defect_conditions(rules)
+    defect_filters_all = _build_defect_filters(defect_conditions)
+    value2_all_filters = value1_filters + defect_filters_all
+    _, value2_all_rows = _query_rows_for_filters(
+        rules,
+        value2_all_filters,
+        base_columns,
+        limit,
+    )
+
+    if defect_conditions:
+        latest_row = _select_latest_row(value2_all_rows, input_date_column)
+    else:
+        latest_row = _select_latest_row(value1_rows, input_date_column)
+    if not latest_row:
+        return {
+            "status": "missing",
+            "error": "조건에 맞는 LOT가 없습니다.",
+            "chip_prod_ids": chip_prod_ids,
+            "value1_counts": value1_counts,
+            "source": source,
+        }
+
+    selected_chip_prod = _get_value(latest_row, chip_prod_column)
+    selected_chip_prod_id = (
+        str(selected_chip_prod) if selected_chip_prod is not None else None
+    )
+    selected_lot_id_value = _get_value(latest_row, lot_id_column)
+    selected_lot_id = str(selected_lot_id_value) if selected_lot_id_value else ""
+    if not selected_chip_prod_id:
+        selected_chip_prod_id = model_override or (chip_prod_ids[0] if chip_prod_ids else "")
+
+    value2_all_counts = _count_by_key(value2_all_rows, chip_prod_column, lot_id_column)
+    defect_rates = []
+    value2_counts_by_condition: dict[str, int] = {}
+    for condition in defect_conditions:
+        condition_filters = value1_filters + _build_defect_filters([condition])
+        _, condition_rows = _query_rows_for_filters(
+            rules,
+            condition_filters,
+            base_columns,
+            limit,
+        )
+        counts = _count_by_key(condition_rows, chip_prod_column, lot_id_column)
+        value2_count = counts.get(selected_chip_prod_id or "", 0)
+        value2_counts_by_condition[condition["key"]] = value2_count
+        value1_count = value1_counts.get(selected_chip_prod_id or "", 0)
+        rate = None
+        if value1_count > 0:
+            rate = (value1_count - value2_count) / value1_count
+        defect_rates.append(
+            {
+                "key": condition["key"],
+                "label": condition.get("label") or condition["key"],
+                "column": condition.get("column"),
+                "value1_count": value1_count,
+                "value2_count": value2_count,
+                "defect_rate": rate,
+            }
+        )
+
+    detail_columns = rules.get("detail_columns", []) or []
+    grid_columns = [
+        factor.get("column")
+        for factor in rules.get("grid_search", {}).get("factors", [])
+        if factor.get("column")
+    ]
+    detail_query_columns = list(
+        dict.fromkeys(base_columns + grid_columns + list(detail_columns))
+    )
+    detail_row = None
+    if selected_lot_id:
+        _, detail_rows = _query_rows_for_filters(
+            rules,
+            [{"column": lot_id_column, "operator": "=", "value": selected_lot_id}],
+            detail_query_columns,
+            1,
+        )
+        detail_row = detail_rows[0] if detail_rows else None
+
+    return {
+        "status": "ok",
+        "chip_prod_ids": chip_prod_ids,
+        "selected_chip_prod_id": selected_chip_prod_id,
+        "selected_lot_id": selected_lot_id,
+        "selected_row": detail_row or latest_row,
+        "value1_counts": value1_counts,
+        "value2_all_counts": value2_all_counts,
+        "value2_counts_by_condition": value2_counts_by_condition,
+        "defect_rates": defect_rates,
+        "source": source,
+        "columns": detail_query_columns,
+    }
+
+
+def get_lot_detail_by_id(lot_id: str) -> dict:
+    rules = normalize_reference_rules(load_reference_rules())
+    db = rules.get("db", {})
+    lot_id_column = db.get("lot_id_column") or "lot_id"
+    chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
+    input_date_column = db.get("input_date_column") or "input_date"
+    detail_columns = rules.get("detail_columns", []) or []
+    grid_columns = [
+        factor.get("column")
+        for factor in rules.get("grid_search", {}).get("factors", [])
+        if factor.get("column")
+    ]
+    query_columns = list(
+        dict.fromkeys([chip_prod_column, lot_id_column, input_date_column] + grid_columns + list(detail_columns))
+    )
+    source, rows = _query_rows_for_filters(
+        rules,
+        [{"column": lot_id_column, "operator": "=", "value": lot_id}],
+        query_columns,
+        1,
+    )
+    if not rows:
+        return {"status": "missing", "error": "LOT 정보를 찾지 못했습니다.", "source": source}
+    return {"status": "ok", "row": rows[0], "columns": query_columns, "source": source}
 
 
 _DEMO_CACHE: dict[str, list[dict]] = {}
@@ -176,18 +650,33 @@ def _build_demo_rows(
     chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
     input_date_column = db.get("input_date_column") or "input_date"
     screen_column = (conditions.get("screen_durable_spec") or {}).get("column")
-    required = list(conditions.get("required_not_null", []))
+    value1_required = rules.get("value1_not_null_columns", []) or []
+    required = list(dict.fromkeys(list(conditions.get("required_not_null", [])) + list(value1_required)))
     design_columns = list(conditions.get("design_factor_columns", []))
     defect_columns = [
         metric.get("column")
         for metric in conditions.get("defect_metrics", [])
         if metric.get("column")
     ]
+    defect_condition_columns = [
+        item.get("column") or item.get("name")
+        for item in (rules.get("defect_conditions") or [])
+        if isinstance(item, dict) and (item.get("column") or item.get("name"))
+    ]
+    defect_columns = list(dict.fromkeys(defect_columns + defect_condition_columns))
     grid_columns = [
         factor.get("column")
         for factor in grid.get("factors", [])
         if factor.get("column")
     ]
+    param_columns = rules.get("param_columns") or {}
+    param_defaults = {
+        "temperature": 120,
+        "voltage": 3.7,
+        "size": 12,
+        "capacity": 6,
+        "production_mode": "mass",
+    }
 
     model_name = filter_value or "DEMO-MODEL"
     total_rows = 1 if filter_column == lot_id_column else 8
@@ -208,6 +697,13 @@ def _build_demo_rows(
             row[col] = _demo_base_value(idx + idx_col, 0.2)
         for idx_col, col in enumerate(defect_columns, start=1):
             row[col] = _demo_base_value(idx + idx_col, 0.01)
+        for param_key, column in param_columns.items():
+            if not column:
+                continue
+            if column in columns:
+                default_value = param_defaults.get(param_key)
+                if default_value is not None:
+                    row[column] = default_value
 
         for col in grid_columns:
             if col == "sheet_t":

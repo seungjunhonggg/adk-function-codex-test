@@ -5,6 +5,10 @@ const statusDot = document.getElementById("ws-status");
 const statusLabel = document.getElementById("ws-label");
 const sessionEl = document.getElementById("session-id");
 const lotResultEl = document.getElementById("lot-result");
+const matchSummaryCard = document.getElementById("match-summary-card");
+const matchSummaryEl = document.getElementById("match-summary");
+const latestLotCard = document.getElementById("latest-lot-card");
+const latestLotEl = document.getElementById("latest-lot");
 const simResultEl = document.getElementById("sim-result");
 const predictionResultEl = document.getElementById("prediction-result");
 const eventLogEl = document.getElementById("event-log");
@@ -48,6 +52,10 @@ const finalDefectChartEl = document.getElementById("final-defect-chart");
 const designCandidatesEl = document.getElementById("design-candidates");
 const finalBriefingEl = document.getElementById("final-briefing");
 const defaultLotResultText = lotResultEl ? lotResultEl.textContent : "";
+const defaultMatchSummaryText = matchSummaryEl
+  ? matchSummaryEl.textContent
+  : "";
+const defaultLatestLotText = latestLotEl ? latestLotEl.textContent : "";
 const defaultSimResultText = simResultEl ? simResultEl.textContent : "";
 const defaultPredictionResultText = predictionResultEl ? predictionResultEl.textContent : "";
 const defaultFrontendTriggerText = frontendTriggerEl ? frontendTriggerEl.textContent : "";
@@ -107,6 +115,9 @@ let sessions = [];
 let currentSessionId = "";
 sessionEl.textContent = "--";
 let lastLotId = "";
+let lastSimulationParams = {};
+let lastMatchSummary = null;
+let lastLatestLot = null;
 let isComposing = false;
 let recommendationDirty = false;
 let hasFinalBriefing = false;
@@ -554,6 +565,12 @@ function resetEventPanel() {
   if (eventLogEl) {
     eventLogEl.innerHTML = "";
   }
+  if (matchSummaryEl) {
+    matchSummaryEl.textContent = defaultMatchSummaryText;
+  }
+  if (latestLotEl) {
+    latestLotEl.textContent = defaultLatestLotText;
+  }
   if (lotResultEl) {
     lotResultEl.textContent = defaultLotResultText;
   }
@@ -611,11 +628,16 @@ function resetEventPanel() {
   updateMissingInputs([]);
   updateFilledInputs();
   lastLotId = "";
+  lastSimulationParams = {};
+  lastMatchSummary = null;
+  lastLatestLot = null;
   recommendationDirty = false;
   hasFinalBriefing = false;
   updateEventEmpty();
 }
 const streamCards = [
+  matchSummaryCard,
+  latestLotCard,
   lotCard,
   simFormCard,
   simResultCard,
@@ -674,7 +696,7 @@ function showOnlyStreamCards(cards = []) {
 function focusStage(stage) {
   const stageCards = {
     recommendation: [simResultCard],
-    reference: [lotCard, defectChartCard],
+    reference: [matchSummaryCard, latestLotCard, lotCard, defectChartCard],
     grid: [designCandidatesCard],
     final: [finalBriefingCard],
   };
@@ -731,6 +753,39 @@ function formatTimestamp(value) {
   return text;
 }
 
+function formatProductionMode(value) {
+  if (!value) {
+    return "-";
+  }
+  const normalized = String(value).toLowerCase();
+  if (["mass", "production", "prod"].includes(normalized)) {
+    return "양산";
+  }
+  if (["dev", "development"].includes(normalized)) {
+    return "개발";
+  }
+  return String(value);
+}
+
+function formatMissingFields(missing = []) {
+  if (!Array.isArray(missing) || !missing.length) {
+    return "";
+  }
+  return missing
+    .map((item) => {
+      if (item === "production_mode") {
+        return "양산/개발";
+      }
+      if (item === "temperature") return "온도";
+      if (item === "voltage") return "전압";
+      if (item === "size") return "크기";
+      if (item === "capacity") return "용량";
+      if (item === "model_name") return "기종";
+      return item;
+    })
+    .join(", ");
+}
+
 function createKpiCard(label, value, className = "") {
   const card = document.createElement("div");
   card.className = `kpi-card ${className}`.trim();
@@ -757,6 +812,230 @@ function applyInputValue(input, value) {
     return;
   }
   input.value = String(value);
+}
+
+function setLastSimulationParams(params = {}) {
+  if (!params || typeof params !== "object") {
+    return;
+  }
+  const keys = [
+    "model_name",
+    "temperature",
+    "voltage",
+    "size",
+    "capacity",
+    "production_mode",
+  ];
+  const hasChange = keys.some(
+    (key) => params[key] !== lastSimulationParams?.[key]
+  );
+  if (hasChange) {
+    lastMatchSummary = null;
+  }
+  lastSimulationParams = { ...params };
+}
+
+function renderMatchSummary(payload = {}) {
+  if (!matchSummaryEl) {
+    return;
+  }
+
+  const summary = {
+    chip_prod_id:
+      payload.chip_prod_id ||
+      payload.model_name ||
+      lastMatchSummary?.chip_prod_id ||
+      "",
+    chip_prod_id_count:
+      payload.chip_prod_id_count ?? lastMatchSummary?.chip_prod_id_count,
+    chip_prod_id_samples: Array.isArray(payload.chip_prod_id_samples)
+      ? payload.chip_prod_id_samples
+      : lastMatchSummary?.chip_prod_id_samples || [],
+    missing: Array.isArray(payload.missing)
+      ? payload.missing
+      : lastMatchSummary?.missing || [],
+  };
+  lastMatchSummary = summary;
+
+  matchSummaryEl.innerHTML = "";
+  const kpiRow = document.createElement("div");
+  kpiRow.className = "kpi-row";
+  if (summary.chip_prod_id) {
+    kpiRow.appendChild(createKpiCard("선택 Chip", summary.chip_prod_id, "accent"));
+  }
+  if (Number.isFinite(summary.chip_prod_id_count)) {
+    kpiRow.appendChild(createKpiCard("Chip 후보", summary.chip_prod_id_count));
+  }
+  if (kpiRow.childElementCount) {
+    matchSummaryEl.appendChild(kpiRow);
+  }
+
+  const params = lastSimulationParams || {};
+  const paramItems = [
+    { label: "기종", value: params.model_name },
+    { label: "온도", value: params.temperature },
+    { label: "전압", value: params.voltage },
+    { label: "크기", value: params.size },
+    { label: "용량", value: params.capacity },
+    { label: "구분", value: formatProductionMode(params.production_mode) },
+  ];
+
+  const inputSection = document.createElement("div");
+  inputSection.className = "summary-section";
+  const inputLabel = document.createElement("div");
+  inputLabel.className = "summary-label";
+  inputLabel.textContent = "입력 조건";
+  inputSection.appendChild(inputLabel);
+  const inputPills = document.createElement("div");
+  inputPills.className = "summary-pills";
+
+  let inputCount = 0;
+  paramItems.forEach(({ label, value }) => {
+    const display = value ?? "-";
+    if (label === "기종" && (display === "-" || display === "")) {
+      return;
+    }
+    const pill = document.createElement("span");
+    pill.className = "pill summary-pill";
+    pill.textContent = `${label} ${renderValue(display)}`;
+    inputPills.appendChild(pill);
+    inputCount += 1;
+  });
+  if (inputCount) {
+    inputSection.appendChild(inputPills);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "summary-note";
+    empty.textContent = "입력 조건이 아직 없습니다.";
+    inputSection.appendChild(empty);
+  }
+  const missingText = formatMissingFields(summary.missing);
+  const note = document.createElement("div");
+  note.className = "summary-note";
+  note.textContent = missingText
+    ? `입력 부족: ${missingText}`
+    : "매칭 방식: 정확 일치";
+  inputSection.appendChild(note);
+  matchSummaryEl.appendChild(inputSection);
+
+  const chipSection = document.createElement("div");
+  chipSection.className = "summary-section";
+  const chipLabel = document.createElement("div");
+  chipLabel.className = "summary-label";
+  chipLabel.textContent = "chip_prod_id 샘플";
+  chipSection.appendChild(chipLabel);
+
+  if (summary.chip_prod_id_samples.length) {
+    const chipPills = document.createElement("div");
+    chipPills.className = "summary-pills";
+    summary.chip_prod_id_samples.forEach((chip) => {
+      const pill = document.createElement("span");
+      pill.className = "pill summary-pill summary-chip";
+      pill.textContent = chip;
+      chipPills.appendChild(pill);
+    });
+    chipSection.appendChild(chipPills);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "summary-note";
+    empty.textContent =
+      summary.chip_prod_id_count === 0
+        ? "일치하는 chip_prod_id가 없습니다."
+        : "샘플을 준비 중입니다.";
+    chipSection.appendChild(empty);
+  }
+  matchSummaryEl.appendChild(chipSection);
+}
+
+const LATEST_LOT_FIELDS = [
+  {
+    label: "양산/개발",
+    keys: ["lot_type", "production_mode"],
+    formatter: formatProductionMode,
+  },
+  { label: "온도", keys: ["temperature", "temp", "temp_grade"] },
+  { label: "전압", keys: ["voltage", "volt"] },
+  { label: "크기", keys: ["size", "chip_size"] },
+  { label: "용량", keys: ["capacity", "capacitance"] },
+  { label: "활성층", keys: ["active_layer"] },
+  { label: "Sheet T", keys: ["sheet_t"] },
+  { label: "Laydown", keys: ["laydown", "ldn_avr_value"] },
+];
+
+function renderLatestLot(payload = {}) {
+  if (!latestLotEl) {
+    return;
+  }
+
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const row = rows[0] || {};
+  const lotId =
+    payload.lot_id || getRowValue(row, ["lot_id", "lotid", "lot"]);
+  const chipId = getRowValue(row, [
+    "chip_prod_id",
+    "chip_prod",
+    "model_name",
+  ]);
+  const designInputDate = getRowValue(row, ["design_input_date"]);
+
+  lastLatestLot = { lot_id: lotId, chip_prod_id: chipId, row };
+
+  latestLotEl.innerHTML = "";
+  if (!row || !Object.keys(row).length) {
+    latestLotEl.textContent = "최신 LOT 정보가 없습니다.";
+    return;
+  }
+
+  const header = document.createElement("div");
+  header.className = "lot-header";
+  const fetchedAt = new Date().toLocaleTimeString("ko-KR");
+  const sourceText = payload.source ? `source: ${payload.source}` : "";
+  header.innerHTML = `
+    <strong>${lotId || "LOT 정보"}</strong>
+    <span>${sourceText ? `${sourceText} · ` : ""}조회 ${fetchedAt}</span>
+  `;
+  latestLotEl.appendChild(header);
+
+  const kpiRow = document.createElement("div");
+  kpiRow.className = "kpi-row";
+  if (lotId) {
+    kpiRow.appendChild(createKpiCard("LOT", lotId, "accent"));
+  }
+  if (chipId) {
+    kpiRow.appendChild(createKpiCard("Chip", chipId));
+  }
+  if (designInputDate) {
+    kpiRow.appendChild(createKpiCard("입력일", designInputDate));
+  }
+  if (kpiRow.childElementCount) {
+    latestLotEl.appendChild(kpiRow);
+  }
+
+  const details = document.createElement("dl");
+  details.className = "lot-grid latest-lot-grid";
+  let detailCount = 0;
+  LATEST_LOT_FIELDS.forEach((field) => {
+    const raw = getRowValue(row, field.keys);
+    if (raw === null || raw === undefined || raw === "") {
+      return;
+    }
+    const dt = document.createElement("dt");
+    dt.textContent = field.label;
+    const dd = document.createElement("dd");
+    const display = field.formatter ? field.formatter(raw) : renderValue(raw);
+    dd.textContent = display;
+    details.appendChild(dt);
+    details.appendChild(dd);
+    detailCount += 1;
+  });
+  if (detailCount) {
+    latestLotEl.appendChild(details);
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "summary-note";
+    empty.textContent = "표시할 상세 필드가 없습니다.";
+    latestLotEl.appendChild(empty);
+  }
 }
 
 function updateMissingInputs(missing = []) {
@@ -801,28 +1080,19 @@ function renderSimulationForm(payload = {}) {
   hasFinalBriefing = false;
   showOnlyStreamCards([simFormCard]);
   const params = payload.params || {};
+  setLastSimulationParams(params);
   applyInputValue(simModelInput, params.model_name);
   applyInputValue(simTemperatureInput, params.temperature);
   applyInputValue(simVoltageInput, params.voltage);
   applyInputValue(simSizeInput, params.size);
   applyInputValue(simCapacityInput, params.capacity);
   applyInputValue(simProductionSelect, params.production_mode);
+  renderMatchSummary({ missing: payload.missing || [] });
   updateMissingInputs(payload.missing || []);
   updateFilledInputs();
 
   if (payload.missing && payload.missing.length) {
-    const missingLabel = payload.missing
-      .map((item) => {
-        if (item === "production_mode") {
-          return "양산/개발";
-        }
-        if (item === "temperature") return "온도";
-        if (item === "voltage") return "전압";
-        if (item === "size") return "크기";
-        if (item === "capacity") return "용량";
-        return item;
-      })
-      .join(", ");
+    const missingLabel = formatMissingFields(payload.missing);
     setSimStatus(`미입력: ${missingLabel}`, true);
   } else {
     setSimStatus("입력 완료: 추천 실행이 가능합니다.");
@@ -972,7 +1242,9 @@ function renderLotResult(payload) {
     return;
   }
 
-  showOnlyStreamCards([lotCard]);
+  renderLatestLot(payload);
+  renderMatchSummary();
+  showOnlyStreamCards([matchSummaryCard, latestLotCard, lotCard]);
 
   const lotId = payload.lot_id || payload.query || "";
   setCurrentLot(lotId);
@@ -1044,6 +1316,8 @@ function renderSimResult(payload) {
   recommendationDirty = false;
 
   const params = payload.params || {};
+  setLastSimulationParams(params);
+  renderMatchSummary();
   const result = payload.result || {};
   const targetKeys = [
     "dc_time",
@@ -1092,12 +1366,7 @@ function renderSimResult(payload) {
     simResultEl.appendChild(kpiRow);
   }
 
-  const productionLabel =
-    params.production_mode === "mass"
-      ? "양산"
-      : params.production_mode === "dev"
-        ? "개발"
-        : params.production_mode || "-";
+  const productionLabel = formatProductionMode(params.production_mode);
   const inputSummary = document.createElement("div");
   inputSummary.className = "metric";
   inputSummary.innerHTML = `
@@ -1351,16 +1620,30 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
     ...lots.map((item) => Number(item.defect_rate) || 0),
     0.0001
   );
+  const topIndices = new Set(
+    lots
+      .map((item, index) => ({
+        index,
+        rate: Number(item.defect_rate),
+      }))
+      .filter((item) => Number.isFinite(item.rate))
+      .sort((a, b) => b.rate - a.rate)
+      .slice(0, 3)
+      .map((item) => item.index)
+  );
   const chart = document.createElement("div");
   chart.className = "defect-chart";
-  lots.forEach((item) => {
+  lots.forEach((item, index) => {
     const rate = Number(item.defect_rate) || 0;
     const percent = (rate * 100).toFixed(2);
     const row = document.createElement("div");
     row.className = "defect-row";
+    if (topIndices.has(index)) {
+      row.classList.add("highlight");
+    }
     const label = document.createElement("div");
     label.className = "defect-label";
-    label.textContent = item.lot_id || "-";
+    label.textContent = item.label || item.lot_id || "-";
     const bar = document.createElement("div");
     bar.className = "defect-bar";
     const fill = document.createElement("div");
@@ -1475,6 +1758,10 @@ function renderFinalBriefing(payload = {}) {
   const candidateTotal =
     payload.candidate_total !== undefined ? payload.candidate_total : "-";
   const defectStats = payload.defect_stats || {};
+  const value1Count = payload.value1_count;
+  const value2Count = payload.value2_count;
+  const value1Num = Number(value1Count);
+  const value2Num = Number(value2Count);
 
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
@@ -1482,6 +1769,10 @@ function renderFinalBriefing(payload = {}) {
   kpiRow.appendChild(createKpiCard("레퍼런스 LOT", referenceLot));
   if (candidateTotal !== "-") {
     kpiRow.appendChild(createKpiCard("그리드 후보", candidateTotal));
+  }
+  if (Number.isFinite(value1Num) && Number.isFinite(value2Num) && value1Num > 0) {
+    const overallRate = ((value1Num - value2Num) / value1Num) * 100;
+    kpiRow.appendChild(createKpiCard("불량률(전체)", `${overallRate.toFixed(2)}%`));
   }
   if (defectStats && defectStats.count) {
     const avg = `${(defectStats.avg * 100).toFixed(2)}%`;
@@ -1503,6 +1794,37 @@ function renderFinalBriefing(payload = {}) {
     renderDefectRateChartInto(finalDefectChartEl, lastDefectChartPayload, {
       includeMeta: false,
     });
+  }
+
+  const defectRates = Array.isArray(payload.defect_rates)
+    ? payload.defect_rates
+    : [];
+  if (defectRates.length) {
+    const table = document.createElement("table");
+    table.className = "result-table";
+    const thead = document.createElement("thead");
+    thead.innerHTML = `
+      <tr>
+        <th>결함 조건</th>
+        <th>불량률</th>
+      </tr>
+    `;
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    defectRates.forEach((item) => {
+      const row = document.createElement("tr");
+      const label = item.label || item.key || item.column || "-";
+      const rate = Number(item.defect_rate);
+      const rateText = Number.isFinite(rate) ? `${(rate * 100).toFixed(2)}%` : "-";
+      row.innerHTML = `
+        <td>${label}</td>
+        <td>${rateText}</td>
+      `;
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    finalBriefingEl.appendChild(table);
   }
 
   const candidates = Array.isArray(payload.top_candidates)
@@ -1689,7 +2011,16 @@ function handleEvent(event) {
 
   if (event.type === "final_briefing") {
     renderFinalBriefing(event.payload);
+    renderMatchSummary(event.payload);
     addEventLog("브리핑", "최종 브리핑 업데이트");
+    const value1Count = Number(event.payload?.value1_count);
+    const value2Count = Number(event.payload?.value2_count);
+    if (Number.isFinite(value1Count) && Number.isFinite(value2Count)) {
+      addEventLog(
+        "브리핑",
+        `value1/value2 카운트: ${value1Count} / ${value2Count}`
+      );
+    }
   }
 
   if (event.type === "stage_focus") {

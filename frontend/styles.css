@@ -1019,6 +1019,41 @@ body::before {
   margin-top: 4px;
 }
 
+.summary-section {
+  margin-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.summary-label {
+  font-size: 11px;
+  color: var(--text-soft);
+  letter-spacing: 0.3px;
+}
+
+.summary-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.summary-pill {
+  font-size: 10px;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+}
+
+.summary-chip {
+  background: rgba(47, 124, 255, 0.08);
+  border-color: rgba(47, 124, 255, 0.25);
+}
+
+.summary-note {
+  font-size: 11px;
+  color: var(--text-soft);
+  line-height: 1.4;
+}
+
 .event-log {
   display: flex;
   flex-direction: column;
@@ -1178,10 +1213,21 @@ body::before {
   font-size: 12px;
 }
 
+.defect-row.highlight {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 107, 53, 0.1);
+}
+
 .defect-row .defect-label {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-soft);
+}
+
+.defect-row.highlight .defect-label {
+  color: var(--text-strong);
+  font-weight: 600;
 }
 
 .defect-bar {
@@ -1196,10 +1242,19 @@ body::before {
   background: var(--accent-2);
 }
 
+.defect-row.highlight .defect-bar-fill {
+  background: var(--accent);
+}
+
 .defect-value {
   font-size: 11px;
   text-align: right;
   color: var(--text-soft);
+}
+
+.defect-row.highlight .defect-value {
+  color: var(--text-strong);
+  font-weight: 600;
 }
 
 .candidate-meta {

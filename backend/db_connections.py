@@ -289,7 +289,19 @@ def _get_table_columns(schema: dict, schema_name: str, table_name: str) -> list[
 
 def _normalize_operator(value: str | None) -> str:
     operator = (value or "ilike").lower()
-    allowed = {"=", ">", "<", ">=", "<=", "ilike", "like"}
+    allowed = {
+        "=",
+        ">",
+        "<",
+        ">=",
+        "<=",
+        "ilike",
+        "like",
+        "in",
+        "between",
+        "is_null",
+        "is_not_null",
+    }
     if operator not in allowed:
         return "ilike"
     return operator
@@ -319,13 +331,25 @@ def execute_table_query(
             columns_sql = ", ".join(f"`{col}`" for col in valid_columns)
             query = f"SELECT {columns_sql} FROM `{schema_name}`.`{table_name}`"
             params: list[Any] = []
-            if filter_column and filter_value:
-                if operator in {"ilike", "like"}:
-                    query += f" WHERE `{filter_column}` LIKE %s"
-                    params.append(f"%{filter_value}%")
-                else:
-                    query += f" WHERE `{filter_column}` {operator} %s"
-                    params.append(filter_value)
+            if filter_column:
+                if operator == "is_not_null":
+                    query += f" WHERE `{filter_column}` IS NOT NULL"
+                elif operator == "is_null":
+                    query += f" WHERE `{filter_column}` IS NULL"
+                elif filter_value is not None and filter_value != "":
+                    if operator in {"ilike", "like"}:
+                        query += f" WHERE `{filter_column}` LIKE %s"
+                        params.append(f"%{filter_value}%")
+                    elif operator == "in" and isinstance(filter_value, (list, tuple)):
+                        placeholders = ", ".join(["%s"] * len(filter_value))
+                        query += f" WHERE `{filter_column}` IN ({placeholders})"
+                        params.extend(list(filter_value))
+                    elif operator == "between" and isinstance(filter_value, (list, tuple)) and len(filter_value) == 2:
+                        query += f" WHERE `{filter_column}` BETWEEN %s AND %s"
+                        params.extend([filter_value[0], filter_value[1]])
+                    else:
+                        query += f" WHERE `{filter_column}` {operator} %s"
+                        params.append(filter_value)
             if limit:
                 query += " LIMIT %s"
                 params.append(limit)
@@ -346,19 +370,42 @@ def execute_table_query(
                 table=sql.Identifier(table_name),
             )
             params = []
-            if filter_column and filter_value:
-                if operator in {"ilike", "like"}:
-                    query += sql.SQL(" WHERE {col} {op} %s").format(
-                        col=sql.Identifier(filter_column),
-                        op=sql.SQL(operator.upper()),
+            if filter_column:
+                if operator == "is_not_null":
+                    query += sql.SQL(" WHERE {col} IS NOT NULL").format(
+                        col=sql.Identifier(filter_column)
                     )
-                    params.append(f"%{filter_value}%")
-                else:
-                    query += sql.SQL(" WHERE {col} {op} %s").format(
-                        col=sql.Identifier(filter_column),
-                        op=sql.SQL(operator),
+                elif operator == "is_null":
+                    query += sql.SQL(" WHERE {col} IS NULL").format(
+                        col=sql.Identifier(filter_column)
                     )
-                    params.append(filter_value)
+                elif filter_value is not None and filter_value != "":
+                    if operator in {"ilike", "like"}:
+                        query += sql.SQL(" WHERE {col} {op} %s").format(
+                            col=sql.Identifier(filter_column),
+                            op=sql.SQL(operator.upper()),
+                        )
+                        params.append(f"%{filter_value}%")
+                    elif operator == "in" and isinstance(filter_value, (list, tuple)):
+                        placeholders = sql.SQL(", ").join(
+                            sql.Placeholder() for _ in range(len(filter_value))
+                        )
+                        query += sql.SQL(" WHERE {col} IN ({values})").format(
+                            col=sql.Identifier(filter_column),
+                            values=placeholders,
+                        )
+                        params.extend(list(filter_value))
+                    elif operator == "between" and isinstance(filter_value, (list, tuple)) and len(filter_value) == 2:
+                        query += sql.SQL(" WHERE {col} BETWEEN %s AND %s").format(
+                            col=sql.Identifier(filter_column)
+                        )
+                        params.extend([filter_value[0], filter_value[1]])
+                    else:
+                        query += sql.SQL(" WHERE {col} {op} %s").format(
+                            col=sql.Identifier(filter_column),
+                            op=sql.SQL(operator),
+                        )
+                        params.append(filter_value)
             if limit:
                 query += sql.SQL(" LIMIT %s")
                 params.append(limit)
@@ -394,12 +441,27 @@ def execute_table_query_multi(
         if not isinstance(item, dict):
             continue
         column = item.get("column") or item.get("name")
-        value = item.get("value")
-        if not column or value is None or value == "":
+        if not column:
             continue
         if column not in available:
             raise ValueError("존재하지 않는 필터 컬럼이 포함되어 있습니다.")
         operator = _normalize_operator(item.get("operator"))
+        value = item.get("value")
+        if operator in {"is_null", "is_not_null"}:
+            normalized_filters.append({"column": column, "operator": operator, "value": None})
+            continue
+        if value is None or value == "":
+            continue
+        if operator == "between":
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                continue
+            normalized_filters.append({"column": column, "operator": operator, "value": list(value)})
+            continue
+        if operator == "in":
+            if not isinstance(value, (list, tuple)) or not value:
+                continue
+            normalized_filters.append({"column": column, "operator": operator, "value": list(value)})
+            continue
         normalized_filters.append({"column": column, "operator": operator, "value": value})
 
     if db_type in {"mariadb", "mysql"}:
@@ -414,9 +476,20 @@ def execute_table_query_multi(
                     column = item["column"]
                     operator = item["operator"]
                     value = item["value"]
-                    if operator in {"ilike", "like"}:
+                    if operator == "is_not_null":
+                        clauses.append(f"`{column}` IS NOT NULL")
+                    elif operator == "is_null":
+                        clauses.append(f"`{column}` IS NULL")
+                    elif operator in {"ilike", "like"}:
                         clauses.append(f"`{column}` LIKE %s")
                         params.append(f"%{value}%")
+                    elif operator == "in" and isinstance(value, list):
+                        placeholders = ", ".join(["%s"] * len(value))
+                        clauses.append(f"`{column}` IN ({placeholders})")
+                        params.extend(value)
+                    elif operator == "between" and isinstance(value, list) and len(value) == 2:
+                        clauses.append(f"`{column}` BETWEEN %s AND %s")
+                        params.extend([value[0], value[1]])
                     else:
                         clauses.append(f"`{column}` {operator} %s")
                         params.append(value)
@@ -447,7 +520,19 @@ def execute_table_query_multi(
                     column = item["column"]
                     operator = item["operator"]
                     value = item["value"]
-                    if operator in {"ilike", "like"}:
+                    if operator == "is_not_null":
+                        clauses.append(
+                            sql.SQL("{col} IS NOT NULL").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                    elif operator == "is_null":
+                        clauses.append(
+                            sql.SQL("{col} IS NULL").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                    elif operator in {"ilike", "like"}:
                         clauses.append(
                             sql.SQL("{col} {op} %s").format(
                                 col=sql.Identifier(column),
@@ -455,6 +540,24 @@ def execute_table_query_multi(
                             )
                         )
                         params.append(f"%{value}%")
+                    elif operator == "in" and isinstance(value, list):
+                        placeholders = sql.SQL(", ").join(
+                            sql.Placeholder() for _ in range(len(value))
+                        )
+                        clauses.append(
+                            sql.SQL("{col} IN ({values})").format(
+                                col=sql.Identifier(column),
+                                values=placeholders,
+                            )
+                        )
+                        params.extend(value)
+                    elif operator == "between" and isinstance(value, list) and len(value) == 2:
+                        clauses.append(
+                            sql.SQL("{col} BETWEEN %s AND %s").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                        params.extend([value[0], value[1]])
                     else:
                         clauses.append(
                             sql.SQL("{col} {op} %s").format(

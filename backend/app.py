@@ -35,8 +35,8 @@ from .reference_lot import (
     build_grid_values,
     load_reference_rules,
     normalize_reference_rules,
-    select_reference_lot,
-    select_reference_lot_by_id,
+    select_reference_from_params,
+    get_lot_detail_by_id,
 )
 from .simulation import (
     call_grid_search_api,
@@ -334,6 +334,15 @@ def _format_missing_fields(missing: list[str]) -> str:
     }
     labels = [mapping.get(item, item) for item in missing]
     return ", ".join(labels)
+
+
+def _row_value(row: dict, column: str | None) -> object:
+    if not row or not column:
+        return None
+    if column in row:
+        return row.get(column)
+    lower = column.lower()
+    return row.get(lower)
 
 
 async def _append_system_note(session_id: str, content: str) -> None:
@@ -1517,6 +1526,11 @@ def _build_final_briefing_payload(
     grid_results: list[dict],
     top_candidates: list[dict],
     defect_stats: dict,
+    value1_count: int | None = None,
+    value2_count: int | None = None,
+    defect_rates: list[dict] | None = None,
+    chip_prod_id_count: int | None = None,
+    chip_prod_id_samples: list[str] | None = None,
 ) -> dict:
     preview = []
     for item in top_candidates[:5]:
@@ -1529,14 +1543,26 @@ def _build_final_briefing_payload(
                 "design": item.get("design"),
             }
         )
-    return {
+    payload = {
         "model_name": model_name,
+        "chip_prod_id": model_name,
         "reference_lot": reference_result.get("lot_id"),
         "candidate_total": len(grid_results),
         "top_candidates": preview,
         "defect_stats": defect_stats,
         "source": reference_result.get("source") or "postgresql",
     }
+    if value1_count is not None:
+        payload["value1_count"] = value1_count
+    if value2_count is not None:
+        payload["value2_count"] = value2_count
+    if defect_rates is not None:
+        payload["defect_rates"] = defect_rates
+    if chip_prod_id_count is not None:
+        payload["chip_prod_id_count"] = chip_prod_id_count
+    if chip_prod_id_samples is not None:
+        payload["chip_prod_id_samples"] = chip_prod_id_samples
+    return payload
 
 
 async def _maybe_demo_sleep() -> None:
@@ -1553,81 +1579,143 @@ async def _run_reference_pipeline(
     grid_overrides: dict | None = None,
 ) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
-    model_name = model_override
-    simulation_result = None
+    db_config = rules.get("db", {})
+    chip_prod_column = db_config.get("chip_prod_id_column") or "chip_prod_id"
+    lot_id_column = db_config.get("lot_id_column") or "lot_id"
 
-    if not model_name:
-        await _emit_pipeline_status("recommendation", "추천 계산 중...")
-        simulation_result = await execute_simulation()
-        await _maybe_demo_sleep()
-        inner = simulation_result.get("result") if isinstance(simulation_result, dict) else {}
-        model_name = inner.get("recommended_model")
+    await _emit_pipeline_status("recommendation", "조건 매칭 중...")
+    await _emit_pipeline_status("reference", "조건에 맞는 LOT 조회 중...")
+    reference_result = select_reference_from_params(params, model_override=model_override)
 
-    if not model_name:
-        await _emit_pipeline_status(
-            "recommendation", "추천 기종을 확인하지 못했습니다.", done=True
-        )
-        return {
-            "message": "추천 기종을 확인하지 못했습니다. 입력 파라미터를 다시 확인해 주세요."
-        }
-    await _emit_pipeline_status("recommendation", "추천 완료", done=True)
-
-    await _emit_pipeline_status("reference", "레퍼런스 LOT 조회 중...")
-    reference_result = select_reference_lot(model_name)
     if reference_override:
-        reference_result = select_reference_lot_by_id(reference_override)
+        override_detail = get_lot_detail_by_id(reference_override)
+        if override_detail.get("status") == "ok":
+            override_row = override_detail.get("row") or {}
+            override_chip = _row_value(override_row, chip_prod_column)
+            override_chip_id = str(override_chip) if override_chip is not None else ""
+            if override_chip_id:
+                override_result = select_reference_from_params(
+                    params, model_override=override_chip_id
+                )
+                if override_result.get("status") == "ok":
+                    reference_result = override_result
+                else:
+                    reference_result = {
+                        "status": "ok",
+                        "chip_prod_ids": [override_chip_id],
+                        "selected_chip_prod_id": override_chip_id,
+                        "selected_lot_id": reference_override,
+                        "selected_row": override_row,
+                        "value1_counts": {},
+                        "value2_all_counts": {},
+                        "value2_counts_by_condition": {},
+                        "defect_rates": [],
+                        "columns": override_detail.get("columns", []),
+                        "source": override_detail.get("source"),
+                    }
+                reference_result["selected_lot_id"] = reference_override
+                reference_result["selected_row"] = override_row
+                reference_result["selected_chip_prod_id"] = override_chip_id
+        else:
+            reference_result = {
+                "status": "missing",
+                "error": "레퍼런스 LOT 정보를 찾지 못했습니다.",
+            }
 
     if reference_result.get("status") != "ok":
         await _emit_pipeline_status(
             "reference", "레퍼런스 LOT을 찾지 못했습니다.", done=True
         )
         return {
-            "message": "레퍼런스 LOT를 찾지 못했습니다. 조건 또는 DB 설정을 확인해 주세요."
+            "message": reference_result.get("error")
+            or "레퍼런스 LOT를 찾지 못했습니다. 조건 또는 DB 설정을 확인해 주세요."
         }
 
-    pipeline_store.set_reference(session_id, reference_result)
-    lot_payload = {
-        "lot_id": reference_result.get("lot_id"),
+    selected_row = reference_result.get("selected_row") or {}
+    selected_chip_prod_id = reference_result.get("selected_chip_prod_id") or ""
+    selected_lot_id = reference_result.get("selected_lot_id") or str(
+        _row_value(selected_row, lot_id_column) or ""
+    )
+    model_name = selected_chip_prod_id or model_override or ""
+
+    value1_counts = reference_result.get("value1_counts") or {}
+    value2_all_counts = reference_result.get("value2_all_counts") or {}
+    chip_prod_ids = reference_result.get("chip_prod_ids") or []
+    if not isinstance(chip_prod_ids, list):
+        chip_prod_ids = []
+    chip_prod_id_count = len(chip_prod_ids)
+    chip_prod_id_samples = [str(item) for item in chip_prod_ids[:10]]
+    value1_count = value1_counts.get(model_name, 0)
+    value2_count = value2_all_counts.get(model_name, 0)
+
+    reference_payload = {
+        "status": "ok",
+        "lot_id": selected_lot_id,
+        "chip_prod_id": model_name,
+        "row": selected_row,
         "columns": reference_result.get("columns", []),
-        "rows": [reference_result.get("row")],
         "source": reference_result.get("source") or "postgresql",
+        "value1_count": value1_count,
+        "value2_count": value2_count,
+    }
+    pipeline_store.set_reference(session_id, reference_payload)
+    lot_payload = {
+        "lot_id": selected_lot_id,
+        "columns": reference_payload.get("columns", []),
+        "rows": [selected_row],
+        "source": reference_payload.get("source") or "postgresql",
     }
     await event_bus.broadcast({"type": "lot_result", "payload": lot_payload})
     pipeline_store.set_event(session_id, "lot_result", lot_payload)
     await _maybe_demo_sleep()
     await _emit_pipeline_status("reference", "레퍼런스 LOT 조회 완료", done=True)
 
-    if simulation_result is None:
-        synthetic = {
-            "recommended_model": model_name,
-            "representative_lot": reference_result.get("lot_id"),
-            "params": {},
-        }
-        await event_bus.broadcast(
-            {"type": "simulation_result", "payload": {"params": params, "result": synthetic}}
-        )
-        pipeline_store.set_event(
-            session_id,
-            "simulation_result",
-            {"params": params, "result": synthetic},
-        )
-        simulation_result = {"status": "ok", "result": synthetic}
+    synthetic = {
+        "recommended_model": model_name,
+        "representative_lot": selected_lot_id,
+        "params": {},
+    }
+    await event_bus.broadcast(
+        {"type": "simulation_result", "payload": {"params": params, "result": synthetic}}
+    )
+    pipeline_store.set_event(
+        session_id,
+        "simulation_result",
+        {"params": params, "result": synthetic},
+    )
+    simulation_result = {"status": "ok", "result": synthetic}
+    await _emit_pipeline_status("recommendation", "조건 매칭 완료", done=True)
 
-    defect_rates = reference_result.get("defect_rates", [])
+    defect_rates = reference_result.get("defect_rates", []) or []
     defect_stats = {}
     if defect_rates:
-        stats = {
-            "count": len(defect_rates),
-            "avg": sum(item["defect_rate"] for item in defect_rates) / len(defect_rates),
-        }
-        defect_stats = stats
+        rate_values = [
+            item.get("defect_rate")
+            for item in defect_rates
+            if item.get("defect_rate") is not None
+        ]
+        if rate_values:
+            defect_stats = {
+                "count": len(rate_values),
+                "avg": sum(rate_values) / len(rate_values),
+                "min": min(rate_values),
+                "max": max(rate_values),
+            }
+        chart_lots = [
+            {
+                "label": item.get("label") or item.get("key") or item.get("column"),
+                "defect_rate": item.get("defect_rate"),
+            }
+            for item in defect_rates
+            if item.get("defect_rate") is not None
+        ]
         await event_bus.broadcast(
             {
                 "type": "defect_rate_chart",
                 "payload": {
-                    "lots": defect_rates[:50],
+                    "lots": chart_lots,
                     "filters": {"chip_prod_id": model_name},
-                    "stats": stats,
+                    "stats": defect_stats,
                 },
             }
         )
@@ -1635,23 +1723,25 @@ async def _run_reference_pipeline(
             session_id,
             "defect_rate_chart",
             {
-                "lots": defect_rates[:50],
+                "lots": chart_lots,
                 "filters": {"chip_prod_id": model_name},
-                "stats": stats,
+                "stats": defect_stats,
             },
         )
 
     grid_overrides = grid_overrides or {}
-    grid_values = build_grid_values(reference_result.get("row", {}), rules, grid_overrides)
+    grid_values = build_grid_values(selected_row, rules, grid_overrides)
     grid_payload = {
         "chip_prod_id": model_name,
-        "lot_id": reference_result.get("lot_id"),
+        "lot_id": selected_lot_id,
         "grid": grid_values,
         "max_results": rules.get("grid_search", {}).get("max_results", 100),
     }
     await _emit_pipeline_status("grid", "그리드 탐색 중...")
     grid_results = await call_grid_search_api(grid_payload)
     await _maybe_demo_sleep()
+    if not isinstance(grid_results, list):
+        grid_results = []
     top_k = rules.get("grid_search", {}).get("top_k", 10)
     top_k = max(1, int(top_k))
     top_candidates = grid_results[:top_k]
@@ -1662,7 +1752,7 @@ async def _run_reference_pipeline(
         session_id,
         {
             "chip_prod_id": model_name,
-            "lot_id": reference_result.get("lot_id"),
+            "lot_id": selected_lot_id,
             "results": grid_results,
             "top": top_candidates,
             "overrides": grid_overrides,
@@ -1693,7 +1783,16 @@ async def _run_reference_pipeline(
         },
     )
     summary_payload = _build_final_briefing_payload(
-        model_name, reference_result, grid_results, top_candidates, defect_stats
+        model_name,
+        reference_payload,
+        grid_results,
+        top_candidates,
+        defect_stats,
+        value1_count=value1_count,
+        value2_count=value2_count,
+        defect_rates=defect_rates,
+        chip_prod_id_count=chip_prod_id_count,
+        chip_prod_id_samples=chip_prod_id_samples,
     )
     await event_bus.broadcast({"type": "final_briefing", "payload": summary_payload})
     pipeline_store.set_event(session_id, "final_briefing", summary_payload)
@@ -1703,8 +1802,8 @@ async def _run_reference_pipeline(
         summary = _format_simulation_result(simulation_result.get("result"))
         return {
             "message": (
-            f"추천 기종은 {model_name}입니다. 기준 LOT를 선정했고 그리드 서치를 완료했습니다. "
-            f"추천 결과 요약: {summary}. 상위 후보를 확인해 주세요."
+                f"추천 기종은 {model_name}입니다. 기준 LOT를 선정했고 그리드 서치를 완료했습니다. "
+                f"추천 결과 요약: {summary}. 상위 후보를 확인해 주세요."
             ),
             "simulation_result": simulation_result,
         }

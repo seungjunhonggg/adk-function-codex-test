@@ -2,14 +2,43 @@
   "db": {
     "connection_id": "",
     "schema": "public",
-    "table": "",
+    "table": "mdh_base_view_total",
     "lot_id_column": "lot_id",
     "chip_prod_id_column": "chip_prod_id",
-    "input_date_column": "input_date"
+    "input_date_column": "design_input_date"
   },
+  "param_columns": {
+    "temperature": "temperature",
+    "voltage": "voltage",
+    "size": "size",
+    "capacity": "capacity",
+    "production_mode": "lot_type"
+  },
+  "param_value_map": {},
   "selection": {
-    "max_candidates": 500
+    "max_candidates": 0
   },
+  "value1_not_null_columns": [
+    "grinding_l_avg",
+    "grinding_t_avg",
+    "grinding_w_avg",
+    "electrode_c_avg",
+    "cast_dsgn_thk",
+    "ldn_avr_value",
+    "screen_chip_size_leng",
+    "screen_mrgn_leng",
+    "screen_chip_size_widh",
+    "screen_mrgn_widh",
+    "cover_sheet_thk_type",
+    "top_cover_layer_num",
+    "bot_cover_layer_num",
+    "gap_sheet_thk",
+    "active_layer",
+    "upper_equal_dirtn_value",
+    "lower_equal_dirtn_vaue"
+  ],
+  "defect_conditions": [],
+  "detail_columns": [],
   "conditions": {
     "screen_durable_spec": {
       "column": "screen_durable_spec_name",
@@ -17,8 +46,23 @@
       "min_length": null
     },
     "required_not_null": [
-      "sintering_l_size",
-      "sintering_w_size"
+      "grinding_l_avg",
+      "grinding_t_avg",
+      "grinding_w_avg",
+      "electrode_c_avg",
+      "cast_dsgn_thk",
+      "ldn_avr_value",
+      "screen_chip_size_leng",
+      "screen_mrgn_leng",
+      "screen_chip_size_widh",
+      "screen_mrgn_widh",
+      "cover_sheet_thk_type",
+      "top_cover_layer_num",
+      "bot_cover_layer_num",
+      "gap_sheet_thk",
+      "active_layer",
+      "upper_equal_dirtn_value",
+      "lower_equal_dirtn_vaue"
     ],
     "design_factor_columns": [
       "design_factor_1",
