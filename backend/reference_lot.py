@@ -224,6 +224,9 @@ def _build_demo_rows(
             row[filter_column] = filter_value
         rows.append(row)
 
+    if filter_column == chip_prod_column and rows:
+        rows[0][lot_id_column] = "ALA7K1K"
+
     if len(rows) > 3 and screen_column:
         rows[-1][screen_column] = "OTHER"
     if len(rows) > 4 and required:

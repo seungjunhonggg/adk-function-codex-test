@@ -85,12 +85,8 @@ def _simulate_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:
     voltage = _parse_numeric(params["voltage"], "voltage")
     size = _parse_numeric(params["size"], "size")
     capacity = _parse_numeric(params["capacity"], "capacity")
-    production_mode = str(params.get("production_mode") or "").lower()
-
-    mode_tag = "M" if production_mode in {"mass", "production"} else "D"
-    model_name = f"ADJ-{int(temperature)}-{int(size)}-{mode_tag}"
-    lot_seed = int(abs(voltage * 100)) + int(abs(capacity * 10))
-    representative_lot = f"LOT-{lot_seed:04d}"
+    model_name = "CL32Y106KC5ER9B"
+    representative_lot = "ALA7K1K"
 
     base = (temperature * 0.02) + (voltage * 0.8) + (size * 0.15) + (capacity * 0.5)
     params_30 = {}

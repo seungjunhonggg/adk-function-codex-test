@@ -16,6 +16,11 @@ except ImportError:  # pragma: no cover - optional dependency
     psycopg = None
     sql = None
 
+try:
+    import pymysql
+except ImportError:  # pragma: no cover - optional dependency
+    pymysql = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +89,19 @@ def preload_schema(connection_id: str, force: bool = False) -> dict | None:
         return None
     if not force and connection.get("schema"):
         return connection.get("schema") or {}
-    conn = _connect_postgres(connection)
-    try:
-        schema = _introspect_postgres(conn)
-    finally:
-        conn.close()
+    db_type = _get_db_type(connection)
+    if db_type in {"mariadb", "mysql"}:
+        conn = _connect_mariadb(connection)
+        try:
+            schema = _introspect_mariadb(conn)
+        finally:
+            conn.close()
+    else:
+        conn = _connect_postgres(connection)
+        try:
+            schema = _introspect_postgres(conn)
+        finally:
+            conn.close()
 
     payload = _load_connections()
     connections = payload.get("connections", [])
@@ -109,6 +122,11 @@ def _ensure_psycopg() -> None:
         raise RuntimeError("psycopg 패키지가 필요합니다. requirements.txt를 확인하세요.")
 
 
+def _ensure_pymysql() -> None:
+    if pymysql is None:
+        raise RuntimeError("pymysql 패키지가 필요합니다. requirements.txt를 확인하세요.")
+
+
 def _connect_postgres(config: dict) -> Any:
     _ensure_psycopg()
     return psycopg.connect(
@@ -118,6 +136,19 @@ def _connect_postgres(config: dict) -> Any:
         user=config.get("user"),
         password=config.get("password"),
         connect_timeout=5,
+    )
+
+
+def _connect_mariadb(config: dict) -> Any:
+    _ensure_pymysql()
+    return pymysql.connect(
+        host=config.get("host"),
+        port=config.get("port") or 3306,
+        user=config.get("user"),
+        password=config.get("password"),
+        database=config.get("database"),
+        connect_timeout=5,
+        cursorclass=pymysql.cursors.Cursor,
     )
 
 
@@ -147,16 +178,55 @@ def _introspect_postgres(conn: Any) -> dict:
     return {"schemas": schemas}
 
 
+def _introspect_mariadb(conn: Any) -> dict:
+    schemas: dict[str, dict] = {}
+    query = """
+        SELECT table_schema, table_name, column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+        ORDER BY table_schema, table_name, ordinal_position;
+    """
+    with conn.cursor() as cur:
+        cur.execute(query)
+        for row in cur.fetchall():
+            schema_name, table_name, column_name, data_type, is_nullable = row
+            schema_entry = schemas.setdefault(schema_name, {"tables": {}})
+            table_entry = schema_entry["tables"].setdefault(
+                table_name, {"columns": []}
+            )
+            table_entry["columns"].append(
+                {
+                    "name": column_name,
+                    "type": data_type,
+                    "nullable": is_nullable == "YES",
+                }
+            )
+    return {"schemas": schemas}
+
+
+def _get_db_type(connection: dict) -> str:
+    return str(connection.get("db_type") or "postgresql").lower()
+
+
 def connect_and_save(config: dict) -> dict:
     db_type = (config.get("db_type") or "").lower()
-    if db_type not in {"postgresql", "postgres"}:
-        raise ValueError("지원하지 않는 DB 타입입니다. 현재는 PostgreSQL만 지원합니다.")
+    if db_type not in {"postgresql", "postgres", "mariadb", "mysql"}:
+        raise ValueError(
+            "지원하지 않는 DB 타입입니다. 현재는 PostgreSQL/MariaDB만 지원합니다."
+        )
 
-    conn = _connect_postgres(config)
-    try:
-        schema = _introspect_postgres(conn)
-    finally:
-        conn.close()
+    if db_type in {"mariadb", "mysql"}:
+        conn = _connect_mariadb(config)
+        try:
+            schema = _introspect_mariadb(conn)
+        finally:
+            conn.close()
+    else:
+        conn = _connect_postgres(config)
+        try:
+            schema = _introspect_postgres(conn)
+        finally:
+            conn.close()
 
     payload = _load_connections()
     connection_id = config.get("id") or f"db-{uuid.uuid4().hex[:8]}"
@@ -165,7 +235,7 @@ def connect_and_save(config: dict) -> dict:
         "name": config.get("name") or connection_id,
         "db_type": db_type,
         "host": config.get("host"),
-        "port": config.get("port") or 5432,
+        "port": config.get("port") or (3306 if db_type in {"mariadb", "mysql"} else 5432),
         "database": config.get("database"),
         "user": config.get("user"),
         "password": config.get("password"),
@@ -235,45 +305,70 @@ def execute_table_query(
     filter_value: str | None,
     limit: int,
 ) -> dict:
-    _ensure_psycopg()
     connection = get_connection(connection_id)
     if not connection:
         raise ValueError("DB 연결을 찾을 수 없습니다.")
+    db_type = _get_db_type(connection)
     schema = connection.get("schema") or {}
     valid_columns = _validate_table_config(schema, schema_name, table_name, columns)
     operator = _normalize_operator(filter_operator)
 
-    conn = _connect_postgres(connection)
-    try:
-        query = sql.SQL("SELECT {fields} FROM {schema}.{table}").format(
-            fields=sql.SQL(", ").join(sql.Identifier(col) for col in valid_columns),
-            schema=sql.Identifier(schema_name),
-            table=sql.Identifier(table_name),
-        )
-        params: list[Any] = []
-        if filter_column and filter_value:
-            if operator in {"ilike", "like"}:
-                query += sql.SQL(" WHERE {col} {op} %s").format(
-                    col=sql.Identifier(filter_column),
-                    op=sql.SQL(operator.upper()),
-                )
-                params.append(f"%{filter_value}%")
-            else:
-                query += sql.SQL(" WHERE {col} {op} %s").format(
-                    col=sql.Identifier(filter_column),
-                    op=sql.SQL(operator),
-                )
-                params.append(filter_value)
-        if limit:
-            query += sql.SQL(" LIMIT %s")
-            params.append(limit)
+    if db_type in {"mariadb", "mysql"}:
+        conn = _connect_mariadb(connection)
+        try:
+            columns_sql = ", ".join(f"`{col}`" for col in valid_columns)
+            query = f"SELECT {columns_sql} FROM `{schema_name}`.`{table_name}`"
+            params: list[Any] = []
+            if filter_column and filter_value:
+                if operator in {"ilike", "like"}:
+                    query += f" WHERE `{filter_column}` LIKE %s"
+                    params.append(f"%{filter_value}%")
+                else:
+                    query += f" WHERE `{filter_column}` {operator} %s"
+                    params.append(filter_value)
+            if limit:
+                query += " LIMIT %s"
+                params.append(limit)
 
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
-            columns = [desc.name for desc in cur.description]
-    finally:
-        conn.close()
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                columns = [desc[0] for desc in cur.description]
+        finally:
+            conn.close()
+    else:
+        _ensure_psycopg()
+        conn = _connect_postgres(connection)
+        try:
+            query = sql.SQL("SELECT {fields} FROM {schema}.{table}").format(
+                fields=sql.SQL(", ").join(sql.Identifier(col) for col in valid_columns),
+                schema=sql.Identifier(schema_name),
+                table=sql.Identifier(table_name),
+            )
+            params = []
+            if filter_column and filter_value:
+                if operator in {"ilike", "like"}:
+                    query += sql.SQL(" WHERE {col} {op} %s").format(
+                        col=sql.Identifier(filter_column),
+                        op=sql.SQL(operator.upper()),
+                    )
+                    params.append(f"%{filter_value}%")
+                else:
+                    query += sql.SQL(" WHERE {col} {op} %s").format(
+                        col=sql.Identifier(filter_column),
+                        op=sql.SQL(operator),
+                    )
+                    params.append(filter_value)
+            if limit:
+                query += sql.SQL(" LIMIT %s")
+                params.append(limit)
+
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                columns = [desc.name for desc in cur.description]
+        finally:
+            conn.close()
 
     return {"columns": columns, "rows": [dict(zip(columns, row)) for row in rows]}
 
@@ -286,10 +381,10 @@ def execute_table_query_multi(
     filters: list[dict],
     limit: int,
 ) -> dict:
-    _ensure_psycopg()
     connection = get_connection(connection_id)
     if not connection:
         raise ValueError("DB 연결을 찾을 수 없습니다.")
+    db_type = _get_db_type(connection)
     schema = connection.get("schema") or {}
     valid_columns = _validate_table_config(schema, schema_name, table_name, columns)
     available = set(_get_table_columns(schema, schema_name, table_name))
@@ -307,46 +402,77 @@ def execute_table_query_multi(
         operator = _normalize_operator(item.get("operator"))
         normalized_filters.append({"column": column, "operator": operator, "value": value})
 
-    conn = _connect_postgres(connection)
-    try:
-        query = sql.SQL("SELECT {fields} FROM {schema}.{table}").format(
-            fields=sql.SQL(", ").join(sql.Identifier(col) for col in valid_columns),
-            schema=sql.Identifier(schema_name),
-            table=sql.Identifier(table_name),
-        )
-        params: list[Any] = []
-        if normalized_filters:
-            clauses = []
-            for item in normalized_filters:
-                column = item["column"]
-                operator = item["operator"]
-                value = item["value"]
-                if operator in {"ilike", "like"}:
-                    clauses.append(
-                        sql.SQL("{col} {op} %s").format(
-                            col=sql.Identifier(column),
-                            op=sql.SQL(operator.upper()),
-                        )
-                    )
-                    params.append(f"%{value}%")
-                else:
-                    clauses.append(
-                        sql.SQL("{col} {op} %s").format(
-                            col=sql.Identifier(column),
-                            op=sql.SQL(operator),
-                        )
-                    )
-                    params.append(value)
-            query += sql.SQL(" WHERE ") + sql.SQL(" AND ").join(clauses)
-        if limit:
-            query += sql.SQL(" LIMIT %s")
-            params.append(limit)
+    if db_type in {"mariadb", "mysql"}:
+        conn = _connect_mariadb(connection)
+        try:
+            columns_sql = ", ".join(f"`{col}`" for col in valid_columns)
+            query = f"SELECT {columns_sql} FROM `{schema_name}`.`{table_name}`"
+            params: list[Any] = []
+            if normalized_filters:
+                clauses = []
+                for item in normalized_filters:
+                    column = item["column"]
+                    operator = item["operator"]
+                    value = item["value"]
+                    if operator in {"ilike", "like"}:
+                        clauses.append(f"`{column}` LIKE %s")
+                        params.append(f"%{value}%")
+                    else:
+                        clauses.append(f"`{column}` {operator} %s")
+                        params.append(value)
+                query += " WHERE " + " AND ".join(clauses)
+            if limit:
+                query += " LIMIT %s"
+                params.append(limit)
 
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
-            columns = [desc.name for desc in cur.description]
-    finally:
-        conn.close()
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                columns = [desc[0] for desc in cur.description]
+        finally:
+            conn.close()
+    else:
+        _ensure_psycopg()
+        conn = _connect_postgres(connection)
+        try:
+            query = sql.SQL("SELECT {fields} FROM {schema}.{table}").format(
+                fields=sql.SQL(", ").join(sql.Identifier(col) for col in valid_columns),
+                schema=sql.Identifier(schema_name),
+                table=sql.Identifier(table_name),
+            )
+            params: list[Any] = []
+            if normalized_filters:
+                clauses = []
+                for item in normalized_filters:
+                    column = item["column"]
+                    operator = item["operator"]
+                    value = item["value"]
+                    if operator in {"ilike", "like"}:
+                        clauses.append(
+                            sql.SQL("{col} {op} %s").format(
+                                col=sql.Identifier(column),
+                                op=sql.SQL(operator.upper()),
+                            )
+                        )
+                        params.append(f"%{value}%")
+                    else:
+                        clauses.append(
+                            sql.SQL("{col} {op} %s").format(
+                                col=sql.Identifier(column),
+                                op=sql.SQL(operator),
+                            )
+                        )
+                        params.append(value)
+                query += sql.SQL(" WHERE ") + sql.SQL(" AND ").join(clauses)
+            if limit:
+                query += sql.SQL(" LIMIT %s")
+                params.append(limit)
+
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                columns = [desc.name for desc in cur.description]
+        finally:
+            conn.close()
 
     return {"columns": columns, "rows": [dict(zip(columns, row)) for row in rows]}

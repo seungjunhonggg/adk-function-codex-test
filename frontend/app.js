@@ -44,6 +44,7 @@ const simFormStatus = document.getElementById("sim-form-status");
 const recommendationApplyButton = document.getElementById("recommend-apply");
 const recommendationStatusEl = document.getElementById("recommend-status");
 const defectChartEl = document.getElementById("defect-chart");
+const finalDefectChartEl = document.getElementById("final-defect-chart");
 const designCandidatesEl = document.getElementById("design-candidates");
 const finalBriefingEl = document.getElementById("final-briefing");
 const defaultLotResultText = lotResultEl ? lotResultEl.textContent : "";
@@ -56,6 +57,9 @@ const defaultRecommendationStatusText = recommendationStatusEl
   ? recommendationStatusEl.textContent
   : "";
 const defaultDefectChartText = defectChartEl ? defectChartEl.textContent : "";
+const defaultFinalDefectChartText = finalDefectChartEl
+  ? finalDefectChartEl.textContent
+  : "";
 const defaultDesignCandidatesText = designCandidatesEl
   ? designCandidatesEl.textContent
   : "";
@@ -108,8 +112,12 @@ let recommendationDirty = false;
 let hasFinalBriefing = false;
 let activeChatStatusSource = "";
 let statusMessageEl = null;
+let statusMessageTextEl = null;
+let statusMessageDotsEl = null;
+let statusAnimationInterval = null;
 
 let historyEntries = [];
+let lastDefectChartPayload = null;
 
 function loadSessions() {
   try {
@@ -451,9 +459,36 @@ function setChatStatus(message, source = "system") {
   if (!statusMessageEl) {
     statusMessageEl = document.createElement("div");
     statusMessageEl.className = "message assistant status";
+    const spinner = document.createElement("span");
+    spinner.className = "status-spinner";
+    statusMessageTextEl = document.createElement("span");
+    statusMessageTextEl.className = "status-text";
+    statusMessageDotsEl = document.createElement("span");
+    statusMessageDotsEl.className = "status-dots";
+    statusMessageDotsEl.setAttribute("aria-hidden", "true");
+    statusMessageEl.appendChild(spinner);
+    statusMessageEl.appendChild(statusMessageTextEl);
+    statusMessageEl.appendChild(statusMessageDotsEl);
     messages.appendChild(statusMessageEl);
   }
-  statusMessageEl.textContent = message;
+  const baseMessage = message.replace(/\s*\.{1,3}\s*$/, "") || message;
+  if (statusMessageTextEl) {
+    statusMessageTextEl.textContent = baseMessage;
+  }
+  if (statusMessageDotsEl) {
+    statusMessageDotsEl.textContent = "";
+  }
+  if (statusAnimationInterval) {
+    clearInterval(statusAnimationInterval);
+  }
+  const dotFrames = [" .", " ..", " ..."];
+  let dotIndex = 0;
+  statusAnimationInterval = setInterval(() => {
+    if (statusMessageDotsEl) {
+      statusMessageDotsEl.textContent = dotFrames[dotIndex % dotFrames.length];
+    }
+    dotIndex += 1;
+  }, 450);
   messages.scrollTop = messages.scrollHeight;
 }
 
@@ -465,6 +500,12 @@ function clearChatStatus(source = "") {
     statusMessageEl.parentNode.removeChild(statusMessageEl);
   }
   statusMessageEl = null;
+  statusMessageTextEl = null;
+  statusMessageDotsEl = null;
+  if (statusAnimationInterval) {
+    clearInterval(statusAnimationInterval);
+    statusAnimationInterval = null;
+  }
   activeChatStatusSource = "";
 }
 
@@ -1143,8 +1184,8 @@ function renderSimResult(payload) {
   }
 }
 
-function renderDefectRateChart(payload = {}) {
-  if (!defectChartEl) {
+function renderDefectRateChartInto(targetEl, payload, options = {}) {
+  if (!targetEl) {
     return;
   }
   const histogram = payload.histogram;
@@ -1154,21 +1195,22 @@ function renderDefectRateChart(payload = {}) {
     payload.chart_type || config.chart_type || (histogram ? "histogram" : "bar")
   ).toLowerCase();
   if (!histogram && !lots.length) {
-    defectChartEl.textContent = "불량률 그래프가 없습니다.";
+    targetEl.textContent = "불량률 그래프가 없습니다.";
     return;
   }
-  showStreamCard(defectChartCard);
 
   const stats = payload.stats || {};
-  defectChartEl.innerHTML = "";
-  if (stats && stats.count) {
+  targetEl.innerHTML = "";
+  if (stats && stats.count && options.includeMeta !== false) {
     const meta = document.createElement("div");
     meta.className = "candidate-meta";
     const avg = stats.avg ? `${(stats.avg * 100).toFixed(2)}%` : "--";
     const min = stats.min ? `${(stats.min * 100).toFixed(2)}%` : "--";
     const max = stats.max ? `${(stats.max * 100).toFixed(2)}%` : "--";
-    meta.textContent = `필터 ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
-    defectChartEl.appendChild(meta);
+    meta.textContent = options.metaPrefix
+      ? `${options.metaPrefix} ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`
+      : `필터 ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
+    targetEl.appendChild(meta);
   }
 
   if (
@@ -1224,7 +1266,7 @@ function renderDefectRateChart(payload = {}) {
       item.appendChild(valueEl);
       chart.appendChild(item);
     });
-  defectChartEl.appendChild(chart);
+    targetEl.appendChild(chart);
   return;
   }
 
@@ -1301,7 +1343,7 @@ function renderDefectRateChart(payload = {}) {
       svg.appendChild(circle);
     });
 
-    defectChartEl.appendChild(svg);
+    targetEl.appendChild(svg);
     return;
   }
 
@@ -1333,7 +1375,19 @@ function renderDefectRateChart(payload = {}) {
     row.appendChild(value);
     chart.appendChild(row);
   });
-  defectChartEl.appendChild(chart);
+  targetEl.appendChild(chart);
+}
+
+function renderDefectRateChart(payload = {}) {
+  if (!defectChartEl && !finalDefectChartEl) {
+    return;
+  }
+  lastDefectChartPayload = payload;
+  showStreamCard(defectChartCard);
+  renderDefectRateChartInto(defectChartEl, payload);
+  renderDefectRateChartInto(finalDefectChartEl, payload, {
+    includeMeta: false,
+  });
 }
 
 function renderDesignCandidates(payload = {}) {
@@ -1403,6 +1457,9 @@ function renderFinalBriefing(payload = {}) {
     return;
   }
   hasFinalBriefing = true;
+  if (finalDefectChartEl && defaultFinalDefectChartText) {
+    finalDefectChartEl.textContent = defaultFinalDefectChartText;
+  }
   const cards = [finalBriefingCard];
   if (payload.defect_stats && payload.defect_stats.count) {
     cards.push(defectChartCard);
@@ -1440,6 +1497,12 @@ function renderFinalBriefing(payload = {}) {
     const max = `${(defectStats.max * 100).toFixed(2)}%`;
     meta.textContent = `불량률 ${defectStats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
     finalBriefingEl.appendChild(meta);
+  }
+
+  if (lastDefectChartPayload) {
+    renderDefectRateChartInto(finalDefectChartEl, lastDefectChartPayload, {
+      includeMeta: false,
+    });
   }
 
   const candidates = Array.isArray(payload.top_candidates)
