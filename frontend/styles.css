@@ -789,6 +789,34 @@ body::before {
   align-self: flex-start;
   font-size: 12px;
   padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.12);
+  border-top-color: rgba(47, 124, 255, 0.6);
+  animation: spin 0.9s linear infinite;
+  flex: 0 0 auto;
+}
+
+.status-text,
+.status-dots {
+  font-family: var(--font-mono);
+}
+
+.status-dots {
+  min-width: 18px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .composer {
