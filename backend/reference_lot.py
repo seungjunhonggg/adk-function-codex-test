@@ -610,7 +610,9 @@ def _query_rows_for_filters(
     return "postgresql", rows
 
 
-def select_reference_from_params(params: dict, model_override: str | None = None) -> dict:
+def select_reference_from_params(
+    params: dict, chip_prod_override: str | None = None
+) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
     db = rules.get("db", {})
     chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
@@ -624,32 +626,42 @@ def select_reference_from_params(params: dict, model_override: str | None = None
     mapped_params = _map_params_from_table(params, rules)
     chip_prod_filters = _build_param_filters(mapped_params, rules, table_key="chip_prod")
     lot_search_filters = _build_param_filters(mapped_params, rules, table_key="lot_search")
-    user_model = params.get("model_name")
-    user_model_text = str(user_model).strip() if user_model else ""
-    model_override_text = str(model_override).strip() if model_override else ""
-    use_model_like = bool(user_model_text) and (
-        not model_override_text or model_override_text == user_model_text
+    user_chip_prod = params.get("chip_prod_id")
+    user_chip_prod_text = str(user_chip_prod).strip() if user_chip_prod else ""
+    chip_prod_override_text = (
+        str(chip_prod_override).strip() if chip_prod_override else ""
     )
-    if use_model_like:
+    use_chip_prod_like = bool(user_chip_prod_text) and (
+        not chip_prod_override_text or chip_prod_override_text == user_chip_prod_text
+    )
+    if use_chip_prod_like:
         lot_search_filters.append(
             {
                 "column": chip_prod_column,
                 "operator": "like",
-                "value": f"%{user_model_text}%",
+                "value": f"%{user_chip_prod_text}%",
             }
         )
-    elif model_override_text:
+    elif chip_prod_override_text:
         chip_prod_filters.append(
-            {"column": chip_prod_column, "operator": "=", "value": model_override_text}
+            {
+                "column": chip_prod_column,
+                "operator": "=",
+                "value": chip_prod_override_text,
+            }
         )
         lot_search_filters.append(
-            {"column": chip_prod_column, "operator": "=", "value": model_override_text}
+            {
+                "column": chip_prod_column,
+                "operator": "=",
+                "value": chip_prod_override_text,
+            }
         )
 
     base_columns = [chip_prod_column, lot_id_column, input_date_column]
     source = ""
     chip_prod_ids: list[str] = []
-    if not use_model_like:
+    if not use_chip_prod_like:
         source, chip_prod_rows = _query_rows_for_filters(
             rules,
             chip_prod_filters,
@@ -684,7 +696,7 @@ def select_reference_from_params(params: dict, model_override: str | None = None
     )
     if not source:
         source = value1_source
-    if use_model_like:
+    if use_chip_prod_like:
         chip_prod_ids = sorted(
             {
                 str(_get_value(row, chip_prod_column))
@@ -732,7 +744,9 @@ def select_reference_from_params(params: dict, model_override: str | None = None
     selected_lot_id_value = _get_value(latest_row, lot_id_column)
     selected_lot_id = str(selected_lot_id_value) if selected_lot_id_value else ""
     if not selected_chip_prod_id:
-        selected_chip_prod_id = model_override or (chip_prod_ids[0] if chip_prod_ids else "")
+        selected_chip_prod_id = chip_prod_override or (
+            chip_prod_ids[0] if chip_prod_ids else ""
+        )
 
     value2_all_counts = _count_by_key(value2_all_rows, chip_prod_column, lot_id_column)
     defect_rates = []
@@ -877,15 +891,15 @@ def _build_demo_rows(
         "production_mode": "양산",
     }
 
-    model_name = filter_value or "DEMO-MODEL"
+    chip_prod_id = filter_value or "DEMO-MODEL"
     total_rows = 1 if filter_column == lot_id_column else 8
     now = datetime.utcnow()
     rows: list[dict] = []
 
     for idx in range(total_rows):
         row = {column: None for column in columns}
-        row[chip_prod_column] = model_name
-        row[lot_id_column] = f"DEMO-{model_name[:8]}-{idx + 1:03d}"
+        row[chip_prod_column] = chip_prod_id
+        row[lot_id_column] = f"DEMO-{chip_prod_id[:8]}-{idx + 1:03d}"
         row[input_date_column] = (now - timedelta(days=idx)).isoformat() + "Z"
         if screen_column:
             row[screen_column] = "Normal/MF"

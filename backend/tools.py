@@ -69,7 +69,7 @@ from .db_view_profile import (
 from .simulation import (
     call_prediction_api,
     call_simulation_api,
-    extract_simulation_params,
+    extract_simulation_params_hybrid,
     recommendation_store,
     simulation_store,
 )
@@ -355,9 +355,13 @@ def collect_simulation_params(
     size: str | None = None,
     capacity: float | None = None,
     production_mode: str | None = None,
-    model_name: str | None = None,
+    chip_prod_id: str | None = None,
+    clear_keys: list[str] | None = None,
+    extra_missing: list[str] | None = None,
 ) -> dict:
     session_id = current_session_id.get()
+    if clear_keys:
+        simulation_store.remove_keys(session_id, clear_keys)
     params = simulation_store.update(
         session_id,
         temperature=temperature,
@@ -365,9 +369,13 @@ def collect_simulation_params(
         size=size,
         capacity=capacity,
         production_mode=production_mode,
-        model_name=model_name,
+        chip_prod_id=chip_prod_id,
     )
     missing = simulation_store.missing(session_id)
+    if extra_missing:
+        for key in extra_missing:
+            if key not in missing:
+                missing.append(key)
     return {"params": params, "missing": missing}
 
 
@@ -383,6 +391,13 @@ async def execute_simulation() -> dict:
         }
 
     result = await call_simulation_api(params)
+    if isinstance(result, dict):
+        if (
+            "recommended_chip_prod_id" not in result
+            and result.get("recommended_model") is not None
+        ):
+            result["recommended_chip_prod_id"] = result.get("recommended_model")
+            result.pop("recommended_model", None)
     recommendation_store.set(
         session_id, {"input_params": params, "awaiting_prediction": True, **result}
     )
@@ -774,7 +789,7 @@ async def update_simulation_params(
     size: str | None = None,
     capacity: float | None = None,
     production_mode: str | None = None,
-    model_name: str | None = None,
+    chip_prod_id: str | None = None,
 ) -> dict:
     """Update simulation params from user input and emit missing fields to the UI."""
     await _log_tool_call(
@@ -785,23 +800,41 @@ async def update_simulation_params(
         size=size,
         capacity=capacity,
         production_mode=production_mode,
-        model_name=model_name,
+        chip_prod_id=chip_prod_id,
     )
-    parsed = extract_simulation_params(message) if message else {}
+    parsed, conflicts = await extract_simulation_params_hybrid(message) if message else ({}, [])
     if temperature is not None:
         parsed["temperature"] = temperature
+        if "temperature" in conflicts:
+            conflicts.remove("temperature")
     if voltage is not None:
         parsed["voltage"] = voltage
+        if "voltage" in conflicts:
+            conflicts.remove("voltage")
     if size is not None:
         parsed["size"] = size
+        if "size" in conflicts:
+            conflicts.remove("size")
     if capacity is not None:
         parsed["capacity"] = capacity
+        if "capacity" in conflicts:
+            conflicts.remove("capacity")
     if production_mode is not None:
         parsed["production_mode"] = production_mode
-    if model_name is not None:
-        parsed["model_name"] = model_name
+        if "production_mode" in conflicts:
+            conflicts.remove("production_mode")
+    if chip_prod_id is not None:
+        parsed["chip_prod_id"] = chip_prod_id
+        if "chip_prod_id" in conflicts:
+            conflicts.remove("chip_prod_id")
 
-    result = collect_simulation_params(**parsed)
+    for key in conflicts:
+        parsed.pop(key, None)
+    result = collect_simulation_params(
+        **parsed,
+        clear_keys=conflicts,
+        extra_missing=conflicts,
+    )
     await emit_simulation_form(result["params"], result["missing"])
     missing = result.get("missing", [])
     result["message"] = "추천 입력값을 업데이트했습니다."
@@ -832,8 +865,8 @@ async def run_simulation() -> dict:
     result = await execute_simulation()
     summary = f"status={result.get('status')}"
     inner = result.get("result") if isinstance(result, dict) else None
-    if isinstance(inner, dict) and inner.get("recommended_model"):
-        summary = f"{summary}, model={inner.get('recommended_model')}"
+    if isinstance(inner, dict) and inner.get("recommended_chip_prod_id"):
+        summary = f"{summary}, chip_prod_id={inner.get('recommended_chip_prod_id')}"
     await _log_tool_result("run_simulation", summary)
     return result
 

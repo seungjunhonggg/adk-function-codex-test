@@ -54,7 +54,7 @@
    - 없으면 로컬 시뮬레이션
 3) 결과를 `recommendation_store`에 저장  
    - `awaiting_prediction = True`  
-   - `recommended_model`, `representative_lot`, `params(param1~param30)`
+   - `recommended_chip_prod_id`, `representative_lot`, `params(param1~param30)`
 4) `simulation_result` 이벤트로 UI 갱신  
 5) 자동 브리핑 생성(`auto_message_agent`) → `chat_message`
 

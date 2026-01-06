@@ -16,7 +16,7 @@ from .config import MODEL_NAME, WORKFLOW_PATH, WORKFLOW_STORE_PATH
 from .context import current_session_id
 from .db_connections import execute_table_query
 from .observability import WorkflowRunHooks, emit_workflow_log
-from .simulation import extract_simulation_params, recommendation_store
+from .simulation import extract_simulation_params_hybrid, recommendation_store
 from .tools import (
     collect_simulation_params,
     emit_frontend_trigger,
@@ -1421,8 +1421,14 @@ async def _execute_tool_node(
         return f"LOT 조회를 실행했습니다. UI에서 {len(rows)}건을 확인하세요."
 
     if toolset == "simulation":
-        params = extract_simulation_params(context.input_as_text)
-        update_result = collect_simulation_params(**params)
+        params, conflicts = await extract_simulation_params_hybrid(context.input_as_text)
+        for key in conflicts:
+            params.pop(key, None)
+        update_result = collect_simulation_params(
+            **params,
+            clear_keys=conflicts,
+            extra_missing=conflicts,
+        )
         await emit_simulation_form(update_result.get("params", {}), update_result.get("missing", []))
         missing = update_result.get("missing", [])
         if missing:
@@ -1769,8 +1775,14 @@ async def _execute_function_path(
             assistant_message = f"LOT 조회를 실행했습니다. UI에서 {len(rows)}건을 확인하세요."
 
         elif toolset == "api_function" or toolset == "simulation":
-            params = extract_simulation_params(message)
-            update_result = collect_simulation_params(**params)
+            params, conflicts = await extract_simulation_params_hybrid(message)
+            for key in conflicts:
+                params.pop(key, None)
+            update_result = collect_simulation_params(
+                **params,
+                clear_keys=conflicts,
+                extra_missing=conflicts,
+            )
             await emit_simulation_form(
                 update_result.get("params", {}),
                 update_result.get("missing", []),
@@ -2073,6 +2085,7 @@ def _to_korean_field(field: str) -> str:
         "size": "크기",
         "capacity": "용량",
         "production_mode": "양산/개발",
+        "chip_prod_id": "기종명",
     }
     return mapping.get(field, field)
 
@@ -2091,11 +2104,11 @@ def _summarize_result(result: dict | None) -> str:
         )
     if "result" in result:
         inner = result.get("result", {})
-        recommended_model = inner.get("recommended_model")
+        recommended_chip_prod_id = inner.get("recommended_chip_prod_id")
         rep_lot = inner.get("representative_lot")
-        if recommended_model or rep_lot:
+        if recommended_chip_prod_id or rep_lot:
             return (
-                f"\ucd94\ucc9c \uacb0\uacfc: {recommended_model or '-'}, "
+                f"\ucd94\ucc9c \uacb0\uacfc: {recommended_chip_prod_id or '-'}, "
                 f"\ub300\ud45c LOT {rep_lot or '-'}"
             )
     return "프론트 트리거가 실행되었습니다."

@@ -804,7 +804,7 @@ function formatMissingFields(missing = []) {
       if (item === "voltage") return "전압";
       if (item === "size") return "크기";
       if (item === "capacity") return "용량";
-      if (item === "model_name") return "기종";
+      if (item === "chip_prod_id") return "기종";
       return item;
     })
     .join(", ");
@@ -843,7 +843,7 @@ function setLastSimulationParams(params = {}) {
     return;
   }
   const keys = [
-    "model_name",
+    "chip_prod_id",
     "temperature",
     "voltage",
     "size",
@@ -865,11 +865,7 @@ function renderMatchSummary(payload = {}) {
   }
 
   const summary = {
-    chip_prod_id:
-      payload.chip_prod_id ||
-      payload.model_name ||
-      lastMatchSummary?.chip_prod_id ||
-      "",
+    chip_prod_id: payload.chip_prod_id || lastMatchSummary?.chip_prod_id || "",
     chip_prod_id_count:
       payload.chip_prod_id_count ?? lastMatchSummary?.chip_prod_id_count,
     chip_prod_id_samples: Array.isArray(payload.chip_prod_id_samples)
@@ -896,7 +892,7 @@ function renderMatchSummary(payload = {}) {
 
   const params = lastSimulationParams || {};
   const paramItems = [
-    { label: "기종", value: params.model_name },
+    { label: "기종", value: params.chip_prod_id },
     { label: "온도", value: params.temperature },
     { label: "전압", value: params.voltage },
     { label: "크기", value: params.size },
@@ -998,7 +994,6 @@ function renderLatestLot(payload = {}) {
   const chipId = getRowValue(row, [
     "chip_prod_id",
     "chip_prod",
-    "model_name",
   ]);
   const designInputDate = getRowValue(row, ["design_input_date"]);
 
@@ -1065,6 +1060,7 @@ function renderLatestLot(payload = {}) {
 function updateMissingInputs(missing = []) {
   const missingSet = new Set(missing || []);
   const mapping = [
+    { key: "chip_prod_id", el: simModelInput },
     { key: "temperature", el: simTemperatureInput },
     { key: "voltage", el: simVoltageInput },
     { key: "size", el: simSizeInput },
@@ -1105,7 +1101,7 @@ function renderSimulationForm(payload = {}) {
   showOnlyStreamCards([simFormCard]);
   const params = payload.params || {};
   setLastSimulationParams(params);
-  applyInputValue(simModelInput, params.model_name);
+  applyInputValue(simModelInput, params.chip_prod_id);
   applyInputValue(simTemperatureInput, params.temperature);
   applyInputValue(simVoltageInput, params.voltage);
   applyInputValue(simSizeInput, params.size);
@@ -1124,7 +1120,7 @@ function renderSimulationForm(payload = {}) {
 }
 
 function collectSimFormParams() {
-  const modelName = simModelInput?.value.trim();
+  const chipProdId = simModelInput?.value.trim();
   const temperature = simTemperatureInput?.value.trim();
   const voltage = simVoltageInput?.value.trim();
   const size = simSizeInput?.value.trim();
@@ -1140,7 +1136,7 @@ function collectSimFormParams() {
   };
 
   return {
-    model_name: modelName || null,
+    chip_prod_id: chipProdId || null,
     temperature: temperature || null,
     voltage: parseNumber(voltage),
     size: size || null,
@@ -1364,9 +1360,9 @@ function renderSimResult(payload) {
     : [];
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
-  if (result.recommended_model) {
+  if (result.recommended_chip_prod_id) {
     kpiRow.appendChild(
-      createKpiCard("추천 기종", result.recommended_model, "accent")
+      createKpiCard("추천 기종", result.recommended_chip_prod_id, "accent")
     );
   }
   if (result.representative_lot) {
@@ -1777,7 +1773,7 @@ function renderFinalBriefing(payload = {}) {
   showOnlyStreamCards(cards);
   finalBriefingEl.innerHTML = "";
 
-  const modelName = payload.model_name || "-";
+  const chipProdId = payload.chip_prod_id || "-";
   const referenceLot = payload.reference_lot || "-";
   const candidateTotal =
     payload.candidate_total !== undefined ? payload.candidate_total : "-";
@@ -1789,7 +1785,7 @@ function renderFinalBriefing(payload = {}) {
 
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
-  kpiRow.appendChild(createKpiCard("추천 기종", modelName, "accent"));
+  kpiRow.appendChild(createKpiCard("추천 기종", chipProdId, "accent"));
   kpiRow.appendChild(createKpiCard("레퍼런스 LOT", referenceLot));
   if (candidateTotal !== "-") {
     kpiRow.appendChild(createKpiCard("그리드 후보", candidateTotal));
@@ -1961,14 +1957,14 @@ function renderPredictionResult(payload) {
 
   const result = payload.result || {};
   const recommendation = payload.recommendation || {};
-  const modelName = recommendation.recommended_model || "-";
+  const chipProdId = recommendation.recommended_chip_prod_id || "-";
   const repLot = recommendation.representative_lot || "-";
 
   predictionResultEl.innerHTML = "";
 
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
-  kpiRow.appendChild(createKpiCard("추천 기종", modelName, "accent"));
+  kpiRow.appendChild(createKpiCard("추천 기종", chipProdId, "accent"));
   kpiRow.appendChild(createKpiCard("대표 LOT", repLot));
   predictionResultEl.appendChild(kpiRow);
 
@@ -2019,8 +2015,8 @@ function handleEvent(event) {
 
   if (event.type === "simulation_result") {
     renderSimResult(event.payload);
-    const modelName = event.payload?.result?.recommended_model || "결과 수신";
-    addEventLog("추천", `기종: ${modelName}`);
+    const chipProdId = event.payload?.result?.recommended_chip_prod_id || "결과 수신";
+    addEventLog("추천", `기종: ${chipProdId}`);
   }
 
   if (event.type === "defect_rate_chart") {

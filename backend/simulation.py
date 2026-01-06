@@ -2,8 +2,10 @@ import re
 from typing import Dict, List
 
 import httpx
+from agents import Agent, AgentOutputSchema, Runner
+from pydantic import BaseModel
 
-from .config import GRID_SEARCH_API_URL, PREDICT_API_URL, SIM_API_URL
+from .config import GRID_SEARCH_API_URL, MODEL_NAME, PREDICT_API_URL, SIM_API_URL
 
 
 REQUIRED_KEYS = (
@@ -12,6 +14,55 @@ REQUIRED_KEYS = (
     "size",
     "capacity",
     "production_mode",
+)
+LLM_SIM_PARSE_CONFIDENCE_MIN = 0.5
+MLCC_GLOSSARY_HINTS = (
+    "Glossary (KR/EN): "
+    "chip_prod_id=기종/모델/품번/제품명/part number; "
+    "capacity=용량/정전용량/capacitance; "
+    "voltage=전압/정격전압/rated voltage; "
+    "size=사이즈/치수/L/W/LxW/length/width; "
+    "temperature=온도/공정온도/sintering temp; "
+    "production_mode=양산/개발."
+)
+
+
+def _build_agent(**kwargs: object) -> Agent:
+    try:
+        return Agent(**kwargs)
+    except TypeError:
+        kwargs.pop("model", None)
+        return Agent(**kwargs)
+
+
+MODEL_KWARGS = {"model": MODEL_NAME} if MODEL_NAME else {}
+
+
+class SimulationParamDecision(BaseModel):
+    temperature: str | None = None
+    voltage: float | None = None
+    size: str | None = None
+    capacity: float | None = None
+    production_mode: str | None = None
+    chip_prod_id: str | None = None
+    confidence: float = 0.0
+    notes: str = ""
+
+
+simulation_param_agent = _build_agent(
+    name="Simulation Param Parser",
+    instructions=(
+        "Extract MLCC simulation parameters from the user message. "
+        "Return JSON with keys: temperature (string), voltage (float), size (string), "
+        "capacity (float), production_mode ('양산' or '개발' or null), chip_prod_id (string), "
+        "confidence (0-1), notes. "
+        "Only include values explicitly mentioned. "
+        "If conflicting values are present for a field, set that field to null and note it. "
+        "If unsure, set fields to null. "
+        f"{MLCC_GLOSSARY_HINTS}"
+    ),
+    output_type=AgentOutputSchema(SimulationParamDecision, strict_json_schema=False),
+    **MODEL_KWARGS,
 )
 
 
@@ -23,7 +74,7 @@ class SimulationStore:
     def update(self, session_id: str, **kwargs: object) -> Dict[str, float | str]:
         record: Dict[str, float | str] = self._data.get(session_id, {})
         for key, value in kwargs.items():
-            if key == "model_name":
+            if key == "chip_prod_id":
                 text = str(value).strip() if value is not None else ""
                 if text:
                     record[key] = text
@@ -64,6 +115,15 @@ class SimulationStore:
         self._data.pop(session_id, None)
         self._active.pop(session_id, None)
 
+    def remove_keys(self, session_id: str, keys: list[str]) -> Dict[str, float | str]:
+        record = self._data.get(session_id, {})
+        if not record or not keys:
+            return dict(record)
+        for key in keys:
+            record.pop(key, None)
+        self._data[session_id] = record
+        return dict(record)
+
     def activate(self, session_id: str) -> None:
         if session_id:
             self._active[session_id] = True
@@ -92,7 +152,7 @@ def _simulate_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:
     voltage = _parse_numeric(params["voltage"], "voltage")
     size = _parse_numeric(params["size"], "size")
     capacity = _parse_numeric(params["capacity"], "capacity")
-    model_name = "CL32Y106KC5ER9B"
+    chip_prod_id = "CL32Y106KC5ER9B"
     representative_lot = "ALA7K1K"
 
     base = (temperature * 0.02) + (voltage * 0.8) + (size * 0.15) + (capacity * 0.5)
@@ -101,7 +161,7 @@ def _simulate_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:
         params_30[f"param{idx}"] = round(base + idx * 0.37, 3)
 
     return {
-        "recommended_model": model_name,
+        "recommended_chip_prod_id": chip_prod_id,
         "representative_lot": representative_lot,
         "params": params_30,
     }
@@ -173,12 +233,12 @@ def extract_simulation_params(message: str) -> dict:
         params["production_mode"] = "개발"
 
     model_match = re.search(
-        r"(?:model|모델|기종|제품)\s*[:=]?\s*([a-z0-9-_]+)",
+        r"(?:chip_prod_id|model|모델|기종|제품)\s*[:=]?\s*([a-z0-9-_]+)",
         message,
         re.IGNORECASE,
     )
     if model_match:
-        params["model_name"] = model_match.group(1)
+        params["chip_prod_id"] = model_match.group(1)
 
     numeric_keys = ("temperature", "voltage", "size", "capacity")
     numeric_count = sum(1 for key in numeric_keys if key in params)
@@ -195,6 +255,120 @@ def extract_simulation_params(message: str) -> dict:
             )
 
     return params
+
+
+def _normalize_text(value: object) -> str:
+    return re.sub(r"\s+", "", str(value)).strip().lower()
+
+
+def _numeric_token(value: object) -> str | None:
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+    return match.group(0) if match else None
+
+
+def _values_equivalent(key: str, left: object, right: object) -> bool:
+    if left is None or right is None:
+        return False
+    if key in {"voltage", "capacity"}:
+        left_value = _to_float(left)
+        right_value = _to_float(right)
+        if left_value is None or right_value is None:
+            return False
+        return abs(left_value - right_value) <= 1e-6
+    if key in {"temperature", "size"}:
+        left_token = _numeric_token(left)
+        right_token = _numeric_token(right)
+        if left_token and right_token:
+            return left_token == right_token
+        return _normalize_text(left) == _normalize_text(right)
+    if key == "production_mode":
+        return _normalize_production_mode(left) == _normalize_production_mode(right)
+    return _normalize_text(left) == _normalize_text(right)
+
+
+def _normalize_llm_params(payload: dict) -> tuple[dict[str, float | str], float]:
+    params: dict[str, float | str] = {}
+    confidence = _to_float(payload.get("confidence")) or 0.0
+    for key in (
+        "temperature",
+        "voltage",
+        "size",
+        "capacity",
+        "production_mode",
+        "chip_prod_id",
+    ):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if key in {"temperature", "size"}:
+            text = str(value).strip()
+            if text:
+                params[key] = text
+            continue
+        if key == "chip_prod_id":
+            text = str(value).strip()
+            if text:
+                params[key] = text
+            continue
+        if key == "production_mode":
+            normalized = _normalize_production_mode(value)
+            if normalized is not None:
+                params[key] = normalized
+            continue
+        coerced = _to_float(value)
+        if coerced is not None:
+            params[key] = coerced
+    return params, confidence
+
+
+async def _extract_simulation_params_llm(message: str) -> tuple[dict[str, float | str], float]:
+    if not message:
+        return {}, 0.0
+    try:
+        result = await Runner.run(simulation_param_agent, input=message)
+    except Exception:
+        return {}, 0.0
+    output = result.final_output
+    if output is None:
+        return {}, 0.0
+    if isinstance(output, BaseModel):
+        payload = output.model_dump() if hasattr(output, "model_dump") else output.dict()
+    elif isinstance(output, dict):
+        payload = output
+    else:
+        return {}, 0.0
+    return _normalize_llm_params(payload)
+
+
+async def extract_simulation_params_hybrid(
+    message: str,
+) -> tuple[dict[str, float | str], list[str]]:
+    if not message:
+        return {}, []
+    rule_params = extract_simulation_params(message)
+    llm_params, llm_confidence = await _extract_simulation_params_llm(message)
+    if llm_confidence < LLM_SIM_PARSE_CONFIDENCE_MIN:
+        llm_params = {}
+
+    merged: dict[str, float | str] = {}
+    conflicts: list[str] = []
+    keys = set(rule_params) | set(llm_params)
+    for key in keys:
+        rule_value = rule_params.get(key)
+        llm_value = llm_params.get(key)
+        if rule_value is not None and llm_value is not None:
+            if _values_equivalent(key, rule_value, llm_value):
+                merged[key] = rule_value
+            else:
+                conflicts.append(key)
+            continue
+        if rule_value is not None:
+            merged[key] = rule_value
+            continue
+        if llm_value is not None:
+            merged[key] = llm_value
+    conflicts.sort()
+    return merged, conflicts
 
 
 def _to_float(value: object) -> float | None:

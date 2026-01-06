@@ -40,7 +40,7 @@ from .reference_lot import (
 )
 from .simulation import (
     call_grid_search_api,
-    extract_simulation_params,
+    extract_simulation_params_hybrid,
     recommendation_store,
     simulation_store,
 )
@@ -115,7 +115,7 @@ class SimulationParamsRequest(BaseModel):
     size: str | None = None
     capacity: float | None = None
     production_mode: str | None = None
-    model_name: str | None = None
+    chip_prod_id: str | None = None
 
 
 class SimulationRunRequest(BaseModel):
@@ -282,14 +282,20 @@ async def chat(request: ChatRequest) -> dict:
 async def _maybe_update_simulation_from_message(message: str, session_id: str) -> None:
     if not simulation_store.is_active(session_id):
         return
-    parsed = extract_simulation_params(message)
-    if not parsed:
+    parsed, conflicts = await extract_simulation_params_hybrid(message)
+    if not parsed and not conflicts:
         return
+    for key in conflicts:
+        parsed.pop(key, None)
     current = simulation_store.get(session_id)
     missing_only = {key: value for key, value in parsed.items() if key not in current}
-    if not missing_only:
+    if not missing_only and not conflicts:
         return
-    update_result = collect_simulation_params(**missing_only)
+    update_result = collect_simulation_params(
+        **missing_only,
+        clear_keys=conflicts,
+        extra_missing=conflicts,
+    )
     await emit_simulation_form(
         update_result.get("params", {}),
         update_result.get("missing", []),
@@ -300,7 +306,7 @@ def _format_simulation_params(params: dict) -> str:
     if not params:
         return "입력 없음"
     mapping = [
-        ("model_name", "기종명"),
+        ("chip_prod_id", "기종명"),
         ("temperature", "온도"),
         ("voltage", "전압"),
         ("size", "크기"),
@@ -325,9 +331,9 @@ def _format_simulation_result(result: dict | None) -> str:
     if not result:
         return "결과 없음"
     parts = []
-    model_name = result.get("recommended_model")
-    if model_name:
-        parts.append(f"추천 기종={model_name}")
+    chip_prod_id = result.get("recommended_chip_prod_id")
+    if chip_prod_id:
+        parts.append(f"추천 기종={chip_prod_id}")
     rep_lot = result.get("representative_lot")
     if rep_lot:
         parts.append(f"대표 LOT={rep_lot}")
@@ -348,6 +354,7 @@ def _format_missing_fields(missing: list[str]) -> str:
         "size": "크기",
         "capacity": "용량",
         "production_mode": "양산/개발",
+        "chip_prod_id": "기종명",
     }
     labels = [mapping.get(item, item) for item in missing]
     return ", ".join(labels)
@@ -426,7 +433,7 @@ async def _generate_simulation_auto_message(
         "Compose a short Korean assistant message based on the JSON below. "
         "Rules: 1-2 sentences, no mention of tools/routing. "
         "If missing_fields is not empty, ask for those fields in one question. "
-        "If result is present, summarize recommended_model, representative_lot, "
+        "If result is present, summarize recommended_chip_prod_id, representative_lot, "
         "and the count of params, then ask whether to run a prediction simulation. "
         f"JSON: {json.dumps(payload, ensure_ascii=False)}"
     )
@@ -460,7 +467,7 @@ async def _generate_edit_auto_message(
         "규칙: 도구/라우팅 언급 금지, 과한 추측 금지. "
         "missing_fields가 있으면 그 항목만 질문하세요. "
         "pipeline_message가 있으면 자연스럽게 요약하세요. "
-        "result가 있으면 recommended_model, representative_lot, param_count를 짧게 언급하세요. "
+        "result가 있으면 recommended_chip_prod_id, representative_lot, param_count를 짧게 언급하세요. "
         "ask_prediction=true 일 때만 추가 시뮬레이션 여부를 질문하세요. "
         f"JSON: {json.dumps(payload, ensure_ascii=False)}"
     )
@@ -831,7 +838,10 @@ EDIT_INTENT_ALIAS_PATTERNS = [
     (r"(전압|인가\s*전압|테스트\s*전압|정격\s*전압|volt|voltage)", "voltage"),
     (r"(사이즈|크기|치수|외형|l\s*/\s*w|l\s*x\s*w|lxw|길이|폭|size)", "size"),
     (r"(용량|정전\s*용량|정전용량|cap|capacitance|capacity)", "capacity"),
-    (r"(기종명|기종|모델명|모델|제품명|타입|품번|part|chip_prod_id|model)", "model_name"),
+    (
+        r"(기종명|기종|모델명|모델|제품명|타입|품번|part|chip_prod_id|model)",
+        "chip_prod_id",
+    ),
 ]
 
 
@@ -1147,7 +1157,7 @@ async def _apply_edit_decision(
         }
         updated = recommendation_store.update_params(session_id, params)
         result_payload = {
-            "recommended_model": updated.get("recommended_model"),
+            "recommended_chip_prod_id": updated.get("recommended_chip_prod_id"),
             "representative_lot": updated.get("representative_lot"),
             "param_count": len(updated.get("params") or {}),
         }
@@ -1155,11 +1165,11 @@ async def _apply_edit_decision(
         await event_bus.broadcast({"type": "simulation_result", "payload": payload})
         pipeline_store.set_event(session_id, "simulation_result", payload)
         param_count = result_payload.get("param_count", 0)
-        model_name = result_payload.get("recommended_model")
+        chip_prod_id = result_payload.get("recommended_chip_prod_id")
         rep_lot = result_payload.get("representative_lot")
         fallback_parts = ["추천 파라미터를 갱신했어요."]
-        if model_name:
-            fallback_parts.append(f"추천 기종={model_name}")
+        if chip_prod_id:
+            fallback_parts.append(f"추천 기종={chip_prod_id}")
         if rep_lot:
             fallback_parts.append(f"대표 LOT={rep_lot}")
         fallback_parts.append(f"파라미터={param_count}개")
@@ -1174,14 +1184,23 @@ async def _apply_edit_decision(
         sim_updates = {
             key: value
             for key, value in updates.items()
-            if key in {"temperature", "voltage", "size", "capacity", "production_mode", "model_name"}
+            if key in {
+                "temperature",
+                "voltage",
+                "size",
+                "capacity",
+                "production_mode",
+                "chip_prod_id",
+            }
         }
         if sim_updates:
             update_result = collect_simulation_params(**sim_updates)
             await emit_simulation_form(
                 update_result.get("params", {}), update_result.get("missing", [])
             )
-            if update_result.get("missing") and not update_result.get("params", {}).get("model_name"):
+            if update_result.get("missing") and not update_result.get("params", {}).get(
+                "chip_prod_id"
+            ):
                 missing = update_result.get("missing", [])
                 missing_text = _format_missing_fields(missing)
                 fallback = f"추천을 실행하려면 {missing_text} 값을 알려주세요."
@@ -1194,7 +1213,7 @@ async def _apply_edit_decision(
                 result = await _run_reference_pipeline(
                     session_id,
                     update_result.get("params", {}),
-                    model_override=update_result.get("params", {}).get("model_name"),
+                    chip_prod_override=update_result.get("params", {}).get("chip_prod_id"),
                 )
                 sim_result = (
                     result.get("simulation_result", {}).get("result")
@@ -1204,7 +1223,9 @@ async def _apply_edit_decision(
                 result_payload = None
                 if isinstance(sim_result, dict):
                     result_payload = {
-                        "recommended_model": sim_result.get("recommended_model"),
+                        "recommended_chip_prod_id": sim_result.get(
+                            "recommended_chip_prod_id"
+                        ),
                         "representative_lot": sim_result.get("representative_lot"),
                         "param_count": len(sim_result.get("params") or {}),
                     }
@@ -1254,7 +1275,7 @@ async def _apply_edit_decision(
         result = await _run_reference_pipeline(
             session_id,
             params,
-            model_override=params.get("model_name"),
+            chip_prod_override=params.get("chip_prod_id"),
             grid_overrides=overrides,
         )
         sim_result = (
@@ -1265,7 +1286,9 @@ async def _apply_edit_decision(
         result_payload = None
         if isinstance(sim_result, dict):
             result_payload = {
-                "recommended_model": sim_result.get("recommended_model"),
+                "recommended_chip_prod_id": sim_result.get(
+                    "recommended_chip_prod_id"
+                ),
                 "representative_lot": sim_result.get("representative_lot"),
                 "param_count": len(sim_result.get("params") or {}),
             }
@@ -1302,7 +1325,7 @@ async def _apply_edit_decision(
         result = await _run_reference_pipeline(
             session_id,
             params,
-            model_override=params.get("model_name"),
+            chip_prod_override=params.get("chip_prod_id"),
             reference_override=reference_lot_id,
         )
         sim_result = (
@@ -1313,7 +1336,9 @@ async def _apply_edit_decision(
         result_payload = None
         if isinstance(sim_result, dict):
             result_payload = {
-                "recommended_model": sim_result.get("recommended_model"),
+                "recommended_chip_prod_id": sim_result.get(
+                    "recommended_chip_prod_id"
+                ),
                 "representative_lot": sim_result.get("representative_lot"),
                 "param_count": len(sim_result.get("params") or {}),
             }
@@ -1564,7 +1589,7 @@ def _should_rerun_grid(message: str) -> bool:
 
 
 def _build_final_briefing_payload(
-    model_name: str,
+    chip_prod_id: str,
     reference_result: dict,
     grid_results: list[dict],
     top_candidates: list[dict],
@@ -1587,8 +1612,7 @@ def _build_final_briefing_payload(
             }
         )
     payload = {
-        "model_name": model_name,
-        "chip_prod_id": model_name,
+        "chip_prod_id": chip_prod_id,
         "reference_lot": reference_result.get("lot_id"),
         "candidate_total": len(grid_results),
         "top_candidates": preview,
@@ -1617,7 +1641,7 @@ async def _maybe_demo_sleep() -> None:
 async def _run_reference_pipeline(
     session_id: str,
     params: dict,
-    model_override: str | None = None,
+    chip_prod_override: str | None = None,
     reference_override: str | None = None,
     grid_overrides: dict | None = None,
 ) -> dict:
@@ -1628,7 +1652,9 @@ async def _run_reference_pipeline(
 
     await _emit_pipeline_status("recommendation", "조건 매칭 중...")
     await _emit_pipeline_status("reference", "조건에 맞는 LOT 조회 중...")
-    reference_result = select_reference_from_params(params, model_override=model_override)
+    reference_result = select_reference_from_params(
+        params, chip_prod_override=chip_prod_override
+    )
 
     if reference_override:
         override_detail = get_lot_detail_by_id(reference_override)
@@ -1638,7 +1664,7 @@ async def _run_reference_pipeline(
             override_chip_id = str(override_chip) if override_chip is not None else ""
             if override_chip_id:
                 override_result = select_reference_from_params(
-                    params, model_override=override_chip_id
+                    params, chip_prod_override=override_chip_id
                 )
                 if override_result.get("status") == "ok":
                     reference_result = override_result
@@ -1679,7 +1705,7 @@ async def _run_reference_pipeline(
     selected_lot_id = reference_result.get("selected_lot_id") or str(
         _row_value(selected_row, lot_id_column) or ""
     )
-    model_name = selected_chip_prod_id or model_override or ""
+    chip_prod_id = selected_chip_prod_id or chip_prod_override or ""
 
     value1_counts = reference_result.get("value1_counts") or {}
     value2_all_counts = reference_result.get("value2_all_counts") or {}
@@ -1688,13 +1714,13 @@ async def _run_reference_pipeline(
         chip_prod_ids = []
     chip_prod_id_count = len(chip_prod_ids)
     chip_prod_id_samples = [str(item) for item in chip_prod_ids[:10]]
-    value1_count = value1_counts.get(model_name, 0)
-    value2_count = value2_all_counts.get(model_name, 0)
+    value1_count = value1_counts.get(chip_prod_id, 0)
+    value2_count = value2_all_counts.get(chip_prod_id, 0)
 
     reference_payload = {
         "status": "ok",
         "lot_id": selected_lot_id,
-        "chip_prod_id": model_name,
+        "chip_prod_id": chip_prod_id,
         "row": selected_row,
         "columns": reference_result.get("columns", []),
         "source": reference_result.get("source") or "postgresql",
@@ -1714,7 +1740,7 @@ async def _run_reference_pipeline(
     await _emit_pipeline_status("reference", "레퍼런스 LOT 조회 완료", done=True)
 
     synthetic = {
-        "recommended_model": model_name,
+        "recommended_chip_prod_id": chip_prod_id,
         "representative_lot": selected_lot_id,
         "params": {},
     }
@@ -1757,7 +1783,7 @@ async def _run_reference_pipeline(
                 "type": "defect_rate_chart",
                 "payload": {
                     "lots": chart_lots,
-                    "filters": {"chip_prod_id": model_name},
+                    "filters": {"chip_prod_id": chip_prod_id},
                     "stats": defect_stats,
                 },
             }
@@ -1767,7 +1793,7 @@ async def _run_reference_pipeline(
             "defect_rate_chart",
             {
                 "lots": chart_lots,
-                "filters": {"chip_prod_id": model_name},
+                "filters": {"chip_prod_id": chip_prod_id},
                 "stats": defect_stats,
             },
         )
@@ -1775,7 +1801,7 @@ async def _run_reference_pipeline(
     grid_overrides = grid_overrides or {}
     grid_values = build_grid_values(selected_row, rules, grid_overrides)
     grid_payload = {
-        "chip_prod_id": model_name,
+        "chip_prod_id": chip_prod_id,
         "lot_id": selected_lot_id,
         "grid": grid_values,
         "max_results": rules.get("grid_search", {}).get("max_results", 100),
@@ -1794,7 +1820,7 @@ async def _run_reference_pipeline(
     pipeline_store.set_grid(
         session_id,
         {
-            "chip_prod_id": model_name,
+            "chip_prod_id": chip_prod_id,
             "lot_id": selected_lot_id,
             "results": grid_results,
             "top": top_candidates,
@@ -1810,7 +1836,7 @@ async def _run_reference_pipeline(
                 "total": len(grid_results),
                 "offset": 0,
                 "limit": len(top_candidates),
-                "target": model_name,
+                "target": chip_prod_id,
             },
         }
     )
@@ -1822,11 +1848,11 @@ async def _run_reference_pipeline(
             "total": len(grid_results),
             "offset": 0,
             "limit": len(top_candidates),
-            "target": model_name,
+            "target": chip_prod_id,
         },
     )
     summary_payload = _build_final_briefing_payload(
-        model_name,
+        chip_prod_id,
         reference_payload,
         grid_results,
         top_candidates,
@@ -1845,14 +1871,14 @@ async def _run_reference_pipeline(
         summary = _format_simulation_result(simulation_result.get("result"))
         return {
             "message": (
-                f"추천 기종은 {model_name}입니다. 기준 LOT를 선정했고 그리드 서치를 완료했습니다. "
+                f"추천 기종은 {chip_prod_id}입니다. 기준 LOT를 선정했고 그리드 서치를 완료했습니다. "
                 f"추천 결과 요약: {summary}. 상위 후보를 확인해 주세요."
             ),
             "simulation_result": simulation_result,
         }
     return {
         "message": (
-            f"기종 {model_name} 기준으로 레퍼런스 LOT를 선정하고 그리드 서치를 완료했습니다. "
+            f"기종 {chip_prod_id} 기준으로 레퍼런스 LOT를 선정하고 그리드 서치를 완료했습니다. "
             "상위 후보를 확인해 주세요."
         ),
         "simulation_result": simulation_result,
@@ -1876,11 +1902,11 @@ async def _handle_pipeline_edit_message(
         return None
 
     params = simulation_store.get(session_id)
-    model_override = params.get("model_name")
+    chip_prod_override = params.get("chip_prod_id")
     result = await _run_reference_pipeline(
         session_id,
         params,
-        model_override=model_override,
+        chip_prod_override=chip_prod_override,
         reference_override=reference_override,
         grid_overrides=grid_overrides or (state.get("grid") or {}).get("overrides"),
     )
@@ -1890,20 +1916,22 @@ async def _handle_pipeline_edit_message(
 async def _handle_pipeline_run_message(
     message: str, session_id: str
 ) -> str | None:
-    params = extract_simulation_params(message)
+    params, conflicts = await extract_simulation_params_hybrid(message)
+    for key in conflicts:
+        params.pop(key, None)
     has_params = bool(params)
     intent = _is_recommendation_intent(message)
     if simulation_store.is_active(session_id) and not (has_params or intent):
         if _is_affirmative(message):
             stored_params = simulation_store.get(session_id)
-            model_override = stored_params.get("model_name")
+            chip_prod_override = stored_params.get("chip_prod_id")
             missing = simulation_store.missing(session_id)
-            if missing and not model_override:
+            if missing and not chip_prod_override:
                 return await _generate_simulation_auto_message(
                     stored_params, missing, None
                 )
             result = await _run_reference_pipeline(
-                session_id, stored_params, model_override=model_override
+                session_id, stored_params, chip_prod_override=chip_prod_override
             )
             return result.get("message")
         return None
@@ -1912,7 +1940,16 @@ async def _handle_pipeline_run_message(
         return None
 
     if has_params:
-        update_result = collect_simulation_params(**params)
+        update_result = collect_simulation_params(
+            **params,
+            clear_keys=conflicts,
+            extra_missing=conflicts,
+        )
+    elif conflicts:
+        update_result = collect_simulation_params(
+            clear_keys=conflicts,
+            extra_missing=conflicts,
+        )
     else:
         update_result = {
             "params": simulation_store.get(session_id),
@@ -1922,9 +1959,9 @@ async def _handle_pipeline_run_message(
         update_result.get("params", {}), update_result.get("missing", [])
     )
 
-    model_override = update_result.get("params", {}).get("model_name")
+    chip_prod_override = update_result.get("params", {}).get("chip_prod_id")
     missing = update_result.get("missing", [])
-    if missing and not model_override:
+    if missing and not chip_prod_override:
         return await _generate_simulation_auto_message(
             update_result.get("params", {}), missing, None
         )
@@ -1932,7 +1969,7 @@ async def _handle_pipeline_run_message(
     result = await _run_reference_pipeline(
         session_id,
         update_result.get("params", {}),
-        model_override=model_override,
+        chip_prod_override=chip_prod_override,
     )
     return result.get("message")
 
@@ -2012,7 +2049,14 @@ async def trigger_test(request: TestRequest) -> dict:
             safe_params = {
                 key: value
                 for key, value in params.items()
-                if key in {"temperature", "voltage", "size", "capacity", "production_mode"}
+                if key in {
+                    "temperature",
+                    "voltage",
+                    "size",
+                    "capacity",
+                    "production_mode",
+                    "chip_prod_id",
+                }
             }
             collect_simulation_params(**safe_params)
             result = await execute_simulation()
@@ -2097,7 +2141,7 @@ async def update_simulation_params_route(request: SimulationParamsRequest) -> di
             size=request.size,
             capacity=request.capacity,
             production_mode=request.production_mode,
-            model_name=request.model_name,
+            chip_prod_id=request.chip_prod_id,
         )
         await emit_simulation_form(
             update_result["params"], update_result["missing"]
@@ -2137,13 +2181,13 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
             request.session_id,
             f"추천 실행 요청(패널): {params_summary}. 누락: {missing_text}.",
         )
-        model_override = params.get("model_name")
-        if missing and not model_override:
+        chip_prod_override = params.get("chip_prod_id")
+        if missing and not chip_prod_override:
             auto_message = await _generate_simulation_auto_message(params, missing, None)
             await _emit_chat_message(request.session_id, auto_message)
             return {"status": "missing", "missing": missing, "params": params}
         pipeline_result = await _run_reference_pipeline(
-            request.session_id, params, model_override=model_override
+            request.session_id, params, chip_prod_override=chip_prod_override
         )
         await _append_system_note(
             request.session_id, "추천 파이프라인 실행 완료."
@@ -2182,7 +2226,7 @@ async def update_recommendation_params_route(
             )
             return {"status": "missing", "missing": ["params"]}
         result_payload = {
-            "recommended_model": updated.get("recommended_model"),
+            "recommended_chip_prod_id": updated.get("recommended_chip_prod_id"),
             "representative_lot": updated.get("representative_lot"),
             "params": updated.get("params"),
         }
