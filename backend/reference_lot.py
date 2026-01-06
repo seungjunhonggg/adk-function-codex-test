@@ -211,8 +211,18 @@ def _normalize_defect_conditions(rules: dict) -> list[dict]:
     return normalized
 
 
-def _build_param_filters(params: dict, rules: dict) -> list[dict]:
+def _get_param_columns(rules: dict, table_key: str | None = None) -> dict:
+    param_columns_by_table = rules.get("param_columns_by_table") or {}
+    if table_key and isinstance(param_columns_by_table, dict):
+        table_columns = param_columns_by_table.get(table_key)
+        if isinstance(table_columns, dict) and table_columns:
+            return table_columns
     param_columns = rules.get("param_columns") or {}
+    return param_columns if isinstance(param_columns, dict) else {}
+
+
+def _build_param_filters(params: dict, rules: dict, table_key: str | None = None) -> list[dict]:
+    param_columns = _get_param_columns(rules, table_key)
     value_map = rules.get("param_value_map") or {}
     filters: list[dict] = []
     for param_key, column in param_columns.items():
@@ -554,16 +564,20 @@ def select_reference_from_params(params: dict, model_override: str | None = None
     limit = max_candidates if isinstance(max_candidates, int) and max_candidates > 0 else 0
 
     mapped_params = _map_params_from_table(params, rules)
-    param_filters = _build_param_filters(mapped_params, rules)
+    chip_prod_filters = _build_param_filters(mapped_params, rules, table_key="chip_prod")
+    lot_search_filters = _build_param_filters(mapped_params, rules, table_key="lot_search")
     if model_override:
-        param_filters.append(
+        chip_prod_filters.append(
+            {"column": chip_prod_column, "operator": "=", "value": model_override}
+        )
+        lot_search_filters.append(
             {"column": chip_prod_column, "operator": "=", "value": model_override}
         )
 
     base_columns = [chip_prod_column, lot_id_column, input_date_column]
     source, chip_prod_rows = _query_rows_for_filters(
         rules,
-        param_filters,
+        chip_prod_filters,
         [chip_prod_column],
         limit,
         table_name=chip_prod_table,
@@ -583,7 +597,7 @@ def select_reference_from_params(params: dict, model_override: str | None = None
             "source": source,
         }
 
-    value1_filters = param_filters + _build_not_null_filters(
+    value1_filters = lot_search_filters + _build_not_null_filters(
         rules.get("value1_not_null_columns", []) or []
     )
     _, value1_rows = _query_rows_for_filters(

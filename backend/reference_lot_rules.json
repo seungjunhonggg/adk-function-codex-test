@@ -25,6 +25,18 @@
     "capacity": "capacity",
     "production_mode": "lot_type"
   },
+  "param_columns_by_table": {
+    "chip_prod": {
+      "temperature": "temperature",
+      "voltage": "voltage",
+      "size": "size",
+      "capacity": "capacity",
+      "production_mode": "lot_type"
+    },
+    "lot_search": {
+      "production_mode": "lot_type"
+    }
+  },
   "param_value_map": {},
   "selection": {
     "max_candidates": 0
