@@ -24,6 +24,7 @@ def load_reference_rules() -> dict:
 def normalize_reference_rules(rules: dict | None) -> dict:
     normalized = dict(rules or {})
     normalized.setdefault("db", {})
+    normalized.setdefault("param_mapping", {})
     normalized.setdefault("param_columns", {})
     normalized.setdefault("param_value_map", {})
     normalized.setdefault("selection", {})
@@ -62,6 +63,27 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     normalized["grid_search"].setdefault("top_k", 10)
     normalized["defect_rate_aggregate"].setdefault("columns", [])
     normalized["defect_rate_aggregate"].setdefault("mode", "avg")
+
+    db = normalized.get("db", {})
+    tables = db.get("tables")
+    if not isinstance(tables, dict):
+        tables = {}
+        db["tables"] = tables
+    tables.setdefault("param_map", "")
+    tables.setdefault("chip_prod", "")
+    tables.setdefault("lot_search", "")
+
+    param_mapping = normalized.get("param_mapping")
+    if not isinstance(param_mapping, dict):
+        param_mapping = {}
+        normalized["param_mapping"] = param_mapping
+    param_mapping.setdefault("schema", "")
+    param_mapping.setdefault("table", "")
+    param_mapping.setdefault("name_column", "")
+    mappings = param_mapping.get("mappings")
+    if not isinstance(mappings, dict):
+        mappings = {}
+        param_mapping["mappings"] = mappings
     return normalized
 
 
@@ -208,6 +230,66 @@ def _build_param_filters(params: dict, rules: dict) -> list[dict]:
                 mapped = mapping.get(str(value), value)
         filters.append({"column": column, "operator": "=", "value": mapped})
     return filters
+
+
+def _resolve_table_name(rules: dict, key: str) -> str:
+    db = rules.get("db", {})
+    tables = db.get("tables") or {}
+    table = tables.get(key) if isinstance(tables, dict) else None
+    if table:
+        return str(table)
+    return str(db.get("table") or "")
+
+
+def _map_params_from_table(params: dict, rules: dict) -> dict:
+    mapping = rules.get("param_mapping") or {}
+    mappings = mapping.get("mappings") or {}
+    if not isinstance(mappings, dict) or not mappings:
+        return params
+    db = rules.get("db", {})
+    connection_id = db.get("connection_id")
+    if not connection_id:
+        return params
+    table_name = mapping.get("table") or _resolve_table_name(rules, "param_map")
+    if not table_name:
+        return params
+    schema_name = mapping.get("schema") or db.get("schema") or "public"
+    name_column = mapping.get("name_column")
+    updated = dict(params)
+
+    for param_key, config in mappings.items():
+        if param_key not in params:
+            continue
+        if not isinstance(config, dict):
+            continue
+        input_column = config.get("input_column")
+        output_column = config.get("output_column")
+        if not input_column or not output_column:
+            continue
+        filters = []
+        if name_column:
+            filters.append({"column": name_column, "operator": "=", "value": param_key})
+        filters.append(
+            {"column": input_column, "operator": "=", "value": params.get(param_key)}
+        )
+        try:
+            result = execute_table_query_multi(
+                connection_id=connection_id,
+                schema_name=schema_name,
+                table_name=table_name,
+                columns=[output_column],
+                filters=filters,
+                limit=1,
+            )
+        except Exception:
+            continue
+        rows = result.get("rows", []) if isinstance(result, dict) else []
+        if not rows:
+            continue
+        mapped_value = rows[0].get(output_column)
+        if mapped_value is not None:
+            updated[param_key] = mapped_value
+    return updated
 
 
 def _build_not_null_filters(columns: list[str]) -> list[dict]:
@@ -400,11 +482,12 @@ def _query_rows_for_filters(
     filters: list[dict],
     columns: list[str],
     limit: int,
+    table_name: str | None = None,
 ) -> tuple[str, list[dict]]:
     db = rules.get("db", {})
     connection_id = db.get("connection_id")
-    table_name = db.get("table")
-    if not connection_id or not table_name:
+    resolved_table = table_name or db.get("table")
+    if not connection_id or not resolved_table:
         chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
         lot_id_column = db.get("lot_id_column") or "lot_id"
         filter_column = chip_prod_column
@@ -450,7 +533,7 @@ def _query_rows_for_filters(
     result = execute_table_query_multi(
         connection_id=connection_id,
         schema_name=db.get("schema") or "public",
-        table_name=table_name,
+        table_name=resolved_table,
         columns=columns,
         filters=filters,
         limit=limit,
@@ -465,10 +548,13 @@ def select_reference_from_params(params: dict, model_override: str | None = None
     chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
     lot_id_column = db.get("lot_id_column") or "lot_id"
     input_date_column = db.get("input_date_column") or "input_date"
+    chip_prod_table = _resolve_table_name(rules, "chip_prod")
+    lot_search_table = _resolve_table_name(rules, "lot_search")
     max_candidates = rules.get("selection", {}).get("max_candidates", 500)
     limit = max_candidates if isinstance(max_candidates, int) and max_candidates > 0 else 0
 
-    param_filters = _build_param_filters(params, rules)
+    mapped_params = _map_params_from_table(params, rules)
+    param_filters = _build_param_filters(mapped_params, rules)
     if model_override:
         param_filters.append(
             {"column": chip_prod_column, "operator": "=", "value": model_override}
@@ -480,6 +566,7 @@ def select_reference_from_params(params: dict, model_override: str | None = None
         param_filters,
         [chip_prod_column],
         limit,
+        table_name=chip_prod_table,
     )
     chip_prod_ids = sorted(
         {
@@ -504,6 +591,7 @@ def select_reference_from_params(params: dict, model_override: str | None = None
         value1_filters,
         base_columns,
         limit,
+        table_name=lot_search_table,
     )
     value1_counts = _count_by_key(value1_rows, chip_prod_column, lot_id_column)
 
@@ -515,6 +603,7 @@ def select_reference_from_params(params: dict, model_override: str | None = None
         value2_all_filters,
         base_columns,
         limit,
+        table_name=lot_search_table,
     )
 
     if defect_conditions:
@@ -549,6 +638,7 @@ def select_reference_from_params(params: dict, model_override: str | None = None
             condition_filters,
             base_columns,
             limit,
+            table_name=lot_search_table,
         )
         counts = _count_by_key(condition_rows, chip_prod_column, lot_id_column)
         value2_count = counts.get(selected_chip_prod_id or "", 0)
@@ -584,6 +674,7 @@ def select_reference_from_params(params: dict, model_override: str | None = None
             [{"column": lot_id_column, "operator": "=", "value": selected_lot_id}],
             detail_query_columns,
             1,
+            table_name=lot_search_table,
         )
         detail_row = detail_rows[0] if detail_rows else None
 
@@ -614,6 +705,7 @@ def get_lot_detail_by_id(lot_id: str) -> dict:
         for factor in rules.get("grid_search", {}).get("factors", [])
         if factor.get("column")
     ]
+    lot_search_table = _resolve_table_name(rules, "lot_search")
     query_columns = list(
         dict.fromkeys([chip_prod_column, lot_id_column, input_date_column] + grid_columns + list(detail_columns))
     )
@@ -622,6 +714,7 @@ def get_lot_detail_by_id(lot_id: str) -> dict:
         [{"column": lot_id_column, "operator": "=", "value": lot_id}],
         query_columns,
         1,
+        table_name=lot_search_table,
     )
     if not rows:
         return {"status": "missing", "error": "LOT 정보를 찾지 못했습니다.", "source": source}
@@ -736,13 +829,15 @@ def _build_demo_rows(
     return rows
 
 
-def _query_rows(filter_column: str, filter_value: str) -> tuple[dict, list[dict]]:
+def _query_rows(
+    filter_column: str, filter_value: str, table_name: str | None = None
+) -> tuple[dict, list[dict]]:
     rules = normalize_reference_rules(load_reference_rules())
     db = rules.get("db", {})
     connection_id = db.get("connection_id")
-    table_name = db.get("table")
+    resolved_table = table_name or db.get("table")
     columns = _build_columns(rules)
-    if not connection_id or not table_name:
+    if not connection_id or not resolved_table:
         rows = _build_demo_rows(rules, columns, filter_column, filter_value)
         return {"rules": rules, "columns": columns, "source": "demo"}, rows
 
@@ -758,7 +853,7 @@ def _query_rows(filter_column: str, filter_value: str) -> tuple[dict, list[dict]
         result = execute_table_query_multi(
             connection_id=connection_id,
             schema_name=db.get("schema") or "public",
-            table_name=table_name,
+            table_name=resolved_table,
             columns=columns,
             filters=filters,
             limit=max(1, int(max_candidates)),
@@ -825,12 +920,12 @@ def _build_reference_payload(rows: list[dict], meta: dict) -> dict:
 
 
 def select_reference_lot(chip_prod_id: str) -> dict:
+    rules = normalize_reference_rules(load_reference_rules())
+    lot_search_table = _resolve_table_name(rules, "lot_search")
     meta, rows = _query_rows(
-        normalize_reference_rules(load_reference_rules())
-        .get("db", {})
-        .get("chip_prod_id_column")
-        or "chip_prod_id",
+        rules.get("db", {}).get("chip_prod_id_column") or "chip_prod_id",
         chip_prod_id,
+        table_name=lot_search_table,
     )
     if not rows:
         if meta.get("status") == "error":
@@ -841,8 +936,9 @@ def select_reference_lot(chip_prod_id: str) -> dict:
 
 def select_reference_lot_by_id(lot_id: str) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
+    lot_search_table = _resolve_table_name(rules, "lot_search")
     column = rules.get("db", {}).get("lot_id_column") or "lot_id"
-    meta, rows = _query_rows(column, lot_id)
+    meta, rows = _query_rows(column, lot_id, table_name=lot_search_table)
     if not rows:
         if meta.get("status") == "error":
             return meta
