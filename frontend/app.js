@@ -1782,6 +1782,7 @@ function renderFinalBriefing(payload = {}) {
   const value2Count = payload.value2_count;
   const value1Num = Number(value1Count);
   const value2Num = Number(value2Count);
+  const overallRateValue = Number(payload.defect_rate_overall);
 
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
@@ -1790,7 +1791,18 @@ function renderFinalBriefing(payload = {}) {
   if (candidateTotal !== "-") {
     kpiRow.appendChild(createKpiCard("그리드 후보", candidateTotal));
   }
-  if (Number.isFinite(value1Num) && Number.isFinite(value2Num) && value1Num > 0) {
+  if (Number.isFinite(overallRateValue)) {
+    kpiRow.appendChild(
+      createKpiCard(
+        "불량률(전체)",
+        `${(overallRateValue * 100).toFixed(2)}%`
+      )
+    );
+  } else if (
+    Number.isFinite(value1Num) &&
+    Number.isFinite(value2Num) &&
+    value1Num > 0
+  ) {
     const overallRate = ((value1Num - value2Num) / value1Num) * 100;
     kpiRow.appendChild(createKpiCard("불량률(전체)", `${overallRate.toFixed(2)}%`));
   }

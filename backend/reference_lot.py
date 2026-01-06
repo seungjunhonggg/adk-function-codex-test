@@ -34,6 +34,7 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     normalized.setdefault("conditions", {})
     normalized.setdefault("grid_search", {})
     normalized.setdefault("defect_rate_aggregate", {})
+    normalized.setdefault("defect_rate_source", {})
     normalized["selection"].setdefault("max_candidates", 500)
     param_columns = normalized.get("param_columns")
     if not isinstance(param_columns, dict):
@@ -63,6 +64,17 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     normalized["grid_search"].setdefault("top_k", 10)
     normalized["defect_rate_aggregate"].setdefault("columns", [])
     normalized["defect_rate_aggregate"].setdefault("mode", "avg")
+    defect_rate_source = normalized.get("defect_rate_source")
+    if not isinstance(defect_rate_source, dict):
+        defect_rate_source = {}
+        normalized["defect_rate_source"] = defect_rate_source
+    defect_rate_source.setdefault("connection_id", "")
+    defect_rate_source.setdefault("schema", "")
+    defect_rate_source.setdefault("table", "")
+    defect_rate_source.setdefault("lot_id_column", "lot_id")
+    defect_rate_source.setdefault("update_date_column", "")
+    defect_rate_source.setdefault("rate_columns", [])
+    defect_rate_source.setdefault("value_unit", "")
 
     db = normalized.get("db", {})
     tables = db.get("tables")
@@ -113,6 +125,26 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_defect_rate_value(value: Any, value_unit: str) -> float | None:
+    numeric = _coerce_float(value)
+    if numeric is None:
+        return None
+    if value_unit == "percent":
+        return numeric / 100.0
+    return numeric
+
+
+def _infer_rate_columns(row: dict, exclude: set[str]) -> list[str]:
+    columns: list[str] = []
+    for key, value in row.items():
+        if key in exclude:
+            continue
+        if _coerce_float(value) is None:
+            continue
+        columns.append(key)
+    return columns
 
 
 def _string_condition(value: Any, rule: dict) -> bool:
@@ -839,6 +871,103 @@ def get_lot_detail_by_id(lot_id: str) -> dict:
     if not rows:
         return {"status": "missing", "error": "LOT 정보를 찾지 못했습니다.", "source": source}
     return {"status": "ok", "row": rows[0], "columns": query_columns, "source": source}
+
+
+def get_defect_rates_by_lot_id(lot_id: str) -> dict:
+    rules = normalize_reference_rules(load_reference_rules())
+    defect_source = rules.get("defect_rate_source", {})
+    if not isinstance(defect_source, dict):
+        defect_source = {}
+    table_name = defect_source.get("table") or ""
+    if not table_name:
+        return {
+            "status": "missing",
+            "defect_rates": [],
+            "source": "none",
+            "lot_id": lot_id,
+        }
+
+    db = rules.get("db", {})
+    connection_id = defect_source.get("connection_id") or db.get("connection_id") or ""
+    schema_name = defect_source.get("schema") or db.get("schema") or "public"
+    lot_id_column = defect_source.get("lot_id_column") or "lot_id"
+    update_date_column = defect_source.get("update_date_column") or ""
+    rate_columns = defect_source.get("rate_columns") or []
+    if not isinstance(rate_columns, list):
+        rate_columns = []
+    rate_columns = [column for column in rate_columns if column]
+    value_unit = str(defect_source.get("value_unit") or "").strip().lower()
+
+    columns = []
+    if rate_columns:
+        columns = [lot_id_column]
+        if update_date_column:
+            columns.append(update_date_column)
+        columns.extend(rate_columns)
+        columns = list(dict.fromkeys(columns))
+
+    filters = [{"column": lot_id_column, "operator": "=", "value": lot_id}]
+    rows: list[dict] = []
+    source = "demo"
+    if connection_id and table_name:
+        try:
+            result = execute_table_query_multi(
+                connection_id=connection_id,
+                schema_name=schema_name or "public",
+                table_name=table_name,
+                columns=columns,
+                filters=filters,
+                limit=20,
+            )
+            rows = result.get("rows", []) if isinstance(result, dict) else []
+            source = "postgresql"
+        except Exception:
+            rows = _build_demo_rows(rules, columns, lot_id_column, lot_id)
+            source = "demo"
+    else:
+        rows = _build_demo_rows(rules, columns, lot_id_column, lot_id)
+        source = "demo"
+
+    if not rows:
+        return {
+            "status": "missing",
+            "defect_rates": [],
+            "source": source,
+            "lot_id": lot_id,
+        }
+
+    selected_row = None
+    if update_date_column:
+        selected_row = _select_latest_row(rows, update_date_column)
+    if not selected_row:
+        selected_row = rows[0]
+
+    if not rate_columns:
+        exclude = {lot_id_column}
+        if update_date_column:
+            exclude.add(update_date_column)
+        rate_columns = _infer_rate_columns(selected_row, exclude)
+
+    defect_rates = []
+    for column in rate_columns:
+        rate = _normalize_defect_rate_value(selected_row.get(column), value_unit)
+        if rate is None:
+            continue
+        defect_rates.append(
+            {
+                "label": column,
+                "column": column,
+                "defect_rate": rate,
+            }
+        )
+
+    return {
+        "status": "ok",
+        "defect_rates": defect_rates,
+        "source": source,
+        "lot_id": lot_id,
+        "value_unit": value_unit,
+    }
 
 
 _DEMO_CACHE: dict[str, list[dict]] = {}

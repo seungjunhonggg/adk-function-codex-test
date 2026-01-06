@@ -36,6 +36,7 @@ from .reference_lot import (
     load_reference_rules,
     normalize_reference_rules,
     select_reference_from_params,
+    get_defect_rates_by_lot_id,
     get_lot_detail_by_id,
 )
 from .simulation import (
@@ -1597,6 +1598,7 @@ def _build_final_briefing_payload(
     value1_count: int | None = None,
     value2_count: int | None = None,
     defect_rates: list[dict] | None = None,
+    defect_rate_overall: float | None = None,
     chip_prod_id_count: int | None = None,
     chip_prod_id_samples: list[str] | None = None,
 ) -> dict:
@@ -1625,6 +1627,8 @@ def _build_final_briefing_payload(
         payload["value2_count"] = value2_count
     if defect_rates is not None:
         payload["defect_rates"] = defect_rates
+    if defect_rate_overall is not None:
+        payload["defect_rate_overall"] = defect_rate_overall
     if chip_prod_id_count is not None:
         payload["chip_prod_id_count"] = chip_prod_id_count
     if chip_prod_id_samples is not None:
@@ -1755,8 +1759,14 @@ async def _run_reference_pipeline(
     simulation_result = {"status": "ok", "result": synthetic}
     await _emit_pipeline_status("recommendation", "조건 매칭 완료", done=True)
 
-    defect_rates = reference_result.get("defect_rates", []) or []
+    defect_payload = (
+        get_defect_rates_by_lot_id(selected_lot_id)
+        if selected_lot_id
+        else {"status": "missing", "defect_rates": [], "source": "none"}
+    )
+    defect_rates = defect_payload.get("defect_rates", []) or []
     defect_stats = {}
+    defect_rate_overall = None
     if defect_rates:
         rate_values = [
             item.get("defect_rate")
@@ -1770,6 +1780,9 @@ async def _run_reference_pipeline(
                 "min": min(rate_values),
                 "max": max(rate_values),
             }
+            defect_rate_overall = (
+                rate_values[0] if len(rate_values) == 1 else defect_stats.get("avg")
+            )
         chart_lots = [
             {
                 "label": item.get("label") or item.get("key") or item.get("column"),
@@ -1778,6 +1791,7 @@ async def _run_reference_pipeline(
             for item in defect_rates
             if item.get("defect_rate") is not None
         ]
+        defect_source = defect_payload.get("source") or "postgresql"
         await event_bus.broadcast(
             {
                 "type": "defect_rate_chart",
@@ -1785,6 +1799,7 @@ async def _run_reference_pipeline(
                     "lots": chart_lots,
                     "filters": {"chip_prod_id": chip_prod_id},
                     "stats": defect_stats,
+                    "source": defect_source,
                 },
             }
         )
@@ -1795,6 +1810,7 @@ async def _run_reference_pipeline(
                 "lots": chart_lots,
                 "filters": {"chip_prod_id": chip_prod_id},
                 "stats": defect_stats,
+                "source": defect_source,
             },
         )
 
@@ -1860,6 +1876,7 @@ async def _run_reference_pipeline(
         value1_count=value1_count,
         value2_count=value2_count,
         defect_rates=defect_rates,
+        defect_rate_overall=defect_rate_overall,
         chip_prod_id_count=chip_prod_id_count,
         chip_prod_id_samples=chip_prod_id_samples,
     )

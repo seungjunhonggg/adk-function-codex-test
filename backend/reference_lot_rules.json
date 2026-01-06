@@ -38,6 +38,15 @@
     }
   },
   "param_value_map": {},
+  "defect_rate_source": {
+    "connection_id": "AAAA",
+    "schema": "BBBB",
+    "table": "CCCC",
+    "lot_id_column": "x_lot_id",
+    "update_date_column": "x_update_date",
+    "rate_columns": [],
+    "value_unit": "percent"
+  },
   "selection": {
     "max_candidates": 0
   },
