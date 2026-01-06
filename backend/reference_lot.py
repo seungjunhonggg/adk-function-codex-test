@@ -454,7 +454,7 @@ def _matches_filter(row: dict, item: dict) -> bool:
         return False
     if operator in {"like", "ilike"}:
         haystack = str(row_value)
-        needle = str(value or "")
+        needle = str(value or "").replace("%", "")
         if operator == "ilike":
             return needle.lower() in haystack.lower()
         return needle in haystack
@@ -624,47 +624,81 @@ def select_reference_from_params(params: dict, model_override: str | None = None
     mapped_params = _map_params_from_table(params, rules)
     chip_prod_filters = _build_param_filters(mapped_params, rules, table_key="chip_prod")
     lot_search_filters = _build_param_filters(mapped_params, rules, table_key="lot_search")
-    if model_override:
+    user_model = params.get("model_name")
+    user_model_text = str(user_model).strip() if user_model else ""
+    model_override_text = str(model_override).strip() if model_override else ""
+    use_model_like = bool(user_model_text) and (
+        not model_override_text or model_override_text == user_model_text
+    )
+    if use_model_like:
+        lot_search_filters.append(
+            {
+                "column": chip_prod_column,
+                "operator": "like",
+                "value": f"%{user_model_text}%",
+            }
+        )
+    elif model_override_text:
         chip_prod_filters.append(
-            {"column": chip_prod_column, "operator": "=", "value": model_override}
+            {"column": chip_prod_column, "operator": "=", "value": model_override_text}
         )
         lot_search_filters.append(
-            {"column": chip_prod_column, "operator": "=", "value": model_override}
+            {"column": chip_prod_column, "operator": "=", "value": model_override_text}
         )
 
     base_columns = [chip_prod_column, lot_id_column, input_date_column]
-    source, chip_prod_rows = _query_rows_for_filters(
-        rules,
-        chip_prod_filters,
-        [chip_prod_column],
-        limit,
-        table_name=chip_prod_table,
-    )
-    chip_prod_ids = sorted(
-        {
-            str(_get_value(row, chip_prod_column))
-            for row in chip_prod_rows
-            if _get_value(row, chip_prod_column) is not None
-        }
-    )
-    if not chip_prod_ids:
-        return {
-            "status": "missing",
-            "error": "조건에 맞는 chip_prod_id가 없습니다.",
-            "chip_prod_ids": [],
-            "source": source,
-        }
+    source = ""
+    chip_prod_ids: list[str] = []
+    if not use_model_like:
+        source, chip_prod_rows = _query_rows_for_filters(
+            rules,
+            chip_prod_filters,
+            [chip_prod_column],
+            limit,
+            table_name=chip_prod_table,
+        )
+        chip_prod_ids = sorted(
+            {
+                str(_get_value(row, chip_prod_column))
+                for row in chip_prod_rows
+                if _get_value(row, chip_prod_column) is not None
+            }
+        )
+        if not chip_prod_ids:
+            return {
+                "status": "missing",
+                "error": "조건에 맞는 chip_prod_id가 없습니다.",
+                "chip_prod_ids": [],
+                "source": source,
+            }
 
     value1_filters = lot_search_filters + _build_not_null_filters(
         rules.get("value1_not_null_columns", []) or []
     )
-    _, value1_rows = _query_rows_for_filters(
+    value1_source, value1_rows = _query_rows_for_filters(
         rules,
         value1_filters,
         base_columns,
         limit,
         table_name=lot_search_table,
     )
+    if not source:
+        source = value1_source
+    if use_model_like:
+        chip_prod_ids = sorted(
+            {
+                str(_get_value(row, chip_prod_column))
+                for row in value1_rows
+                if _get_value(row, chip_prod_column) is not None
+            }
+        )
+        if not chip_prod_ids:
+            return {
+                "status": "missing",
+                "error": "조건에 맞는 chip_prod_id가 없습니다.",
+                "chip_prod_ids": [],
+                "source": source,
+            }
     value1_counts = _count_by_key(value1_rows, chip_prod_column, lot_id_column)
 
     defect_conditions = _normalize_defect_conditions(rules)
