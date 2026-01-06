@@ -276,12 +276,16 @@ def _extract_simulation_params_from_lot(row: dict) -> dict:
 
 
 def _query_lot_rows(lot_id: str, limit: int) -> dict:
-    if LOT_DB_CONNECTION_ID and LOT_DB_TABLE:
+    profile = _get_view_profile()
+    connection_id = profile.get("connection_id") or LOT_DB_CONNECTION_ID
+    schema_name = profile.get("schema") or LOT_DB_SCHEMA
+    table_name = profile.get("table") or LOT_DB_TABLE
+    if connection_id and table_name:
         columns = _parse_columns(LOT_DB_COLUMNS)
         result = execute_table_query(
-            connection_id=LOT_DB_CONNECTION_ID,
-            schema_name=LOT_DB_SCHEMA or "public",
-            table_name=LOT_DB_TABLE,
+            connection_id=connection_id,
+            schema_name=schema_name or "public",
+            table_name=table_name,
             columns=columns,
             filter_column=LOT_DB_LOT_COLUMN,
             filter_operator=LOT_DB_FILTER_OPERATOR or "=",
@@ -294,7 +298,7 @@ def _query_lot_rows(lot_id: str, limit: int) -> dict:
             "rows": result.get("rows", []),
             "source": "postgresql",
         }
-    if LOT_DB_CONNECTION_ID or LOT_DB_TABLE:
+    if LOT_DB_CONNECTION_ID or LOT_DB_TABLE or profile.get("connection_id") or profile.get("table"):
         raise RuntimeError("LOT DB 설정이 불완전합니다. 연결/테이블 정보를 확인하세요.")
 
     rows = query_process_data(lot_id, limit)
