@@ -1,6 +1,26 @@
 const messages = document.getElementById("messages");
 const form = document.getElementById("chat-form");
 const input = document.getElementById("chat-input");
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function renderMarkdown(text) {
+  if (!text) {
+    return "";
+  }
+  if (typeof marked === "undefined") {
+    return escapeHtml(text).replace(/\n/g, "<br>");
+  }
+  const raw = marked.parse(text, { breaks: true, gfm: true });
+  if (typeof DOMPurify !== "undefined") {
+    return DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
+  }
+  return raw;
+}
 const statusDot = document.getElementById("ws-status");
 const statusLabel = document.getElementById("ws-label");
 const sessionEl = document.getElementById("session-id");
@@ -401,7 +421,7 @@ function appendMessageToChat(entry) {
   const message = document.createElement("div");
   message.className = `message ${entry.role}`;
   message.dataset.messageId = entry.id;
-  message.textContent = entry.text;
+  message.innerHTML = renderMarkdown(entry.text);
   if (statusMessageEl && statusMessageEl.parentNode === messages) {
     messages.insertBefore(message, statusMessageEl);
   } else {

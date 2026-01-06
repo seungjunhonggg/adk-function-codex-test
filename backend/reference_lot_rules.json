@@ -3,9 +3,20 @@
     "connection_id": "",
     "schema": "public",
     "table": "mdh_base_view_total",
+    "tables": {
+      "param_map": "",
+      "chip_prod": "mdh_base_view_total",
+      "lot_search": "mdh_base_view_total"
+    },
     "lot_id_column": "lot_id",
     "chip_prod_id_column": "chip_prod_id",
     "input_date_column": "design_input_date"
+  },
+  "param_mapping": {
+    "schema": "",
+    "table": "",
+    "name_column": "",
+    "mappings": {}
   },
   "param_columns": {
     "temperature": "temperature",
