@@ -794,6 +794,33 @@ body::before {
   gap: 8px;
 }
 
+.message p {
+  margin: 0 0 8px;
+}
+
+.message p:last-child {
+  margin-bottom: 0;
+}
+
+.message table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.message th,
+.message td {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.message thead th {
+  background: rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+
 .status-spinner {
   width: 14px;
   height: 14px;
