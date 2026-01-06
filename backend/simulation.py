@@ -15,6 +15,12 @@ REQUIRED_KEYS = (
     "capacity",
     "production_mode",
 )
+CHIP_PROD_ID_MIN_LEN = 6
+CHIP_PROD_ID_TOKEN_RE = re.compile(
+    rf"\b[a-z0-9][a-z0-9-_]{{{CHIP_PROD_ID_MIN_LEN - 1},}}\b",
+    re.IGNORECASE,
+)
+CHIP_PROD_ID_EXCLUDE_PREFIXES = ("param", "lot", "lotid", "lot_id")
 LLM_SIM_PARSE_CONFIDENCE_MIN = 0.5
 MLCC_GLOSSARY_HINTS = (
     "Glossary (KR/EN): "
@@ -57,6 +63,12 @@ simulation_param_agent = _build_agent(
         "capacity (float), production_mode ('양산' or '개발' or null), chip_prod_id (string), "
         "confidence (0-1), notes. "
         "Only include values explicitly mentioned. "
+        "chip_prod_id may be partial; keep it exactly as written and do not expand. "
+        "Examples: CL32Y106KCYBNB -> chip_prod_id=CL32Y106KCYBNB, "
+        "CL32Y106KC -> chip_prod_id=CL32Y106KC, "
+        "32Y106KC -> chip_prod_id=32Y106KC. "
+        "If chip_prod_id appears without a keyword, treat any token with letters+digits "
+        "and length >= 6 as chip_prod_id (unless it is clearly a param name like param1). "
         "If conflicting values are present for a field, set that field to null and note it. "
         "If unsure, set fields to null. "
         f"{MLCC_GLOSSARY_HINTS}"
@@ -75,7 +87,7 @@ class SimulationStore:
         record: Dict[str, float | str] = self._data.get(session_id, {})
         for key, value in kwargs.items():
             if key == "chip_prod_id":
-                text = str(value).strip() if value is not None else ""
+                text = _normalize_chip_prod_id(value) or ""
                 if text:
                     record[key] = text
                 continue
@@ -232,13 +244,20 @@ def extract_simulation_params(message: str) -> dict:
     elif re.search(r"(개발|dev|development)", lowered):
         params["production_mode"] = "개발"
 
-    model_match = re.search(
+    chip_prod_match = re.search(
         r"(?:chip_prod_id|model|모델|기종|제품)\s*[:=]?\s*([a-z0-9-_]+)",
         message,
         re.IGNORECASE,
     )
-    if model_match:
-        params["chip_prod_id"] = model_match.group(1)
+    chip_prod_id = None
+    if chip_prod_match:
+        chip_prod_id = _normalize_chip_prod_id(chip_prod_match.group(1))
+    else:
+        candidate = _extract_chip_prod_id_candidate(message)
+        if candidate:
+            chip_prod_id = _normalize_chip_prod_id(candidate)
+    if chip_prod_id:
+        params["chip_prod_id"] = chip_prod_id
 
     numeric_keys = ("temperature", "voltage", "size", "capacity")
     numeric_count = sum(1 for key in numeric_keys if key in params)
@@ -261,14 +280,47 @@ def _normalize_text(value: object) -> str:
     return re.sub(r"\s+", "", str(value)).strip().lower()
 
 
+def _normalize_chip_prod_id(value: object) -> str | None:
+    if value is None:
+        return None
+    text = re.sub(r"\s+", "", str(value)).strip()
+    if not text:
+        return None
+    return text.upper()
+
+
 def _numeric_token(value: object) -> str | None:
     match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
     return match.group(0) if match else None
 
 
+def _extract_chip_prod_id_candidate(message: str) -> str | None:
+    if not message:
+        return None
+    tokens = CHIP_PROD_ID_TOKEN_RE.findall(message)
+    if not tokens:
+        return None
+    candidates = []
+    for token in tokens:
+        if not re.search(r"[a-z]", token, re.IGNORECASE):
+            continue
+        if not re.search(r"\d", token):
+            continue
+        lowered = token.lower()
+        if lowered.startswith(CHIP_PROD_ID_EXCLUDE_PREFIXES):
+            continue
+        candidates.append(token)
+    if not candidates:
+        return None
+    candidates.sort(key=len, reverse=True)
+    return candidates[0]
+
+
 def _values_equivalent(key: str, left: object, right: object) -> bool:
     if left is None or right is None:
         return False
+    if key == "chip_prod_id":
+        return _normalize_chip_prod_id(left) == _normalize_chip_prod_id(right)
     if key in {"voltage", "capacity"}:
         left_value = _to_float(left)
         right_value = _to_float(right)
@@ -306,7 +358,7 @@ def _normalize_llm_params(payload: dict) -> tuple[dict[str, float | str], float]
                 params[key] = text
             continue
         if key == "chip_prod_id":
-            text = str(value).strip()
+            text = _normalize_chip_prod_id(value)
             if text:
                 params[key] = text
             continue
