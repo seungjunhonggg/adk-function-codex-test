@@ -352,7 +352,7 @@ async def emit_process_data(query: str = "", limit: int = 12) -> dict:
 def collect_simulation_params(
     temperature: str | None = None,
     voltage: float | None = None,
-    size: float | None = None,
+    size: str | None = None,
     capacity: float | None = None,
     production_mode: str | None = None,
     model_name: str | None = None,
@@ -771,7 +771,7 @@ async def update_simulation_params(
     message: str | None = None,
     temperature: float | None = None,
     voltage: float | None = None,
-    size: float | None = None,
+    size: str | None = None,
     capacity: float | None = None,
     production_mode: str | None = None,
     model_name: str | None = None,

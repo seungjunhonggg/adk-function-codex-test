@@ -778,6 +778,9 @@ function formatProductionMode(value) {
     return "-";
   }
   const normalized = String(value).toLowerCase();
+  if (["양산", "개발"].includes(String(value))) {
+    return String(value);
+  }
   if (["mass", "production", "prod"].includes(normalized)) {
     return "양산";
   }
@@ -1139,7 +1142,7 @@ function collectSimFormParams() {
     model_name: modelName || null,
     temperature: temperature || null,
     voltage: parseNumber(voltage),
-    size: parseNumber(size),
+    size: size || null,
     capacity: parseNumber(capacity),
     production_mode: productionMode || null,
   };
