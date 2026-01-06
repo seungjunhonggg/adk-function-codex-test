@@ -768,7 +768,7 @@ def _build_demo_rows(
         "voltage": 3.7,
         "size": 12,
         "capacity": 6,
-        "production_mode": "mass",
+        "production_mode": "양산",
     }
 
     model_name = filter_value or "DEMO-MODEL"

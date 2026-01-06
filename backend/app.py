@@ -112,7 +112,7 @@ class SimulationParamsRequest(BaseModel):
     session_id: str
     temperature: str | None = None
     voltage: float | None = None
-    size: float | None = None
+    size: str | None = None
     capacity: float | None = None
     production_mode: str | None = None
     model_name: str | None = None
@@ -827,13 +827,13 @@ def _normalize_edit_intent_message(message: str) -> str:
     )
     normalized = re.sub(
         r"(양산|생산|mp|mass)",
-        "production_mode mass",
+        "production_mode 양산",
         normalized,
         flags=re.IGNORECASE,
     )
     normalized = re.sub(
         r"(개발|샘플|시제|proto|prototype|dev|pilot)",
-        "production_mode dev",
+        "production_mode 개발",
         normalized,
         flags=re.IGNORECASE,
     )
@@ -1971,7 +1971,7 @@ async def trigger_test(request: TestRequest) -> dict:
                 "voltage": 3.7,
                 "size": 12,
                 "capacity": 6,
-                "production_mode": "mass",
+                "production_mode": "양산",
             }
             safe_params = {
                 key: value
