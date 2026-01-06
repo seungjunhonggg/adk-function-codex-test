@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 import asyncio
+import logging
 
 from agents import Runner, SQLiteSession
 from agents.tracing import set_tracing_disabled
@@ -19,7 +20,6 @@ from .agents import (
     stage_resolver_agent,
 )
 from .config import (
-    LOT_DB_CONNECTION_ID,
     OPENAI_API_KEY,
     SESSION_DB_PATH,
     TRACING_ENABLED,
@@ -75,6 +75,7 @@ from .workflow import (
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="공정 모니터링 데모")
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -132,11 +133,17 @@ async def startup() -> None:
     ensure_workflow()
     ensure_workflow_store()
     set_tracing_disabled(not TRACING_ENABLED)
-    if LOT_DB_CONNECTION_ID:
+    for connection in list_connections():
+        connection_id = connection.get("id")
+        if not connection_id:
+            logger.warning("DB 연결 ID가 누락되어 스키마 갱신을 건너뜁니다.")
+            continue
+        logger.info("DB 스키마 갱신 시작: %s", connection_id)
         try:
-            preload_schema(LOT_DB_CONNECTION_ID, force=True)
+            preload_schema(connection_id, force=True)
+            logger.info("DB 스키마 갱신 완료: %s", connection_id)
         except Exception:
-            pass
+            logger.exception("DB 스키마 갱신 실패: %s", connection_id)
 
 
 @app.get("/")
