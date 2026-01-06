@@ -40,6 +40,13 @@ class SimulationStore:
                 if text:
                     record[key] = text
                 continue
+            if key == "size":
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    record[key] = text
+                continue
             coerced = _to_float(value)
             if coerced is not None:
                 record[key] = coerced
@@ -154,13 +161,16 @@ def extract_simulation_params(message: str) -> dict:
         match = re.search(pattern, message, re.IGNORECASE)
         if match:
             value = match.group(1)
-            params[key] = value if key == "temperature" else float(value)
+            if key in {"temperature", "size"}:
+                params[key] = value
+            else:
+                params[key] = float(value)
 
     lowered = message.lower()
     if re.search(r"(양산|생산|mass|production|prod)", lowered):
-        params["production_mode"] = "mass"
+        params["production_mode"] = "양산"
     elif re.search(r"(개발|dev|development)", lowered):
-        params["production_mode"] = "dev"
+        params["production_mode"] = "개발"
 
     model_match = re.search(
         r"(?:model|모델|기종|제품)\s*[:=]?\s*([a-z0-9-_]+)",
@@ -179,7 +189,7 @@ def extract_simulation_params(message: str) -> dict:
                 {
                     "temperature": numbers[0],
                     "voltage": float(numbers[1]),
-                    "size": float(numbers[2]),
+                    "size": numbers[2],
                     "capacity": float(numbers[3]),
                 }
             )
@@ -208,14 +218,14 @@ def _normalize_production_mode(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        return "mass" if value else "dev"
+        return "양산" if value else "개발"
     text = str(value).strip().lower()
     if not text:
         return None
     if text in {"mass", "production", "prod", "양산", "생산", "true", "1"}:
-        return "mass"
+        return "양산"
     if text in {"dev", "development", "개발", "false", "0"}:
-        return "dev"
+        return "개발"
     return None
 
 
