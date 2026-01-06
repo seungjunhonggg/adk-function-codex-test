@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import REFERENCE_RULES_PATH
-from .db_connections import execute_table_query_multi
+from .db_connections import execute_table_query_multi, get_schema
 
 
 def load_reference_rules() -> dict:
@@ -214,9 +214,12 @@ def _normalize_defect_conditions(rules: dict) -> list[dict]:
 def _get_param_columns(rules: dict, table_key: str | None = None) -> dict:
     param_columns_by_table = rules.get("param_columns_by_table") or {}
     if table_key and isinstance(param_columns_by_table, dict):
-        table_columns = param_columns_by_table.get(table_key)
-        if isinstance(table_columns, dict) and table_columns:
-            return table_columns
+        if table_key in param_columns_by_table:
+            table_columns = param_columns_by_table.get(table_key)
+            if isinstance(table_columns, dict):
+                return table_columns
+            if table_columns in {None, "", False}:
+                return {}
     param_columns = rules.get("param_columns") or {}
     return param_columns if isinstance(param_columns, dict) else {}
 
@@ -240,6 +243,57 @@ def _build_param_filters(params: dict, rules: dict, table_key: str | None = None
                 mapped = mapping.get(str(value), value)
         filters.append({"column": column, "operator": "=", "value": mapped})
     return filters
+
+
+def _get_available_columns(
+    connection_id: str, schema_name: str, table_name: str
+) -> list[str] | None:
+    schema = get_schema(connection_id)
+    if not schema or not isinstance(schema, dict):
+        return None
+    schemas = schema.get("schemas") or {}
+    if not isinstance(schemas, dict):
+        return None
+    schema_entry = schemas.get(schema_name)
+    if not isinstance(schema_entry, dict):
+        return None
+    table_entry = schema_entry.get("tables", {}).get(table_name)
+    if not isinstance(table_entry, dict):
+        return None
+    columns = table_entry.get("columns", [])
+    if not isinstance(columns, list):
+        return None
+    available = [
+        col.get("name")
+        for col in columns
+        if isinstance(col, dict) and col.get("name")
+    ]
+    return available or None
+
+
+def _filter_filters_by_schema(filters: list[dict], available: list[str] | None) -> list[dict]:
+    if not available:
+        return filters
+    available_set = set(available)
+    filtered: list[dict] = []
+    for item in filters or []:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        if not column or column not in available_set:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _filter_columns_by_schema(columns: list[str], available: list[str] | None) -> list[str]:
+    if not available:
+        return columns
+    available_set = set(available)
+    filtered = [column for column in columns if column in available_set]
+    if filtered:
+        return filtered
+    return list(available)
 
 
 def _resolve_table_name(rules: dict, key: str) -> str:
@@ -540,9 +594,13 @@ def _query_rows_for_filters(
             filtered = rows
         row_limit = limit if isinstance(limit, int) and limit > 0 else 12
         return "demo", filtered[:row_limit]
+    schema_name = db.get("schema") or "public"
+    available = _get_available_columns(connection_id, schema_name, resolved_table)
+    filters = _filter_filters_by_schema(filters, available)
+    columns = _filter_columns_by_schema(columns, available)
     result = execute_table_query_multi(
         connection_id=connection_id,
-        schema_name=db.get("schema") or "public",
+        schema_name=schema_name,
         table_name=resolved_table,
         columns=columns,
         filters=filters,
