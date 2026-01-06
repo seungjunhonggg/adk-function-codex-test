@@ -212,9 +212,14 @@ async def chat(request: ChatRequest) -> dict:
                 request.message, request.session_id
             )
             if edit_response is not None:
+                message_text, ui_event = _split_edit_response(edit_response)
                 await _append_user_message(request.session_id, request.message)
-                await _append_assistant_message(request.session_id, edit_response)
-                return {"assistant_message": edit_response}
+                if message_text:
+                    await _append_assistant_message(request.session_id, message_text)
+                response_payload = {"assistant_message": message_text}
+                if ui_event:
+                    response_payload["ui_event"] = ui_event
+                return response_payload
             await emit_workflow_log("FLOW", "simulation_edit -> pipeline")
             sim_response = await _maybe_handle_simulation_message(
                 request.message, request.session_id
@@ -230,9 +235,14 @@ async def chat(request: ChatRequest) -> dict:
                 request.message, request.session_id
             )
             if edit_response is not None:
+                message_text, ui_event = _split_edit_response(edit_response)
                 await _append_user_message(request.session_id, request.message)
-                await _append_assistant_message(request.session_id, edit_response)
-                return {"assistant_message": edit_response}
+                if message_text:
+                    await _append_assistant_message(request.session_id, message_text)
+                response_payload = {"assistant_message": message_text}
+                if ui_event:
+                    response_payload["ui_event"] = ui_event
+                return response_payload
 
             await emit_workflow_log("FLOW", "simulation_run -> pipeline")
             sim_response = await _maybe_handle_simulation_message(
@@ -374,6 +384,16 @@ async def _emit_chat_message(session_id: str, content: str) -> None:
     await event_bus.broadcast(
         {"type": "chat_message", "payload": {"role": "assistant", "content": content}}
     )
+
+
+def _split_edit_response(edit_response: object) -> tuple[str, dict | None]:
+    if isinstance(edit_response, dict):
+        message = str(edit_response.get("message") or "")
+        ui_event = edit_response.get("ui_event")
+        if not isinstance(ui_event, dict):
+            ui_event = None
+        return message, ui_event
+    return str(edit_response), None
 
 
 async def _emit_pipeline_status(stage: str, message: str, done: bool = False) -> None:
@@ -1054,7 +1074,7 @@ async def _apply_edit_decision(
     if intent == "none":
         return None
 
-    if intent in {"reset", "new_simulation"}:
+    if intent == "reset":
         await reset_simulation_state_impl(reason=message)
         missing = simulation_store.missing(session_id)
         await emit_simulation_form({}, missing)
@@ -1065,6 +1085,22 @@ async def _apply_edit_decision(
             {"missing_fields": missing, "ask_prediction": False},
             fallback,
         )
+
+    if intent == "new_simulation":
+        await reset_simulation_state_impl(reason=message)
+        missing = simulation_store.missing(session_id)
+        form_payload = await emit_simulation_form({}, missing)
+        missing_text = _format_missing_fields(missing)
+        fallback = f"새 시뮬레이션을 시작했어요. 필요한 값: {missing_text}"
+        message_text = await _generate_edit_auto_message(
+            "new_simulation",
+            {"missing_fields": missing, "ask_prediction": False},
+            fallback,
+        )
+        return {
+            "message": message_text,
+            "ui_event": {"type": "simulation_form", "payload": form_payload},
+        }
 
     if intent == "show_progress":
         progress = await get_simulation_progress_impl()

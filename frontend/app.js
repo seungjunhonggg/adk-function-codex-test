@@ -101,6 +101,7 @@ const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
 let socket = null;
 let socketPingInterval = null;
 let suppressSocketCloseNotice = false;
+let activeSocketSessionId = "";
 
 function generateSessionId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -2108,6 +2109,13 @@ function handleEvent(event) {
   }
 }
 
+function shouldApplyUiEvent() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return true;
+  }
+  return activeSocketSessionId !== currentSessionId;
+}
+
 function connectWebSocket(sessionId) {
   if (!sessionId) {
     return;
@@ -2116,6 +2124,7 @@ function connectWebSocket(sessionId) {
     suppressSocketCloseNotice = true;
     socket.close();
   }
+  activeSocketSessionId = sessionId;
   const wsUrl = `${wsProtocol}://${window.location.host}/ws?session_id=${encodeURIComponent(sessionId)}`;
   socket = new WebSocket(wsUrl);
   statusLabel.textContent = "연결 중";
@@ -2130,6 +2139,7 @@ function connectWebSocket(sessionId) {
   socket.addEventListener("close", () => {
     statusDot.classList.remove("live");
     statusLabel.textContent = "연결 끊김";
+    activeSocketSessionId = "";
     if (!suppressSocketCloseNotice) {
       addMessage("system", "WebSocket 연결이 종료되었습니다.");
     }
@@ -2175,6 +2185,9 @@ async function sendChatMessage(message) {
     }
 
     const data = await response.json();
+    if (data.ui_event && shouldApplyUiEvent()) {
+      handleEvent(data.ui_event);
+    }
     addMessage("assistant", data.assistant_message || "(응답 없음)");
   } catch (error) {
     addMessage("assistant", "네트워크 오류입니다. 백엔드 상태를 확인해 주세요.");
