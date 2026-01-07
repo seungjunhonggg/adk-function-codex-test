@@ -22,6 +22,20 @@ CHIP_PROD_ID_TOKEN_RE = re.compile(
 )
 CHIP_PROD_ID_EXCLUDE_PREFIXES = ("param", "lot", "lotid", "lot_id")
 LLM_SIM_PARSE_CONFIDENCE_MIN = 0.5
+CAPACITY_UNIT_MULTIPLIERS = {
+    "pf": 1.0,
+    "p": 1.0,
+    "nf": 1e3,
+    "n": 1e3,
+    "uf": 1e6,
+    "u": 1e6,
+    "mf": 1e9,
+    "m": 1e9,
+    "f": 1e12,
+}
+CAPACITY_VALUE_RE = re.compile(
+    r"([-+]?\d+(?:\.\d+)?)\s*([munp]f?|f)?", re.IGNORECASE
+)
 MLCC_GLOSSARY_HINTS = (
     "Glossary (KR/EN): "
     "chip_prod_id=기종/모델/품번/제품명/part number; "
@@ -62,6 +76,7 @@ simulation_param_agent = _build_agent(
         "Return JSON with keys: temperature (string), voltage (float), size (string), "
         "capacity (float), production_mode ('양산' or '개발' or null), chip_prod_id (string), "
         "confidence (0-1), notes. "
+        "Capacity must be returned in pF. Convert units if specified (uF/nF/pF/F). "
         "Only include values explicitly mentioned. "
         "chip_prod_id may be partial; keep it exactly as written and do not expand. "
         "Examples: CL32Y106KCYBNB -> chip_prod_id=CL32Y106KCYBNB, "
@@ -109,6 +124,11 @@ class SimulationStore:
                 text = str(value).strip()
                 if text:
                     record[key] = text
+                continue
+            if key == "capacity":
+                normalized = _normalize_capacity_to_pf(value)
+                if normalized is not None:
+                    record[key] = normalized
                 continue
             coerced = _to_float(value)
             if coerced is not None:
@@ -225,7 +245,7 @@ def extract_simulation_params(message: str) -> dict:
         "temperature": r"(?:온도|temperature|temp)[^\d+-]*([-+]?\d+(?:\.\d+)?)",
         "voltage": r"(?:전압|voltage|volt)[^\d+-]*([-+]?\d+(?:\.\d+)?)",
         "size": r"(?:크기|size)[^\d+-]*([-+]?\d+(?:\.\d+)?)",
-        "capacity": r"(?:용량|capacity)[^\d+-]*([-+]?\d+(?:\.\d+)?)",
+        "capacity": r"(?:용량|capacity)[^\d+-]*([-+]?\d+(?:\.\d+)?\s*(?:[munp]f?|f)?)",
     }
 
     params: dict[str, float | str] = {}
@@ -235,6 +255,10 @@ def extract_simulation_params(message: str) -> dict:
             value = match.group(1)
             if key in {"temperature", "size"}:
                 params[key] = value
+            elif key == "capacity":
+                normalized = _normalize_capacity_to_pf(value)
+                if normalized is not None:
+                    params[key] = normalized
             else:
                 params[key] = float(value)
 
@@ -258,6 +282,14 @@ def extract_simulation_params(message: str) -> dict:
             chip_prod_id = _normalize_chip_prod_id(candidate)
     if chip_prod_id:
         params["chip_prod_id"] = chip_prod_id
+    if "capacity" not in params:
+        unit_match = re.search(
+            r"\b([-+]?\d+(?:\.\d+)?\s*(?:[munp]f?|f))\b", message, re.IGNORECASE
+        )
+        if unit_match:
+            normalized = _normalize_capacity_to_pf(unit_match.group(1))
+            if normalized is not None:
+                params["capacity"] = normalized
 
     numeric_keys = ("temperature", "voltage", "size", "capacity")
     numeric_count = sum(1 for key in numeric_keys if key in params)
@@ -321,7 +353,13 @@ def _values_equivalent(key: str, left: object, right: object) -> bool:
         return False
     if key == "chip_prod_id":
         return _normalize_chip_prod_id(left) == _normalize_chip_prod_id(right)
-    if key in {"voltage", "capacity"}:
+    if key == "capacity":
+        left_value = _normalize_capacity_to_pf(left)
+        right_value = _normalize_capacity_to_pf(right)
+        if left_value is None or right_value is None:
+            return False
+        return abs(left_value - right_value) <= 1e-6
+    if key == "voltage":
         left_value = _to_float(left)
         right_value = _to_float(right)
         if left_value is None or right_value is None:
@@ -367,7 +405,10 @@ def _normalize_llm_params(payload: dict) -> tuple[dict[str, float | str], float]
             if normalized is not None:
                 params[key] = normalized
             continue
-        coerced = _to_float(value)
+        if key == "capacity":
+            coerced = _normalize_capacity_to_pf(value)
+        else:
+            coerced = _to_float(value)
         if coerced is not None:
             params[key] = coerced
     return params, confidence
@@ -421,6 +462,31 @@ async def extract_simulation_params_hybrid(
             merged[key] = llm_value
     conflicts.sort()
     return merged, conflicts
+
+
+def _normalize_capacity_to_pf(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace("\u03bc", "u").replace("\u00b5", "u")
+    match = CAPACITY_VALUE_RE.search(text)
+    if not match:
+        return None
+    number = _to_float(match.group(1))
+    if number is None:
+        return None
+    unit = (match.group(2) or "").strip().lower()
+    multiplier = CAPACITY_UNIT_MULTIPLIERS.get(unit, None)
+    if multiplier is None:
+        if unit == "":
+            multiplier = 1.0
+        else:
+            return None
+    return number * multiplier
 
 
 def _to_float(value: object) -> float | None:

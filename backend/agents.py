@@ -223,6 +223,7 @@ edit_intent_agent = _build_agent(
         "chip_prod_id=기종/모델/제품명/타입/품번/part; "
         "production_mode=양산/생산/MP/mass=양산, 개발/샘플/시제/proto/dev=개발; "
         "paramN=파라미터 5/파라미터5/param 5/p5. "
+        "If capacity units are specified (uF/nF/pF/F), convert to pF. "
         "Bilingual alias hints: sheet_t=시트 두께/시트T/그린시트 두께/green sheet thickness; "
         "laydown=레이다운/적층/stacking/stack count; "
         "active_layer=활성층/유효층/active layer; "
