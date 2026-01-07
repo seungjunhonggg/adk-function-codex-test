@@ -1,3 +1,6 @@
+import re
+from datetime import datetime, timedelta
+
 from agents import function_tool
 
 
@@ -56,15 +59,23 @@ from .config import (
     LOT_DEFECT_RATE_COLUMN,
 )
 from .db import query_process_data
-from .db_connections import execute_table_query, execute_table_query_multi
+from .db_connections import (
+    execute_table_query,
+    execute_table_query_multi,
+    execute_table_query_aggregate,
+    get_schema,
+)
 from .events import event_bus
 from .observability import emit_workflow_log
 from .pipeline_store import pipeline_store
 from .lot_store import lot_store
 from .db_view_profile import (
     get_filter_column_names,
+    load_column_catalog,
     load_view_profile,
     normalize_view_profile,
+    normalize_column_catalog,
+    select_catalog_table,
 )
 from .simulation import (
     call_prediction_api,
@@ -116,6 +127,275 @@ def _format_tool_args(**kwargs: object) -> str:
 def _get_view_profile() -> dict:
     profile = load_view_profile()
     return normalize_view_profile(profile) if isinstance(profile, dict) else {}
+
+
+_COLUMN_QUERY_HINTS = {
+    "불량률": "defect rate",
+    "불량": "defect",
+    "수율": "yield",
+    "용량": "capacity",
+    "전압": "voltage",
+    "온도": "temperature",
+    "크기": "size",
+    "사이즈": "size",
+    "기종": "chip prod",
+    "모델": "model",
+    "품번": "part number",
+    "로트": "lot",
+    "라인": "line",
+    "공정": "process",
+    "설비": "equipment",
+    "날짜": "date",
+    "시간": "time",
+}
+_COLUMN_TOKEN_RE = re.compile(r"[a-z0-9_.]+")
+
+
+def _normalize_column_query(query: str | None) -> str:
+    text = (query or "").lower()
+    for raw, replacement in _COLUMN_QUERY_HINTS.items():
+        if raw in text:
+            text = text.replace(raw, replacement)
+    text = re.sub(r"[^a-z0-9_.\s]+", " ", text)
+    return " ".join(text.split())
+
+
+def _tokenize_column_query(query: str) -> list[str]:
+    if not query:
+        return []
+    return _COLUMN_TOKEN_RE.findall(query.lower())
+
+
+def _normalize_columns_param(columns: object) -> list[str]:
+    if not columns:
+        return []
+    if isinstance(columns, str):
+        raw_items = re.split(r"[,\n]", columns)
+    elif isinstance(columns, (list, tuple, set)):
+        raw_items = list(columns)
+    else:
+        return []
+    cleaned: list[str] = []
+    seen = set()
+    for item in raw_items:
+        if item is None:
+            continue
+        name = str(item).strip()
+        if not name or name in seen:
+            continue
+        cleaned.append(name)
+        seen.add(name)
+    return cleaned
+
+
+def _merge_columns(primary: list[str], extra: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen = set()
+    for name in primary + extra:
+        if not name or name in seen:
+            continue
+        merged.append(name)
+        seen.add(name)
+    return merged
+
+
+def _get_column_catalog() -> dict:
+    catalog = load_column_catalog()
+    return normalize_column_catalog(catalog) if isinstance(catalog, dict) else {"tables": {}}
+
+
+def _get_schema_columns(profile: dict) -> set[str]:
+    connection_id = profile.get("connection_id")
+    schema_name = profile.get("schema") or "public"
+    table_name = profile.get("table")
+    if not connection_id or not table_name:
+        return set()
+    schema = get_schema(connection_id) or {}
+    schema_entry = schema.get("schemas", {}).get(schema_name)
+    if not isinstance(schema_entry, dict):
+        return set()
+    table_entry = schema_entry.get("tables", {}).get(table_name)
+    if not isinstance(table_entry, dict):
+        return set()
+    return {
+        col.get("name")
+        for col in table_entry.get("columns", [])
+        if isinstance(col, dict) and col.get("name")
+    }
+
+
+def _score_catalog_entry(entry: dict, query: str, tokens: list[str]) -> float:
+    name = str(entry.get("name") or "").lower()
+    if not name:
+        return 0.0
+    description = str(entry.get("description") or "").lower()
+    aliases = [str(alias).lower() for alias in entry.get("aliases") or [] if alias]
+    score = 0.0
+    if query:
+        if query == name:
+            score += 6
+        if name in query:
+            score += 3
+        if any(query in alias for alias in aliases):
+            score += 3
+    for token in tokens:
+        if token == name:
+            score += 3
+        if token in name:
+            score += 2
+        if any(token in alias for alias in aliases):
+            score += 2
+        if token in description:
+            score += 1
+    return score
+
+
+def _resolve_columns_from_catalog(
+    query: str, entries: list[dict], limit: int
+) -> list[dict]:
+    normalized_query = _normalize_column_query(query)
+    tokens = _tokenize_column_query(normalized_query)
+    scored: list[tuple[float, dict]] = []
+    for entry in entries:
+        score = _score_catalog_entry(entry, normalized_query, tokens)
+        if score <= 0:
+            continue
+        scored.append((score, entry))
+    scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("name") or "")))
+    results: list[dict] = []
+    for score, entry in scored[:limit]:
+        payload = {
+            "column": entry.get("name"),
+            "description": entry.get("description") or "",
+            "score": round(score, 3),
+        }
+        aliases = entry.get("aliases") or []
+        if aliases:
+            payload["aliases"] = aliases[:5]
+        unit = entry.get("unit") or ""
+        if unit:
+            payload["unit"] = unit
+        group = entry.get("group") or ""
+        if group:
+            payload["group"] = group
+        results.append(payload)
+    return results
+
+
+def _normalize_metrics_param(metrics: object) -> list[dict]:
+    if not metrics:
+        return []
+    if isinstance(metrics, dict):
+        raw_items = [metrics]
+    elif isinstance(metrics, (list, tuple)):
+        raw_items = list(metrics)
+    else:
+        return []
+    normalized: list[dict] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        agg = item.get("agg") or item.get("aggregate")
+        alias = item.get("alias")
+        label = item.get("label") or item.get("description")
+        unit = item.get("unit")
+        normalized.append(
+            {
+                "column": str(column).strip() if column else "",
+                "agg": str(agg).strip() if agg else "",
+                "alias": str(alias).strip() if alias else "",
+                "label": str(label).strip() if label else "",
+                "unit": str(unit).strip() if unit else "",
+            }
+        )
+    return normalized
+
+
+def _normalize_group_by(value: object) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_items = re.split(r"[,\n]", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return []
+    cleaned: list[str] = []
+    seen = set()
+    for item in raw_items:
+        if item is None:
+            continue
+        name = str(item).strip()
+        if not name or name in seen:
+            continue
+        cleaned.append(name)
+        seen.add(name)
+    return cleaned
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _compute_recent_range(months: int | None) -> tuple[datetime, datetime] | None:
+    if not months or months <= 0:
+        return None
+    end = datetime.now()
+    start = end - timedelta(days=months * 30)
+    return start, end
+
+
+def _summarize_values(values: list[float]) -> dict:
+    if not values:
+        return {"count": 0, "min": None, "max": None, "avg": None, "median": None}
+    sorted_values = sorted(values)
+    count = len(sorted_values)
+    mid = count // 2
+    if count % 2 == 0:
+        median = (sorted_values[mid - 1] + sorted_values[mid]) / 2
+    else:
+        median = sorted_values[mid]
+    return {
+        "count": count,
+        "min": min(sorted_values),
+        "max": max(sorted_values),
+        "avg": sum(sorted_values) / count,
+        "median": median,
+    }
+
+
+def _sanitize_metric_alias(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in value)
+    cleaned = cleaned.strip("_")
+    return cleaned or "metric"
+
+
+def _column_meta_map(entries: list[dict]) -> dict:
+    meta: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not name:
+            continue
+        meta[str(name)] = {
+            "description": entry.get("description") or "",
+            "unit": entry.get("unit") or "",
+        }
+    return meta
 
 
 def _format_filters(filters: list[dict]) -> str:
@@ -691,16 +971,382 @@ async def get_process_data(query: str = "", limit: int = 12) -> dict:
     return result
 
 
+@function_tool
+async def resolve_view_columns(query: str = "", limit: int = 5) -> dict:
+    """Resolve view column candidates from a natural-language query."""
+    await _log_route("db_view", "resolve_view_columns")
+    await _log_tool_call("resolve_view_columns", query=query, limit=limit)
+    profile = _get_view_profile()
+    connection_id = profile.get("connection_id")
+    schema_name = profile.get("schema") or "public"
+    table_name = profile.get("table")
+    if not connection_id or not table_name:
+        message = "DB view profile is not configured."
+        await _log_tool_result("resolve_view_columns", "status=error missing=profile")
+        return {"status": "error", "error": message}
+
+    catalog = _get_column_catalog()
+    catalog_table = select_catalog_table(
+        catalog, table_name, profile.get("column_catalog_table")
+    )
+    entries = catalog_table.get("columns", []) if isinstance(catalog_table, dict) else []
+    if not entries:
+        message = "No column catalog entries are configured."
+        await _log_tool_result("resolve_view_columns", "status=missing catalog=0")
+        return {"status": "missing", "message": message, "candidates": []}
+
+    allowed_select = set(profile.get("selectable_columns") or [])
+    if allowed_select:
+        entries = [
+            entry for entry in entries if entry.get("name") in allowed_select
+        ]
+
+    available_columns = _get_schema_columns(profile)
+    if available_columns:
+        entries = [
+            entry for entry in entries if entry.get("name") in available_columns
+        ]
+
+    if not query:
+        defaults = catalog_table.get("default_columns") or []
+        message = "Provide a column query to resolve."
+        await _log_tool_result("resolve_view_columns", "status=missing query=empty")
+        return {
+            "status": "missing",
+            "message": message,
+            "defaults": defaults,
+            "candidates": [],
+        }
+
+    result_limit = limit if isinstance(limit, int) and limit > 0 else 5
+    result_limit = max(1, min(int(result_limit), 20))
+    candidates = _resolve_columns_from_catalog(query, entries, result_limit)
+    if not candidates:
+        message = "No columns matched the query."
+        await _log_tool_result("resolve_view_columns", "status=missing matches=0")
+        return {"status": "missing", "message": message, "candidates": []}
+
+    await _log_tool_result(
+        "resolve_view_columns", f"status=ok candidates={len(candidates)}"
+    )
+    return {
+        "status": "ok",
+        "table": f"{schema_name}.{table_name}",
+        "candidates": candidates,
+    }
+
+
+@function_tool(strict_mode=False)
+async def query_view_metrics(
+    metrics: list[dict] | dict | None = None,
+    filters: list[dict] | None = None,
+    time_column: str | None = None,
+    recent_months: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    time_bucket: str | None = None,
+    group_by: list[str] | None = None,
+    chart_type: str | None = None,
+    limit: int | None = None,
+) -> dict:
+    """Query aggregated metrics from the configured DB view."""
+    await _log_route("db_view", "query_view_metrics")
+    await _log_tool_call(
+        "query_view_metrics",
+        metrics=metrics,
+        filters=_format_filters(filters or []),
+        time_column=time_column,
+        recent_months=recent_months,
+        date_from=date_from,
+        date_to=date_to,
+        time_bucket=time_bucket,
+        group_by=group_by,
+        chart_type=chart_type,
+        limit=limit,
+    )
+    profile = _get_view_profile()
+    connection_id = profile.get("connection_id")
+    schema_name = profile.get("schema") or "public"
+    table_name = profile.get("table")
+    allowed_filters = set(get_filter_column_names(profile))
+    if not connection_id or not table_name:
+        message = "DB view profile is not configured."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=error missing=profile")
+        return {"status": "error", "error": message, "missing": ["profile"]}
+    if not allowed_filters and filters:
+        message = "No allowed filter columns are configured."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=error missing=filters")
+        return {"status": "error", "error": message, "missing": ["filters"]}
+
+    metric_specs = _normalize_metrics_param(metrics)
+    if not metric_specs:
+        message = "집계할 컬럼이 필요합니다."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=missing metrics=0")
+        return {"status": "missing", "missing": ["metrics"], "message": message}
+    for metric in metric_specs:
+        if not metric.get("agg"):
+            metric["agg"] = "avg"
+        else:
+            metric["agg"] = metric["agg"].lower()
+        if not metric.get("alias"):
+            metric["alias"] = _sanitize_metric_alias(
+                f"{metric['agg']}_{metric.get('column') or 'all'}"
+            )
+        else:
+            metric["alias"] = _sanitize_metric_alias(metric["alias"])
+
+    catalog = _get_column_catalog()
+    catalog_table = select_catalog_table(
+        catalog, table_name, profile.get("column_catalog_table")
+    )
+    catalog_entries = (
+        catalog_table.get("columns", []) if isinstance(catalog_table, dict) else []
+    )
+    meta_map = _column_meta_map(catalog_entries)
+
+    selectable_columns = set(profile.get("selectable_columns") or [])
+    catalog_columns = {entry.get("name") for entry in catalog_entries if entry.get("name")}
+    available_columns = _get_schema_columns(profile)
+    allowed_metrics = set(selectable_columns or catalog_columns)
+
+    invalid_metrics = []
+    for metric in metric_specs:
+        column = metric.get("column")
+        if column:
+            if allowed_metrics and column not in allowed_metrics:
+                invalid_metrics.append(column)
+            if available_columns and column not in available_columns:
+                invalid_metrics.append(column)
+            meta = meta_map.get(column, {})
+            if not metric.get("label") and meta.get("description"):
+                metric["label"] = meta["description"]
+            if not metric.get("unit") and meta.get("unit"):
+                metric["unit"] = meta["unit"]
+        else:
+            invalid_metrics.append("(empty)")
+
+    if invalid_metrics:
+        allowed_hint = (
+            f"Allowed: {', '.join(sorted(allowed_metrics))}"
+            if allowed_metrics
+            else "Allowed: (not configured)"
+        )
+        message = (
+            "Invalid metric columns: "
+            f"{', '.join(sorted(set(invalid_metrics)))}. {allowed_hint}"
+        )
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=error invalid=metrics")
+        return {"status": "error", "error": message, "invalid": sorted(set(invalid_metrics))}
+
+    normalized_filters: list[dict] = []
+    invalid_filters = []
+    for item in filters or []:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        value = item.get("value")
+        if not column or value is None or value == "":
+            continue
+        if allowed_filters and column not in allowed_filters:
+            invalid_filters.append(column)
+            continue
+        operator = item.get("operator") or "ilike"
+        normalized_filters.append(
+            {"column": column, "operator": operator, "value": value}
+        )
+
+    if invalid_filters:
+        message = (
+            "Invalid filter columns: "
+            f"{', '.join(sorted(set(invalid_filters)))}. "
+            f"Allowed: {', '.join(sorted(allowed_filters))}"
+        )
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=error invalid=filters")
+        return {"status": "error", "error": message, "invalid": sorted(set(invalid_filters))}
+
+    time_column = (time_column or profile.get("time_column") or "").strip()
+    time_bucket = (time_bucket or "").strip().lower()
+    time_range_applied = False
+    date_from_dt = _parse_iso_datetime(date_from)
+    date_to_dt = _parse_iso_datetime(date_to)
+    if date_from_dt or date_to_dt:
+        if not time_column:
+            message = "시간 필터 컬럼이 설정되지 않았습니다."
+            await emit_frontend_trigger(message)
+            await _log_tool_result("query_view_metrics", "status=error missing=time_column")
+            return {"status": "error", "error": message, "missing": ["time_column"]}
+        if date_from_dt and date_to_dt:
+            normalized_filters.append(
+                {"column": time_column, "operator": "between", "value": [date_from_dt, date_to_dt]}
+            )
+        elif date_from_dt:
+            normalized_filters.append(
+                {"column": time_column, "operator": ">=", "value": date_from_dt}
+            )
+        else:
+            normalized_filters.append(
+                {"column": time_column, "operator": "<=", "value": date_to_dt}
+            )
+        time_range_applied = True
+
+    recent_months_value = None
+    if recent_months is not None:
+        try:
+            recent_months_value = int(recent_months)
+        except (TypeError, ValueError):
+            recent_months_value = None
+
+    if not time_range_applied and recent_months_value:
+        if not time_column:
+            message = "시간 필터 컬럼이 설정되지 않았습니다."
+            await emit_frontend_trigger(message)
+            await _log_tool_result("query_view_metrics", "status=error missing=time_column")
+            return {"status": "error", "error": message, "missing": ["time_column"]}
+        recent_range = _compute_recent_range(recent_months_value)
+        if recent_range:
+            start_dt, end_dt = recent_range
+            normalized_filters.append(
+                {"column": time_column, "operator": "between", "value": [start_dt, end_dt]}
+            )
+            time_range_applied = True
+
+    if not normalized_filters:
+        message = "필터 또는 기간 조건이 필요합니다."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=missing filters=0")
+        return {"status": "missing", "missing": sorted(allowed_filters), "message": message}
+
+    group_columns = _normalize_group_by(group_by)
+    invalid_groups = []
+    for column in group_columns:
+        if allowed_metrics and column not in allowed_metrics:
+            invalid_groups.append(column)
+        if available_columns and column not in available_columns:
+            invalid_groups.append(column)
+    if invalid_groups:
+        message = "Invalid group columns: " + ", ".join(sorted(set(invalid_groups)))
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=error invalid=group_by")
+        return {"status": "error", "error": message, "invalid": sorted(set(invalid_groups))}
+
+    bucket_payload = None
+    if time_bucket:
+        if not time_column:
+            message = "시간 필터 컬럼이 설정되지 않았습니다."
+            await emit_frontend_trigger(message)
+            await _log_tool_result("query_view_metrics", "status=error missing=time_column")
+            return {"status": "error", "error": message, "missing": ["time_column"]}
+        bucket_payload = {"column": time_column, "unit": time_bucket, "alias": "bucket"}
+
+    row_limit = limit if isinstance(limit, int) and limit > 0 else 200
+    row_limit = max(1, min(int(row_limit), 500))
+    try:
+        result = execute_table_query_aggregate(
+            connection_id=connection_id,
+            schema_name=schema_name,
+            table_name=table_name,
+            metrics=metric_specs,
+            filters=normalized_filters,
+            group_by=group_columns,
+            time_bucket=bucket_payload,
+            limit=row_limit,
+        )
+    except ValueError as exc:
+        message = str(exc) or "DB query failed."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=error query=failed")
+        return {"status": "error", "error": message}
+
+    rows = result.get("rows", [])
+    if not rows:
+        message = "조건에 맞는 결과가 없습니다."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_metrics", "status=missing rows=0")
+        return {"status": "missing", "message": message, "rows": []}
+
+    primary_metric = metric_specs[0]
+    metric_alias = primary_metric.get("alias") or "metric"
+    metric_label = primary_metric.get("label") or primary_metric.get("column") or metric_alias
+    metric_unit = primary_metric.get("unit") or ""
+
+    chart_type = (chart_type or "").strip().lower()
+    if not chart_type and (bucket_payload or group_columns):
+        chart_type = "line" if bucket_payload else "bar"
+    supported_charts = {"line", "area", "scatter", "bar", "histogram"}
+    if chart_type and chart_type not in supported_charts:
+        chart_type = "line"
+
+    chart_lots: list[dict] = []
+    values: list[float] = []
+    if bucket_payload or group_columns:
+        for row in rows:
+            bucket_value = row.get("bucket") if bucket_payload else None
+            labels = []
+            if bucket_value is not None:
+                labels.append(str(bucket_value))
+            for column in group_columns:
+                if column in row:
+                    labels.append(str(row.get(column)))
+            label = " ".join(labels) if labels else "-"
+            value = row.get(metric_alias)
+            try:
+                value_float = float(value)
+            except (TypeError, ValueError):
+                continue
+            chart_lots.append(
+                {"lot_id": label, "defect_rate": value_float, "label": label}
+            )
+            values.append(value_float)
+
+    stats = _summarize_values(values)
+    stats["value_unit"] = metric_unit
+
+    if chart_type and chart_lots:
+        payload = {
+            "lots": chart_lots,
+            "stats": stats,
+            "chart_type": chart_type,
+            "metric_label": metric_label,
+            "value_unit": metric_unit,
+            "filters": normalized_filters,
+        }
+        await event_bus.broadcast({"type": "defect_rate_chart", "payload": payload})
+        pipeline_store.set_event(current_session_id.get(), "defect_rate_chart", payload)
+
+    await _log_tool_result(
+        "query_view_metrics",
+        f"rows={len(rows)} chart={bool(chart_type and chart_lots)}",
+    )
+    return {
+        "status": "ok",
+        "table": f"{schema_name}.{table_name}",
+        "rows": rows,
+        "metrics": metric_specs,
+        "filters": normalized_filters,
+        "time_bucket": time_bucket,
+        "group_by": group_columns,
+        "stats": stats,
+        "chart_type": chart_type or None,
+    }
+
+
 @function_tool(strict_mode=False)
 async def query_view_table(
     filters: list[dict] | None = None,
+    columns: list[str] | None = None,
     limit: int | None = None,
 ) -> dict:
-    """Query the configured DB view using allowed filter columns."""
+    """Query the configured DB view using allowed filter columns and optional select columns."""
     await _log_route("db_view", "query_view_table")
     await _log_tool_call(
         "query_view_table",
         filters=_format_filters(filters or []),
+        columns=_normalize_columns_param(columns),
         limit=limit,
     )
     profile = _get_view_profile()
@@ -756,16 +1402,80 @@ async def query_view_table(
         await _log_tool_result("query_view_table", "status=missing missing=filters")
         return {"status": "missing", "missing": sorted(allowed), "message": message}
 
+    select_columns = _normalize_columns_param(columns)
+    default_columns = list(profile.get("result_columns") or [])
+    selectable_columns = set(profile.get("selectable_columns") or [])
+    catalog = _get_column_catalog()
+    catalog_table = select_catalog_table(
+        catalog, table_name, profile.get("column_catalog_table")
+    )
+    catalog_columns = {
+        entry.get("name")
+        for entry in catalog_table.get("columns", [])
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    available_columns = _get_schema_columns(profile)
+
+    if not default_columns:
+        catalog_defaults = catalog_table.get("default_columns") or []
+        if catalog_defaults and (
+            not available_columns
+            or all(col in available_columns for col in catalog_defaults)
+        ):
+            default_columns = list(catalog_defaults)
+    if selectable_columns and default_columns:
+        default_columns = [col for col in default_columns if col in selectable_columns]
+    if available_columns and default_columns:
+        default_columns = [col for col in default_columns if col in available_columns]
+
+    allowed_select = set(selectable_columns or catalog_columns)
+    if select_columns:
+        invalid = set()
+        if allowed_select:
+            invalid.update([col for col in select_columns if col not in allowed_select])
+        if available_columns:
+            invalid.update([col for col in select_columns if col not in available_columns])
+        if invalid:
+            allowed_hint = (
+                f"Allowed: {', '.join(sorted(allowed_select))}"
+                if allowed_select
+                else "Allowed: (not configured)"
+            )
+            message = (
+                "Invalid select columns: "
+                f"{', '.join(sorted(invalid))}. {allowed_hint}"
+            )
+            await emit_frontend_trigger(message)
+            await _log_tool_result("query_view_table", "status=error invalid=columns")
+            return {"status": "error", "error": message, "invalid": sorted(invalid)}
+
+    final_columns = (
+        _merge_columns(default_columns, select_columns)
+        if select_columns
+        else list(default_columns)
+    )
+    if select_columns and not final_columns:
+        message = "No valid columns were selected."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_table", "status=missing columns=0")
+        return {"status": "missing", "message": message, "missing": ["columns"]}
+
     row_limit = limit if isinstance(limit, int) and limit > 0 else profile.get("limit", 5)
     row_limit = max(1, min(int(row_limit), 50))
-    result = execute_table_query_multi(
-        connection_id=connection_id,
-        schema_name=schema_name or "public",
-        table_name=table_name,
-        columns=[],
-        filters=normalized_filters,
-        limit=row_limit,
-    )
+    try:
+        result = execute_table_query_multi(
+            connection_id=connection_id,
+            schema_name=schema_name or "public",
+            table_name=table_name,
+            columns=final_columns,
+            filters=normalized_filters,
+            limit=row_limit,
+        )
+    except ValueError as exc:
+        message = str(exc) or "DB query failed."
+        await emit_frontend_trigger(message)
+        await _log_tool_result("query_view_table", "status=error query=failed")
+        return {"status": "error", "error": message}
     payload = {
         "query": _format_filters(normalized_filters),
         "columns": result.get("columns", []),
@@ -999,6 +1709,7 @@ async def filter_lots_by_defect_rate(
     )
 
     stats = summarize_defect_rates(filtered)
+    stats["value_unit"] = "ratio"
     chart_lots = filtered[:DEFAULT_CHART_LIMIT]
     await event_bus.broadcast(
         {
@@ -1007,13 +1718,21 @@ async def filter_lots_by_defect_rate(
                 "lots": chart_lots,
                 "filters": {"min_rate": min_rate, "max_rate": max_rate},
                 "stats": stats,
+                "metric_label": "불량률",
+                "value_unit": "ratio",
             },
         }
     )
     pipeline_store.set_event(
         session_id,
         "defect_rate_chart",
-        {"lots": chart_lots, "filters": {"min_rate": min_rate, "max_rate": max_rate}, "stats": stats},
+        {
+            "lots": chart_lots,
+            "filters": {"min_rate": min_rate, "max_rate": max_rate},
+            "stats": stats,
+            "metric_label": "불량률",
+            "value_unit": "ratio",
+        },
     )
 
     if not filtered:

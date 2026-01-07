@@ -17,6 +17,7 @@ from .agents import (
     auto_message_agent,
     chart_agent,
     conversation_agent,
+    db_agent,
     edit_intent_agent,
     route_agent,
     stage_resolver_agent,
@@ -509,6 +510,35 @@ async def _handle_simulation_run_workflow(
     return WorkflowOutcome(sim_response)
 
 
+async def _handle_db_query_workflow(
+    message: str, session_id: str, route_command: dict
+) -> WorkflowOutcome | None:
+    await emit_workflow_log("FLOW", "db_query -> db_agent")
+    if not OPENAI_API_KEY:
+        return WorkflowOutcome("DB 조회 기능이 비활성화되어 있습니다.")
+    session = SQLiteSession(session_id, SESSION_DB_PATH)
+    try:
+        run = await Runner.run(
+            db_agent,
+            input=message,
+            session=session,
+            hooks=WorkflowRunHooks(),
+        )
+    except Exception:
+        return WorkflowOutcome("DB 조회 중 오류가 발생했습니다.")
+    result = _normalize_db_agent_output(run.final_output)
+    status = result.get("status")
+    summary = result.get("summary") or ""
+    next_question = result.get("next") or ""
+    if status == "missing" and next_question and next_question != "none":
+        return WorkflowOutcome(next_question)
+    if status == "error":
+        return WorkflowOutcome(summary or "DB 조회에 실패했습니다.")
+    if summary:
+        return WorkflowOutcome(summary)
+    return WorkflowOutcome("DB 조회를 완료했습니다.")
+
+
 async def _handle_chat_workflow(
     message: str, session: SQLiteSession
 ) -> WorkflowOutcome:
@@ -543,6 +573,7 @@ WORKFLOW_HANDLERS: dict[str, Callable[..., Awaitable[WorkflowOutcome | None]]] =
     "chart_edit": _handle_chart_edit_workflow,
     "simulation_edit": _handle_simulation_edit_workflow,
     "simulation_run": _handle_simulation_run_workflow,
+    "db_query": _handle_db_query_workflow,
 }
 
 
@@ -793,6 +824,8 @@ DB_KEYWORDS = (
     "테이블",
     "컬럼",
     "view",
+    "평균",
+    "트렌드",
 )
 
 
@@ -822,6 +855,30 @@ def _as_dict(value: object) -> dict:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _normalize_db_agent_output(raw: object) -> dict:
+    data = _as_dict(raw)
+    if not data:
+        text = str(raw or "").strip()
+        return {
+            "status": "ok" if text else "error",
+            "summary": text,
+            "missing": "none",
+            "next": "none",
+        }
+    status = str(data.get("status") or "error").lower()
+    if status not in {"ok", "missing", "error"}:
+        status = "error"
+    summary = str(data.get("summary") or "")
+    missing = str(data.get("missing") or "")
+    next_question = str(data.get("next") or "")
+    return {
+        "status": status,
+        "summary": summary,
+        "missing": missing,
+        "next": next_question,
+    }
 
 
 def _normalize_route_command(raw: object) -> dict:
@@ -889,6 +946,16 @@ def _normalize_stage_resolution(raw: object) -> dict:
 
 
 def _fallback_route(message: str) -> dict:
+    if _is_chart_request(message) and _is_db_request(message):
+        return {
+            "primary_intent": "db_query",
+            "secondary_intents": [],
+            "stage": "unknown",
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "confidence": 0.5,
+            "reason": "db_chart_keyword",
+        }
     if _is_stage_view_request(message):
         return {
             "primary_intent": "stage_view",
@@ -1160,7 +1227,7 @@ async def _route_message(message: str, session_id: str) -> dict:
         "- simulation_run when user wants to start/restart a simulation with new inputs. "
         "- Do not set needs_clarification just because params are missing; "
         "for simulation_run, proceed and let the pipeline collect missing inputs. "
-        "- db_query for LOT/process database lookups. "
+        "- db_query for LOT/process database lookups (including averages/trends/graphs from DB). "
         "- chat for casual or unrelated conversation. "
         "Use keyword_hints as soft signals: "
         "1) If stage_keyword_hits or stage_action_hits are present and chart_keyword_hits are empty, "
@@ -1985,6 +2052,7 @@ async def _run_reference_pipeline(
                 "min": min(rate_values),
                 "max": max(rate_values),
             }
+            defect_stats["value_unit"] = "ratio"
             defect_rate_overall = (
                 rate_values[0] if len(rate_values) == 1 else defect_stats.get("avg")
             )
@@ -2005,6 +2073,8 @@ async def _run_reference_pipeline(
                     "filters": {"chip_prod_id": chip_prod_id},
                     "stats": defect_stats,
                     "source": defect_source,
+                    "metric_label": "불량률",
+                    "value_unit": "ratio",
                 },
             }
         )
@@ -2016,6 +2086,8 @@ async def _run_reference_pipeline(
                 "filters": {"chip_prod_id": chip_prod_id},
                 "stats": defect_stats,
                 "source": defect_source,
+                "metric_label": "불량률",
+                "value_unit": "ratio",
             },
         )
 

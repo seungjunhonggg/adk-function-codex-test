@@ -9,6 +9,7 @@ from .db_view_profile import build_db_agent_prompt, load_view_profile, normalize
 from .tools import (
     get_lot_info,
     get_process_data,
+    resolve_view_columns,
     open_simulation_form,
     run_lot_simulation,
     run_simulation,
@@ -22,6 +23,7 @@ from .tools import (
     get_simulation_progress,
     reset_simulation_state,
     update_simulation_params,
+    query_view_metrics,
     query_view_table,
 )
 
@@ -265,6 +267,11 @@ db_agent = _build_agent(
         "You are an internal DB helper used by the orchestrator. "
         "Do not address the user directly. Always respond in Korean. "
         "Use query_view_table to query the configured view. "
+        "If the user asks for a specific metric/value, call resolve_view_columns first "
+        "and pass the chosen columns to query_view_table. "
+        "If the user asks for average/min/max/sum/count or trend/graph, "
+        "use query_view_metrics with metrics and recent_months/time_bucket. "
+        "If column choice is ambiguous, mark it missing and ask one short clarification in next. "
         "Map user requests to allowed filter columns only. "
         "Interpret Korean/English terms for LOT/로트/lot id and process/공정. "
         "If a LOT ID is present, prefer that column. "
@@ -277,7 +284,7 @@ db_agent = _build_agent(
         "\n\n"
         + build_db_agent_prompt(normalize_view_profile(load_view_profile()))
     ),
-    tools=[query_view_table, get_lot_info, get_process_data],
+    tools=[resolve_view_columns, query_view_metrics, query_view_table, get_lot_info, get_process_data],
     **MODEL_KWARGS,
 )
 

@@ -338,6 +338,29 @@ def _normalize_operator(value: str | None) -> str:
     return operator
 
 
+def _normalize_aggregate(value: str | None) -> str:
+    agg = (value or "").strip().lower()
+    aliases = {
+        "average": "avg",
+        "mean": "avg",
+        "minimum": "min",
+        "maximum": "max",
+        "count_distinct": "count_distinct",
+        "distinct_count": "count_distinct",
+    }
+    agg = aliases.get(agg, agg)
+    allowed = {"avg", "min", "max", "sum", "count", "count_distinct"}
+    if agg not in allowed:
+        raise ValueError("지원하지 않는 집계 함수입니다.")
+    return agg
+
+
+def _sanitize_alias(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in value)
+    cleaned = cleaned.strip("_")
+    return cleaned or "metric"
+
+
 def execute_table_query(
     connection_id: str,
     schema_name: str,
@@ -601,6 +624,312 @@ def execute_table_query_multi(
             if limit:
                 query += sql.SQL(" LIMIT %s")
                 params.append(limit)
+
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                columns = [desc.name for desc in cur.description]
+        finally:
+            conn.close()
+
+    return {"columns": columns, "rows": [dict(zip(columns, row)) for row in rows]}
+
+
+def execute_table_query_aggregate(
+    connection_id: str,
+    schema_name: str,
+    table_name: str,
+    metrics: list[dict],
+    filters: list[dict] | None = None,
+    group_by: list[str] | None = None,
+    time_bucket: dict | None = None,
+    order_by: list[dict] | None = None,
+    limit: int | None = None,
+) -> dict:
+    connection = get_connection(connection_id)
+    if not connection:
+        raise ValueError("DB 연결을 찾을 수 없습니다.")
+    db_type = _get_db_type(connection)
+    schema = connection.get("schema") or {}
+    available = set(_get_table_columns(schema, schema_name, table_name))
+
+    group_columns: list[str] = []
+    for column in group_by or []:
+        if not column:
+            continue
+        if column not in available:
+            raise ValueError("존재하지 않는 그룹 컬럼이 포함되어 있습니다.")
+        if column not in group_columns:
+            group_columns.append(column)
+
+    bucket_alias = ""
+    bucket_column = ""
+    bucket_unit = ""
+    if time_bucket:
+        bucket_column = str(time_bucket.get("column") or "").strip()
+        bucket_unit = str(time_bucket.get("unit") or "").strip().lower()
+        bucket_alias = _sanitize_alias(str(time_bucket.get("alias") or "bucket"))
+        if not bucket_column or bucket_column not in available:
+            raise ValueError("존재하지 않는 시간 컬럼이 포함되어 있습니다.")
+        if bucket_unit not in {"month", "week", "day", "hour"}:
+            raise ValueError("지원하지 않는 시간 버킷입니다.")
+
+    metric_specs: list[dict] = []
+    for item in metrics or []:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        agg = _normalize_aggregate(item.get("agg") or item.get("aggregate"))
+        alias = item.get("alias")
+        if not alias:
+            alias = f"{agg}_{column or 'all'}"
+        alias = _sanitize_alias(str(alias))
+        if column:
+            if column not in available:
+                raise ValueError("존재하지 않는 집계 컬럼이 포함되어 있습니다.")
+        elif agg != "count":
+            raise ValueError("집계 컬럼이 비어 있습니다.")
+        metric_specs.append(
+            {"column": column, "agg": agg, "alias": alias}
+        )
+
+    if not metric_specs:
+        raise ValueError("집계 컬럼이 필요합니다.")
+
+    normalized_filters = []
+    for item in filters or []:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        if not column:
+            continue
+        if column not in available:
+            raise ValueError("존재하지 않는 필터 컬럼이 포함되어 있습니다.")
+        operator = _normalize_operator(item.get("operator"))
+        value = item.get("value")
+        if operator in {"is_null", "is_not_null"}:
+            normalized_filters.append({"column": column, "operator": operator, "value": None})
+            continue
+        if value is None or value == "":
+            continue
+        if operator == "between":
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                continue
+            normalized_filters.append({"column": column, "operator": operator, "value": list(value)})
+            continue
+        if operator == "in":
+            if not isinstance(value, (list, tuple)) or not value:
+                continue
+            normalized_filters.append({"column": column, "operator": operator, "value": list(value)})
+            continue
+        normalized_filters.append({"column": column, "operator": operator, "value": value})
+
+    order_items: list[dict] = []
+    allowed_order = set(group_columns)
+    if bucket_alias:
+        allowed_order.add(bucket_alias)
+    for metric in metric_specs:
+        allowed_order.add(metric["alias"])
+    for item in order_by or []:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("name")
+        if not column or column not in allowed_order:
+            continue
+        direction = str(item.get("direction") or "asc").lower()
+        if direction not in {"asc", "desc"}:
+            direction = "asc"
+        order_items.append({"column": column, "direction": direction})
+    if not order_items and (group_columns or bucket_alias):
+        for column in group_columns:
+            order_items.append({"column": column, "direction": "asc"})
+        if bucket_alias:
+            order_items.append({"column": bucket_alias, "direction": "asc"})
+
+    row_limit = max(1, min(int(limit) if isinstance(limit, int) else 200, 500))
+
+    if db_type in {"mariadb", "mysql"}:
+        conn = _connect_mariadb(connection)
+        try:
+            select_parts = []
+            group_parts = []
+            if bucket_alias:
+                if bucket_unit == "month":
+                    bucket_expr = f"DATE_FORMAT(`{bucket_column}`, '%Y-%m-01')"
+                elif bucket_unit == "week":
+                    bucket_expr = f"DATE_FORMAT(`{bucket_column}`, '%x-%v')"
+                elif bucket_unit == "day":
+                    bucket_expr = f"DATE_FORMAT(`{bucket_column}`, '%Y-%m-%d')"
+                else:
+                    bucket_expr = f"DATE_FORMAT(`{bucket_column}`, '%Y-%m-%d %H:00:00')"
+                select_parts.append(f"{bucket_expr} AS `{bucket_alias}`")
+                group_parts.append(bucket_expr)
+            for column in group_columns:
+                select_parts.append(f"`{column}`")
+                group_parts.append(f"`{column}`")
+            for metric in metric_specs:
+                if metric["agg"] == "count" and not metric["column"]:
+                    expr = "COUNT(*)"
+                elif metric["agg"] == "count_distinct":
+                    expr = f"COUNT(DISTINCT `{metric['column']}`)"
+                else:
+                    expr = f"{metric['agg'].upper()}(`{metric['column']}`)"
+                select_parts.append(f"{expr} AS `{metric['alias']}`")
+            query = f"SELECT {', '.join(select_parts)} FROM `{schema_name}`.`{table_name}`"
+            params: list[Any] = []
+            if normalized_filters:
+                clauses = []
+                for item in normalized_filters:
+                    column = item["column"]
+                    operator = item["operator"]
+                    value = item["value"]
+                    if operator == "is_not_null":
+                        clauses.append(f"`{column}` IS NOT NULL")
+                    elif operator == "is_null":
+                        clauses.append(f"`{column}` IS NULL")
+                    elif operator in {"ilike", "like"}:
+                        clauses.append(f"`{column}` LIKE %s")
+                        params.append(f"%{value}%")
+                    elif operator == "in" and isinstance(value, list):
+                        placeholders = ", ".join(["%s"] * len(value))
+                        clauses.append(f"`{column}` IN ({placeholders})")
+                        params.extend(value)
+                    elif operator == "between" and isinstance(value, list) and len(value) == 2:
+                        clauses.append(f"`{column}` BETWEEN %s AND %s")
+                        params.extend([value[0], value[1]])
+                    else:
+                        clauses.append(f"`{column}` {operator} %s")
+                        params.append(value)
+                query += " WHERE " + " AND ".join(clauses)
+            if group_parts:
+                query += " GROUP BY " + ", ".join(group_parts)
+            if order_items:
+                order_clause = ", ".join(
+                    f"`{item['column']}` {item['direction'].upper()}" for item in order_items
+                )
+                query += f" ORDER BY {order_clause}"
+            if row_limit:
+                query += " LIMIT %s"
+                params.append(row_limit)
+
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                columns = [desc[0] for desc in cur.description]
+        finally:
+            conn.close()
+    else:
+        _ensure_psycopg()
+        conn = _connect_postgres(connection)
+        try:
+            select_parts = []
+            group_parts = []
+            if bucket_alias:
+                bucket_expr = sql.SQL("DATE_TRUNC({unit}, {col})").format(
+                    unit=sql.Literal(bucket_unit),
+                    col=sql.Identifier(bucket_column),
+                )
+                select_parts.append(
+                    sql.SQL("{expr} AS {alias}").format(
+                        expr=bucket_expr, alias=sql.Identifier(bucket_alias)
+                    )
+                )
+                group_parts.append(bucket_expr)
+            for column in group_columns:
+                ident = sql.Identifier(column)
+                select_parts.append(ident)
+                group_parts.append(ident)
+            for metric in metric_specs:
+                if metric["agg"] == "count" and not metric["column"]:
+                    expr = sql.SQL("COUNT(*)")
+                elif metric["agg"] == "count_distinct":
+                    expr = sql.SQL("COUNT(DISTINCT {col})").format(
+                        col=sql.Identifier(metric["column"])
+                    )
+                else:
+                    expr = sql.SQL("{func}({col})").format(
+                        func=sql.SQL(metric["agg"].upper()),
+                        col=sql.Identifier(metric["column"]),
+                    )
+                select_parts.append(
+                    sql.SQL("{expr} AS {alias}").format(
+                        expr=expr, alias=sql.Identifier(metric["alias"])
+                    )
+                )
+            query = sql.SQL("SELECT {fields} FROM {schema}.{table}").format(
+                fields=sql.SQL(", ").join(select_parts),
+                schema=sql.Identifier(schema_name),
+                table=sql.Identifier(table_name),
+            )
+            params: list[Any] = []
+            if normalized_filters:
+                clauses = []
+                for item in normalized_filters:
+                    column = item["column"]
+                    operator = item["operator"]
+                    value = item["value"]
+                    if operator == "is_not_null":
+                        clauses.append(
+                            sql.SQL("{col} IS NOT NULL").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                    elif operator == "is_null":
+                        clauses.append(
+                            sql.SQL("{col} IS NULL").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                    elif operator in {"ilike", "like"}:
+                        clauses.append(
+                            sql.SQL("{col} {op} %s").format(
+                                col=sql.Identifier(column),
+                                op=sql.SQL(operator.upper()),
+                            )
+                        )
+                        params.append(f"%{value}%")
+                    elif operator == "in" and isinstance(value, list):
+                        placeholders = sql.SQL(", ").join(
+                            sql.Placeholder() for _ in range(len(value))
+                        )
+                        clauses.append(
+                            sql.SQL("{col} IN ({values})").format(
+                                col=sql.Identifier(column),
+                                values=placeholders,
+                            )
+                        )
+                        params.extend(value)
+                    elif operator == "between" and isinstance(value, list) and len(value) == 2:
+                        clauses.append(
+                            sql.SQL("{col} BETWEEN %s AND %s").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                        params.extend([value[0], value[1]])
+                    else:
+                        clauses.append(
+                            sql.SQL("{col} {op} %s").format(
+                                col=sql.Identifier(column),
+                                op=sql.SQL(operator),
+                            )
+                        )
+                        params.append(value)
+                query += sql.SQL(" WHERE ") + sql.SQL(" AND ").join(clauses)
+            if group_parts:
+                query += sql.SQL(" GROUP BY ") + sql.SQL(", ").join(group_parts)
+            if order_items:
+                order_parts = []
+                for item in order_items:
+                    order_parts.append(
+                        sql.SQL("{col} {direction}").format(
+                            col=sql.Identifier(item["column"]),
+                            direction=sql.SQL(item["direction"].upper()),
+                        )
+                    )
+                query += sql.SQL(" ORDER BY ") + sql.SQL(", ").join(order_parts)
+            if row_limit:
+                query += sql.SQL(" LIMIT %s")
+                params.append(row_limit)
 
             with conn.cursor() as cur:
                 cur.execute(query, params)

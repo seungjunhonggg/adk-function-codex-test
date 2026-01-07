@@ -50,6 +50,9 @@ const simFormCard = document.getElementById("sim-form-card");
 const lotCard = document.getElementById("lot-card");
 const simResultCard = document.getElementById("sim-result-card");
 const defectChartCard = document.getElementById("defect-chart-card");
+const defectChartTitleEl = defectChartCard
+  ? defectChartCard.querySelector("h3")
+  : null;
 const designCandidatesCard = document.getElementById("design-candidates-card");
 const finalBriefingCard = document.getElementById("final-briefing-card");
 const predictionCard = document.getElementById("prediction-card");
@@ -1480,25 +1483,54 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
   const histogram = payload.histogram;
   const lots = Array.isArray(payload.lots) ? payload.lots : [];
   const config = payload.config || {};
+  const metricLabel = payload.metric_label || "";
   const chartType = String(
     payload.chart_type || config.chart_type || (histogram ? "histogram" : "bar")
   ).toLowerCase();
   if (!histogram && !lots.length) {
-    targetEl.textContent = "불량률 그래프가 없습니다.";
+    targetEl.textContent = metricLabel
+      ? `${metricLabel} 그래프가 없습니다.`
+      : "그래프가 없습니다.";
     return;
   }
 
   const stats = payload.stats || {};
+  const valueUnit =
+    payload.value_unit ||
+    stats.value_unit ||
+    (histogram && histogram.value_unit) ||
+    config.value_unit ||
+    "";
   targetEl.innerHTML = "";
   if (stats && stats.count && options.includeMeta !== false) {
     const meta = document.createElement("div");
     meta.className = "candidate-meta";
-    const avg = stats.avg ? `${(stats.avg * 100).toFixed(2)}%` : "--";
-    const min = stats.min ? `${(stats.min * 100).toFixed(2)}%` : "--";
-    const max = stats.max ? `${(stats.max * 100).toFixed(2)}%` : "--";
-    meta.textContent = options.metaPrefix
-      ? `${options.metaPrefix} ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`
-      : `필터 ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
+    const formatStat = (value) => {
+      if (value === null || value === undefined) {
+        return "--";
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return "--";
+      }
+      if (valueUnit === "ratio") {
+        return `${(num * 100).toFixed(2)}%`;
+      }
+      if (valueUnit === "percent") {
+        return `${num.toFixed(2)}%`;
+      }
+      if (valueUnit) {
+        return `${num.toFixed(3)} ${valueUnit}`;
+      }
+      return num.toFixed(3);
+    };
+    const avg = formatStat(stats.avg);
+    const min = formatStat(stats.min);
+    const max = formatStat(stats.max);
+    const prefix =
+      options.metaPrefix ||
+      (metricLabel ? `${metricLabel}` : "필터");
+    meta.textContent = `${prefix} ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
     targetEl.appendChild(meta);
   }
 
@@ -1513,7 +1545,13 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
       ...bins.map((bin) => Number(bin.count) || 0),
       1
     );
-    const unit = histogram.value_unit === "percent" ? "%" : "";
+    const histogramUnit = histogram.value_unit || valueUnit;
+    const unit =
+      histogramUnit === "percent" || histogramUnit === "ratio"
+        ? "%"
+        : histogramUnit
+        ? ` ${histogramUnit}`
+        : "";
     const normalize = histogram.normalize || "count";
     const formatRange = (value) => {
       if (value === null || value === undefined) {
@@ -1523,7 +1561,13 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
       if (!Number.isFinite(num)) {
         return "-";
       }
-      return unit ? num.toFixed(1) : num.toFixed(3);
+      if (histogramUnit === "ratio") {
+        return (num * 100).toFixed(1);
+      }
+      if (histogramUnit === "percent") {
+        return num.toFixed(1);
+      }
+      return unit ? num.toFixed(2) : num.toFixed(3);
     };
 
     const chart = document.createElement("div");
@@ -1687,6 +1731,12 @@ function renderDefectRateChart(payload = {}) {
   }
   lastDefectChartPayload = payload;
   showStreamCard(defectChartCard);
+  if (defectChartTitleEl) {
+    const label = payload.metric_label || "불량률 분포";
+    defectChartTitleEl.textContent = payload.metric_label
+      ? `${label} 그래프`
+      : label;
+  }
   renderDefectRateChartInto(defectChartEl, payload);
   renderDefectRateChartInto(finalDefectChartEl, payload, {
     includeMeta: false,
@@ -2033,7 +2083,8 @@ function handleEvent(event) {
 
   if (event.type === "defect_rate_chart") {
     renderDefectRateChart(event.payload);
-    addEventLog("불량률", "그래프 업데이트");
+    const label = event.payload?.metric_label || "불량률";
+    addEventLog(label, "그래프 업데이트");
   }
 
   if (event.type === "design_candidates") {

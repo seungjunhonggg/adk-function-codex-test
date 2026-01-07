@@ -1,0 +1,61 @@
+{
+  "tables": {
+    "default": {
+      "default_columns": ["lot_id", "chip_prod_id", "design_input_date"],
+      "columns": [
+        {
+          "name": "lot_id",
+          "description": "lot identifier",
+          "aliases": ["lot", "lot id", "lot_no"]
+        },
+        {
+          "name": "chip_prod_id",
+          "description": "chip product identifier",
+          "aliases": ["chip", "product", "model"]
+        },
+        {
+          "name": "design_input_date",
+          "description": "design input date",
+          "aliases": ["input date", "design date"]
+        },
+        {
+          "name": "temperature",
+          "description": "process temperature",
+          "aliases": ["temp", "temperature"]
+        },
+        {
+          "name": "voltage",
+          "description": "process voltage",
+          "aliases": ["volt", "voltage"]
+        },
+        {
+          "name": "size",
+          "description": "chip size",
+          "aliases": ["size", "dimension"]
+        },
+        {
+          "name": "capacity",
+          "description": "capacitance",
+          "aliases": ["capacitance", "cap", "capacity"]
+        },
+        {
+          "name": "st_thickness",
+          "description": "S/T thickness",
+          "aliases": ["s/t", "st thickness", "s/t thickness", "S/T 두께", "st 두께"],
+          "unit": "um"
+        },
+        {
+          "name": "cut_defect_rate",
+          "description": "cutting defect rate",
+          "aliases": ["절단불량률", "cut defect", "cutting defect rate", "절단 불량률"],
+          "unit": "ratio"
+        },
+        {
+          "name": "lot_type",
+          "description": "production type",
+          "aliases": ["production", "mass", "dev", "lot type"]
+        }
+      ]
+    }
+  }
+}
