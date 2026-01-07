@@ -154,16 +154,47 @@ def _connect_mariadb(config: dict) -> Any:
 
 def _introspect_postgres(conn: Any) -> dict:
     schemas: dict[str, dict] = {}
-    query = """
+    tables_query = """
+        SELECT table_schema, table_name, table_type
+        FROM information_schema.tables
+        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+          AND table_type IN ('BASE TABLE', 'VIEW')
+        ORDER BY table_schema, table_name;
+    """
+    matviews_query = """
+        SELECT schemaname, matviewname
+        FROM pg_matviews
+        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY schemaname, matviewname;
+    """
+    columns_query = """
         SELECT table_schema, table_name, column_name, data_type, is_nullable
         FROM information_schema.columns
         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
         ORDER BY table_schema, table_name, ordinal_position;
     """
     with conn.cursor() as cur:
-        cur.execute(query)
+        cur.execute(tables_query)
+        for schema_name, table_name, _table_type in cur.fetchall():
+            schema_entry = schemas.setdefault(schema_name, {"tables": {}})
+            schema_entry["tables"].setdefault(table_name, {"columns": []})
+
+        cur.execute(matviews_query)
+        for schema_name, table_name in cur.fetchall():
+            schema_entry = schemas.setdefault(schema_name, {"tables": {}})
+            schema_entry["tables"].setdefault(table_name, {"columns": []})
+
+        table_lookup = {
+            (schema_name, table_name)
+            for schema_name, schema_entry in schemas.items()
+            for table_name in schema_entry.get("tables", {})
+        }
+
+        cur.execute(columns_query)
         for row in cur.fetchall():
             schema_name, table_name, column_name, data_type, is_nullable = row
+            if (schema_name, table_name) not in table_lookup:
+                continue
             schema_entry = schemas.setdefault(schema_name, {"tables": {}})
             table_entry = schema_entry["tables"].setdefault(
                 table_name, {"columns": []}
