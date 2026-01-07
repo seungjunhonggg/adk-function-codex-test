@@ -1927,49 +1927,168 @@ def _summarize_metric_values(values: list[float]) -> dict:
     }
 
 
+def _compute_histogram(
+    values: list[float],
+    bins: int,
+    range_min: float | None,
+    range_max: float | None,
+    normalize: str,
+    value_unit: str | None,
+) -> dict:
+    if not values:
+        return {"bins": [], "normalize": normalize, "value_unit": value_unit}
+
+    values_min = min(values)
+    values_max = max(values)
+    lower = values_min if range_min is None else range_min
+    upper = values_max if range_max is None else range_max
+    if lower == upper:
+        upper = lower + 1e-6
+    bins = max(1, int(bins))
+
+    width = (upper - lower) / bins
+    counts = [0 for _ in range(bins)]
+    for value in values:
+        if value < lower or value > upper:
+            continue
+        idx = int((value - lower) / width)
+        if idx >= bins:
+            idx = bins - 1
+        counts[idx] += 1
+
+    total = max(1, sum(counts))
+    bin_entries = []
+    for idx, count in enumerate(counts):
+        start = lower + idx * width
+        end = start + width
+        entry = {"start": start, "end": end, "count": count}
+        if normalize == "percent":
+            entry["value"] = round((count / total) * 100, 3)
+        elif normalize == "ratio":
+            entry["value"] = round(count / total, 6)
+        bin_entries.append(entry)
+
+    return {
+        "bins": bin_entries,
+        "normalize": normalize,
+        "value_unit": value_unit,
+    }
+
+
 def _build_post_grid_chart_payload(post_grid_defects: dict | None) -> dict | None:
     if not isinstance(post_grid_defects, dict):
         return None
     items = post_grid_defects.get("items")
-    columns = post_grid_defects.get("columns")
     if not isinstance(items, list) or not items:
         return None
-    if not isinstance(columns, list) or not columns:
-        return None
-    primary = items[0] if isinstance(items[0], dict) else None
-    if not primary:
-        return None
-    defect_stats = primary.get("defect_stats")
-    if not isinstance(defect_stats, dict):
-        return None
-    chart_lots: list[dict] = []
-    values: list[float] = []
-    for column in columns:
-        stats = defect_stats.get(column)
-        if not isinstance(stats, dict):
-            continue
-        avg = stats.get("avg")
-        if avg is None:
-            continue
-        try:
-            value = float(avg)
-        except (TypeError, ValueError):
-            continue
-        chart_lots.append({"label": column, "defect_rate": value})
-        values.append(value)
-    if not chart_lots:
-        return None
-    stats = _summarize_metric_values(values)
+    charts = []
     value_unit = str(post_grid_defects.get("value_unit") or "").strip().lower()
-    if value_unit:
-        stats["value_unit"] = value_unit
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        lot_rates = item.get("lot_defect_rates")
+        if not isinstance(lot_rates, list) or not lot_rates:
+            continue
+        lots = []
+        values: list[float] = []
+        for entry in lot_rates:
+            if not isinstance(entry, dict):
+                continue
+            rate = entry.get("defect_rate")
+            try:
+                rate_value = float(rate)
+            except (TypeError, ValueError):
+                continue
+            lots.append(
+                {
+                    "lot_id": entry.get("lot_id"),
+                    "defect_rate": rate_value,
+                }
+            )
+            values.append(rate_value)
+        if not values:
+            continue
+        stats = _summarize_metric_values(values)
+        if value_unit:
+            stats["value_unit"] = value_unit
+        histogram = _compute_histogram(values, 8, None, None, "count", value_unit)
+        rank = item.get("rank") or index
+        charts.append(
+            {
+                "title": f"TOP{rank} 설계안",
+                "rank": rank,
+                "lot_count": item.get("lot_count"),
+                "lots": lots,
+                "stats": stats,
+                "histogram": histogram,
+                "chart_type": "histogram",
+                "metric_label": "설계안 평균 불량률",
+                "value_unit": value_unit,
+            }
+        )
+    if not charts:
+        return None
     return {
-        "lots": chart_lots,
-        "stats": stats,
-        "chart_type": "bar",
-        "metric_label": "그리드 불량팩터",
+        "charts": charts,
+        "metric_label": "설계안별 평균 불량률",
         "value_unit": value_unit,
     }
+
+
+def _format_design_summary(design: dict, limit: int = 14) -> str:
+    if not isinstance(design, dict) or not design:
+        return "-"
+    parts = []
+    for key, value in design.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, float):
+            value = round(value, 6)
+        parts.append(f"{key}={value}")
+    if not parts:
+        return "-"
+    if len(parts) > limit:
+        extra = len(parts) - limit
+        parts = parts[:limit] + [f"+{extra}"]
+    return ", ".join(parts)
+
+
+def _build_post_grid_step(post_grid_defects: dict | None) -> str:
+    if not isinstance(post_grid_defects, dict):
+        return "3) TOP3 설계조건 기반 불량실적 조회를 진행했습니다."
+    columns = post_grid_defects.get("columns")
+    if not isinstance(columns, list):
+        columns = []
+    items = post_grid_defects.get("items")
+    if not isinstance(items, list):
+        items = []
+    recent_months = post_grid_defects.get("recent_months")
+    if not columns:
+        return "3) TOP3 설계조건 기반 불량실적 컬럼 설정이 없어 해당 단계는 생략했습니다."
+    if not items:
+        return "3) TOP3 설계조건으로 동일 조건 LOT 불량실적을 조회했지만 매칭 LOT가 없습니다."
+    period = (
+        f"최근 {recent_months}개월"
+        if isinstance(recent_months, int) and recent_months > 0
+        else "최근 기간"
+    )
+    details = []
+    for index, item in enumerate(items[:3], start=1):
+        if not isinstance(item, dict):
+            continue
+        rank = item.get("rank") or index
+        design_text = _format_design_summary(item.get("design") or {})
+        lot_count = item.get("lot_count") or 0
+        sample_lots = [str(lot) for lot in (item.get("sample_lots") or []) if lot]
+        lot_detail = f"{lot_count}개"
+        if sample_lots:
+            lot_detail = f"{lot_detail} (예: {', '.join(sample_lots)})"
+        details.append(f"TOP{rank} 설계안[{design_text}] → LOT {lot_detail}")
+    summary = " / ".join(details) if details else "매칭 LOT 없음"
+    return (
+        f"3) TOP3 설계조건으로 {period} LOT 불량실적({', '.join(columns)})을 조회했습니다. "
+        f"{summary}"
+    )
 
 
 async def _maybe_demo_sleep() -> None:
@@ -2241,21 +2360,7 @@ async def _run_reference_pipeline(
 
     if simulation_result and simulation_result.get("result"):
         summary = _format_simulation_result(simulation_result.get("result"))
-        post_grid_columns = post_grid_defects.get("columns", []) if isinstance(post_grid_defects, dict) else []
-        post_grid_items = post_grid_defects.get("items", []) if isinstance(post_grid_defects, dict) else []
-        if post_grid_columns:
-            if post_grid_items:
-                post_grid_step = (
-                    f"3) TOP3 설계조건으로 동일 조건 LOT 불량실적({', '.join(post_grid_columns)})을 조회했습니다."
-                )
-            else:
-                post_grid_step = (
-                    "3) TOP3 설계조건으로 동일 조건 LOT 불량실적을 조회했지만 매칭 LOT가 없습니다."
-                )
-        else:
-            post_grid_step = (
-                "3) TOP3 설계조건 기반 불량실적 컬럼 설정이 없어 해당 단계는 생략했습니다."
-            )
+        post_grid_step = _build_post_grid_step(post_grid_defects)
         message = (
             f"1) chip_prod_id {chip_prod_id} 기준으로 설계조건+불량조건을 함께 적용해 LOT 후보를 필터링했습니다. "
             f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
@@ -2274,7 +2379,7 @@ async def _run_reference_pipeline(
     message = (
         f"1) chip_prod_id {chip_prod_id} 기준으로 설계조건+불량조건을 함께 적용해 LOT 후보를 필터링했습니다. "
         f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
-        "3) TOP3 설계조건 기반 불량실적 조회를 진행했습니다. "
+        f"{_build_post_grid_step(post_grid_defects)} "
         "4) 최종 요약: 추천 결과를 확인해 주세요."
     )
     pipeline_store.update(

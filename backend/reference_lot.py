@@ -1265,12 +1265,18 @@ def build_grid_values(row: dict, rules: dict, overrides: dict | None = None) -> 
             base = overrides[name]
         else:
             base = row.get(column) if column else None
+        if base is None and "default" in factor:
+            base = factor.get("default")
         base_value = _coerce_float(base)
         if base_value is None:
             grid[name] = [base] if base is not None else []
             continue
         percent = float(factor.get("range_percent", 10))
-        points = max(2, int(factor.get("points", 5)))
+        points_raw = int(factor.get("points", 5))
+        if points_raw <= 1 or percent == 0:
+            grid[name] = [round(base_value, 6)]
+            continue
+        points = max(2, points_raw)
         low = base_value * (1 - percent / 100)
         high = base_value * (1 + percent / 100)
         step = (high - low) / (points - 1)
@@ -1326,27 +1332,61 @@ def _summarize_post_grid_defects(
     return summary
 
 
+def _resolve_post_grid_defect_columns(rules: dict) -> list[str]:
+    columns = [column for column in (rules.get("post_grid_defect_columns") or []) if column]
+    if columns:
+        return columns
+    aggregate_columns = rules.get("defect_rate_aggregate", {}).get("columns", []) or []
+    conditions = rules.get("conditions", {})
+    metric_columns = [
+        metric.get("column")
+        for metric in conditions.get("defect_metrics", [])
+        if metric.get("column")
+    ]
+    defect_condition_columns = [
+        item.get("column") or item.get("name")
+        for item in (rules.get("defect_conditions") or [])
+        if isinstance(item, dict) and (item.get("column") or item.get("name"))
+    ]
+    return [
+        column
+        for column in dict.fromkeys(aggregate_columns + metric_columns + defect_condition_columns)
+        if column
+    ]
+
+
+def _aggregate_defect_rate_for_row(
+    row: dict, columns: list[str], value_unit: str
+) -> float | None:
+    values: list[float] = []
+    for column in columns:
+        value = _normalize_defect_rate_value(_get_value(row, column), value_unit)
+        if value is None:
+            continue
+        values.append(value)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def collect_post_grid_defects(
     design_candidates: list[dict],
     rules: dict,
     chip_prod_id: str | None = None,
 ) -> dict:
     normalized = normalize_reference_rules(rules)
-    defect_columns = [
-        column
-        for column in (normalized.get("post_grid_defect_columns") or [])
-        if column
-    ]
+    defect_columns = _resolve_post_grid_defect_columns(normalized)
     recent_months = normalized.get("post_grid_recent_months")
     if not isinstance(recent_months, int) or recent_months < 0:
         recent_months = 0
-    value_unit = str(normalized.get("post_grid_defect_value_unit") or "").strip().lower()
+    input_unit = str(normalized.get("post_grid_defect_value_unit") or "").strip().lower()
+    output_unit = "ratio" if input_unit == "percent" else input_unit
     if not defect_columns or not isinstance(design_candidates, list):
         return {
             "columns": defect_columns,
             "items": [],
             "recent_months": recent_months,
-            "value_unit": value_unit,
+            "value_unit": output_unit,
         }
 
     db = normalized.get("db", {})
@@ -1406,18 +1446,38 @@ def collect_post_grid_defects(
             table_name=lot_search_table,
         )
         rows = _filter_rows_by_recent_months(rows, date_column, recent_months)
-        stats = _summarize_post_grid_defects(rows, defect_columns, value_unit)
+        stats = _summarize_post_grid_defects(rows, defect_columns, input_unit)
+        lot_rates: dict[str, list[float]] = {}
+        for row in rows:
+            lot_id = _get_value(row, lot_id_column)
+            if lot_id is None:
+                continue
+            rate = _aggregate_defect_rate_for_row(row, defect_columns, input_unit)
+            if rate is None:
+                continue
+            lot_key = str(lot_id)
+            lot_rates.setdefault(lot_key, []).append(rate)
+        lot_defect_rates = []
+        for lot_id, rates in lot_rates.items():
+            if not rates:
+                continue
+            lot_defect_rates.append(
+                {
+                    "lot_id": lot_id,
+                    "defect_rate": sum(rates) / len(rates),
+                }
+            )
+        lot_defect_rates.sort(
+            key=lambda item: item.get("defect_rate", 0), reverse=True
+        )
         items.append(
             {
                 "rank": candidate.get("rank"),
                 "design": design,
-                "lot_count": len(rows),
+                "lot_count": len(lot_defect_rates),
                 "defect_stats": stats,
-                "sample_lots": [
-                    row.get(lot_id_column)
-                    for row in rows
-                    if row.get(lot_id_column) is not None
-                ][:5],
+                "lot_defect_rates": lot_defect_rates,
+                "sample_lots": [item.get("lot_id") for item in lot_defect_rates[:5]],
                 "source": source,
             }
         )
@@ -1426,5 +1486,5 @@ def collect_post_grid_defects(
         "columns": defect_columns,
         "items": items,
         "recent_months": recent_months,
-        "value_unit": value_unit,
+        "value_unit": output_unit,
     }

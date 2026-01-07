@@ -1195,6 +1195,18 @@ body::before {
   gap: 8px;
 }
 
+.defect-chart-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.defect-chart-block {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
 .defect-histogram {
   display: flex;
   gap: 8px;

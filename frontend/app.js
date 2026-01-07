@@ -153,6 +153,7 @@ let statusAnimationInterval = null;
 
 let historyEntries = [];
 let lastDefectChartPayload = null;
+let lastFinalDefectChartPayload = null;
 
 function loadSessions() {
   try {
@@ -586,6 +587,8 @@ function setCurrentLot(lotId) {
 
 function resetEventPanel() {
   hideAllStreamCards();
+  lastDefectChartPayload = null;
+  lastFinalDefectChartPayload = null;
   if (eventLogEl) {
     eventLogEl.innerHTML = "";
   }
@@ -606,6 +609,9 @@ function resetEventPanel() {
   }
   if (defectChartEl) {
     defectChartEl.textContent = defaultDefectChartText;
+  }
+  if (finalDefectChartEl) {
+    finalDefectChartEl.textContent = defaultFinalDefectChartText;
   }
   if (designCandidatesEl) {
     designCandidatesEl.textContent = defaultDesignCandidatesText;
@@ -1744,6 +1750,37 @@ function renderFinalDefectChart(payload = {}) {
   if (!finalDefectChartEl) {
     return;
   }
+  lastFinalDefectChartPayload = payload;
+  const charts = Array.isArray(payload.charts) ? payload.charts : null;
+  finalDefectChartEl.innerHTML = "";
+  if (charts && charts.length) {
+    const stack = document.createElement("div");
+    stack.className = "defect-chart-stack";
+    charts.forEach((chart, index) => {
+      const panel = document.createElement("div");
+      panel.className = "defect-chart-block";
+
+      const title = document.createElement("div");
+      title.className = "candidate-meta";
+      const label =
+        chart.title || `TOP${chart.rank || index + 1} 설계안`;
+      const lotCount = Number(chart.lot_count);
+      title.textContent = Number.isFinite(lotCount) && lotCount >= 0
+        ? `${label} · LOT ${lotCount}개`
+        : label;
+      panel.appendChild(title);
+
+      const chartEl = document.createElement("div");
+      chartEl.className = "defect-chart";
+      renderDefectRateChartInto(chartEl, chart, {
+        includeMeta: true,
+      });
+      panel.appendChild(chartEl);
+      stack.appendChild(panel);
+    });
+    finalDefectChartEl.appendChild(stack);
+    return;
+  }
   renderDefectRateChartInto(finalDefectChartEl, payload, {
     includeMeta: false,
   });
@@ -1875,7 +1912,9 @@ function renderFinalBriefing(payload = {}) {
     finalBriefingEl.appendChild(meta);
   }
 
-  if (lastDefectChartPayload) {
+  if (lastFinalDefectChartPayload) {
+    renderFinalDefectChart(lastFinalDefectChartPayload);
+  } else if (lastDefectChartPayload) {
     renderDefectRateChartInto(finalDefectChartEl, lastDefectChartPayload, {
       includeMeta: false,
     });
