@@ -147,6 +147,12 @@ def _infer_rate_columns(row: dict, exclude: set[str]) -> list[str]:
     return columns
 
 
+def _looks_like_defect_column(column: str) -> bool:
+    lowered = column.lower()
+    hints = ("defect", "fail", "reject", "ng", "rate")
+    return any(token in lowered for token in hints)
+
+
 def _string_condition(value: Any, rule: dict) -> bool:
     if value is None:
         return False
@@ -958,10 +964,47 @@ def get_defect_rates_by_lot_id(lot_id: str) -> dict:
         selected_row = rows[0]
 
     if not rate_columns:
-        exclude = {lot_id_column}
-        if update_date_column:
-            exclude.add(update_date_column)
-        rate_columns = _infer_rate_columns(selected_row, exclude)
+        conditions = rules.get("conditions", {})
+        aggregate_columns = rules.get("defect_rate_aggregate", {}).get("columns", []) or []
+        metric_columns = [
+            metric.get("column")
+            for metric in conditions.get("defect_metrics", [])
+            if metric.get("column")
+        ]
+        defect_condition_columns = [
+            item.get("column") or item.get("name")
+            for item in (rules.get("defect_conditions") or [])
+            if isinstance(item, dict) and (item.get("column") or item.get("name"))
+        ]
+        candidate_columns = [
+            col
+            for col in dict.fromkeys(aggregate_columns + metric_columns + defect_condition_columns)
+            if col and col in selected_row
+        ]
+        if candidate_columns:
+            rate_columns = candidate_columns
+        else:
+            exclude = {lot_id_column}
+            if update_date_column:
+                exclude.add(update_date_column)
+            exclude.update(rules.get("value1_not_null_columns", []) or [])
+            exclude.update(conditions.get("required_not_null", []) or [])
+            exclude.update(conditions.get("design_factor_columns", []) or [])
+            exclude.update(rules.get("detail_columns", []) or [])
+            grid = rules.get("grid_search", {}) or {}
+            for factor in grid.get("factors", []):
+                if not isinstance(factor, dict):
+                    continue
+                column = factor.get("column") or factor.get("name")
+                if column:
+                    exclude.add(column)
+            param_columns = rules.get("param_columns") or {}
+            if isinstance(param_columns, dict):
+                for column in param_columns.values():
+                    if column:
+                        exclude.add(column)
+            inferred = _infer_rate_columns(selected_row, exclude)
+            rate_columns = [col for col in inferred if _looks_like_defect_column(col)]
 
     defect_rates = []
     for column in rate_columns:

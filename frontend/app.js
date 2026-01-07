@@ -1726,7 +1726,7 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
 }
 
 function renderDefectRateChart(payload = {}) {
-  if (!defectChartEl && !finalDefectChartEl) {
+  if (!defectChartEl) {
     return;
   }
   lastDefectChartPayload = payload;
@@ -1738,6 +1738,12 @@ function renderDefectRateChart(payload = {}) {
       : label;
   }
   renderDefectRateChartInto(defectChartEl, payload);
+}
+
+function renderFinalDefectChart(payload = {}) {
+  if (!finalDefectChartEl) {
+    return;
+  }
   renderDefectRateChartInto(finalDefectChartEl, payload, {
     includeMeta: false,
   });
@@ -1814,9 +1820,6 @@ function renderFinalBriefing(payload = {}) {
     finalDefectChartEl.textContent = defaultFinalDefectChartText;
   }
   const cards = [finalBriefingCard];
-  if (payload.defect_stats && payload.defect_stats.count) {
-    cards.push(defectChartCard);
-  }
   if (Array.isArray(payload.top_candidates) && payload.top_candidates.length) {
     cards.push(designCandidatesCard);
   }
@@ -2085,6 +2088,11 @@ function handleEvent(event) {
     renderDefectRateChart(event.payload);
     const label = event.payload?.metric_label || "불량률";
     addEventLog(label, "그래프 업데이트");
+  }
+  if (event.type === "final_defect_chart") {
+    renderFinalDefectChart(event.payload);
+    const label = event.payload?.metric_label || "불량률";
+    addEventLog(label, "최종 그래프 업데이트");
   }
 
   if (event.type === "design_candidates") {

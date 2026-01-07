@@ -1908,6 +1908,70 @@ def _build_final_briefing_payload(
     return payload
 
 
+def _summarize_metric_values(values: list[float]) -> dict:
+    if not values:
+        return {"count": 0, "min": None, "max": None, "avg": None, "median": None}
+    sorted_values = sorted(values)
+    count = len(sorted_values)
+    mid = count // 2
+    if count % 2 == 0:
+        median = (sorted_values[mid - 1] + sorted_values[mid]) / 2
+    else:
+        median = sorted_values[mid]
+    return {
+        "count": count,
+        "min": min(sorted_values),
+        "max": max(sorted_values),
+        "avg": sum(sorted_values) / count,
+        "median": median,
+    }
+
+
+def _build_post_grid_chart_payload(post_grid_defects: dict | None) -> dict | None:
+    if not isinstance(post_grid_defects, dict):
+        return None
+    items = post_grid_defects.get("items")
+    columns = post_grid_defects.get("columns")
+    if not isinstance(items, list) or not items:
+        return None
+    if not isinstance(columns, list) or not columns:
+        return None
+    primary = items[0] if isinstance(items[0], dict) else None
+    if not primary:
+        return None
+    defect_stats = primary.get("defect_stats")
+    if not isinstance(defect_stats, dict):
+        return None
+    chart_lots: list[dict] = []
+    values: list[float] = []
+    for column in columns:
+        stats = defect_stats.get(column)
+        if not isinstance(stats, dict):
+            continue
+        avg = stats.get("avg")
+        if avg is None:
+            continue
+        try:
+            value = float(avg)
+        except (TypeError, ValueError):
+            continue
+        chart_lots.append({"label": column, "defect_rate": value})
+        values.append(value)
+    if not chart_lots:
+        return None
+    stats = _summarize_metric_values(values)
+    value_unit = str(post_grid_defects.get("value_unit") or "").strip().lower()
+    if value_unit:
+        stats["value_unit"] = value_unit
+    return {
+        "lots": chart_lots,
+        "stats": stats,
+        "chart_type": "bar",
+        "metric_label": "그리드 불량팩터",
+        "value_unit": value_unit,
+    }
+
+
 async def _maybe_demo_sleep() -> None:
     if DEMO_LATENCY_SECONDS <= 0:
         return
@@ -2115,6 +2179,7 @@ async def _run_reference_pipeline(
         rules,
         chip_prod_id=chip_prod_id,
     )
+    post_grid_chart = _build_post_grid_chart_payload(post_grid_defects)
     pipeline_store.set_grid(
         session_id,
         {
@@ -2125,6 +2190,12 @@ async def _run_reference_pipeline(
             "overrides": grid_overrides,
         },
     )
+
+    if post_grid_chart:
+        await event_bus.broadcast(
+            {"type": "final_defect_chart", "payload": post_grid_chart}
+        )
+        pipeline_store.set_event(session_id, "final_defect_chart", post_grid_chart)
 
     await event_bus.broadcast(
         {

@@ -99,22 +99,6 @@
       "upper_equal_dirtn_value",
       "lower_equal_dirtn_vaue"
     ],
-    "design_factor_columns": [
-      "design_factor_1",
-      "design_factor_2",
-      "design_factor_3",
-      "design_factor_4",
-      "design_factor_5",
-      "design_factor_6",
-      "design_factor_7",
-      "design_factor_8",
-      "design_factor_9",
-      "design_factor_10",
-      "design_factor_11",
-      "design_factor_12",
-      "design_factor_13",
-      "design_factor_14"
-    ],
     "defect_metrics": [
       { "column": "defect_metric_1", "min": 0 },
       { "column": "defect_metric_2", "min": 0 },
