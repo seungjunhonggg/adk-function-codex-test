@@ -396,6 +396,17 @@ def _build_not_null_filters(columns: list[str]) -> list[dict]:
     return filters
 
 
+def _build_design_filters(rules: dict) -> list[dict]:
+    conditions = rules.get("conditions", {})
+    value1_required = rules.get("value1_not_null_columns", []) or []
+    required_not_null = conditions.get("required_not_null", []) or []
+    design_columns = conditions.get("design_factor_columns", []) or []
+    columns = list(
+        dict.fromkeys(list(value1_required) + list(required_not_null) + list(design_columns))
+    )
+    return _build_not_null_filters(columns)
+
+
 def _build_defect_filters(conditions: list[dict]) -> list[dict]:
     filters = []
     for condition in conditions:
@@ -716,9 +727,7 @@ def select_reference_from_params(
                 "source": source,
             }
 
-    value1_filters = lot_search_filters + _build_not_null_filters(
-        rules.get("value1_not_null_columns", []) or []
-    )
+    value1_filters = lot_search_filters + _build_design_filters(rules)
     value1_source, value1_rows = _query_rows_for_filters(
         rules,
         value1_filters,
@@ -728,14 +737,34 @@ def select_reference_from_params(
     )
     if not source:
         source = value1_source
+    defect_conditions = _normalize_defect_conditions(rules)
+    defect_filters_all = _build_defect_filters(defect_conditions)
+    value2_all_rows = value1_rows
+    if defect_filters_all:
+        _, value2_all_rows = _query_rows_for_filters(
+            rules,
+            value1_filters + defect_filters_all,
+            base_columns,
+            limit,
+            table_name=lot_search_table,
+        )
+
     if use_chip_prod_like:
         chip_prod_ids = sorted(
             {
                 str(_get_value(row, chip_prod_column))
-                for row in value1_rows
+                for row in value2_all_rows
                 if _get_value(row, chip_prod_column) is not None
             }
         )
+        if not chip_prod_ids:
+            chip_prod_ids = sorted(
+                {
+                    str(_get_value(row, chip_prod_column))
+                    for row in value1_rows
+                    if _get_value(row, chip_prod_column) is not None
+                }
+            )
         if not chip_prod_ids:
             return {
                 "status": "missing",
@@ -745,21 +774,7 @@ def select_reference_from_params(
             }
     value1_counts = _count_by_key(value1_rows, chip_prod_column, lot_id_column)
 
-    defect_conditions = _normalize_defect_conditions(rules)
-    defect_filters_all = _build_defect_filters(defect_conditions)
-    value2_all_filters = value1_filters + defect_filters_all
-    _, value2_all_rows = _query_rows_for_filters(
-        rules,
-        value2_all_filters,
-        base_columns,
-        limit,
-        table_name=lot_search_table,
-    )
-
-    if defect_conditions:
-        latest_row = _select_latest_row(value2_all_rows, input_date_column)
-    else:
-        latest_row = _select_latest_row(value1_rows, input_date_column)
+    latest_row = _select_latest_row(value2_all_rows, input_date_column)
     if not latest_row:
         return {
             "status": "missing",
@@ -1218,3 +1233,155 @@ def build_grid_values(row: dict, rules: dict, overrides: dict | None = None) -> 
         step = (high - low) / (points - 1)
         grid[name] = [round(low + step * idx, 6) for idx in range(points)]
     return grid
+
+
+def _grid_factor_column_map(rules: dict) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for factor in rules.get("grid_search", {}).get("factors", []):
+        name = factor.get("name")
+        column = factor.get("column") or name
+        if name and column:
+            mapping[name] = column
+    return mapping
+
+
+def _filter_rows_by_recent_months(
+    rows: list[dict], date_column: str, recent_months: int
+) -> list[dict]:
+    if not rows or not date_column or recent_months <= 0:
+        return rows
+    cutoff = datetime.now() - timedelta(days=recent_months * 30)
+    filtered = []
+    for row in rows:
+        dt = _parse_datetime(_get_value(row, date_column))
+        if dt is None or dt < cutoff:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def _summarize_post_grid_defects(
+    rows: list[dict], columns: list[str], value_unit: str
+) -> dict:
+    summary: dict[str, dict] = {}
+    for column in columns:
+        values: list[float] = []
+        for row in rows:
+            value = _normalize_defect_rate_value(_get_value(row, column), value_unit)
+            if value is None:
+                continue
+            values.append(value)
+        if not values:
+            summary[column] = {"count": 0, "avg": None, "min": None, "max": None}
+            continue
+        summary[column] = {
+            "count": len(values),
+            "avg": sum(values) / len(values),
+            "min": min(values),
+            "max": max(values),
+        }
+    return summary
+
+
+def collect_post_grid_defects(
+    design_candidates: list[dict],
+    rules: dict,
+    chip_prod_id: str | None = None,
+) -> dict:
+    normalized = normalize_reference_rules(rules)
+    defect_columns = [
+        column
+        for column in (normalized.get("post_grid_defect_columns") or [])
+        if column
+    ]
+    recent_months = normalized.get("post_grid_recent_months")
+    if not isinstance(recent_months, int) or recent_months < 0:
+        recent_months = 0
+    value_unit = str(normalized.get("post_grid_defect_value_unit") or "").strip().lower()
+    if not defect_columns or not isinstance(design_candidates, list):
+        return {
+            "columns": defect_columns,
+            "items": [],
+            "recent_months": recent_months,
+            "value_unit": value_unit,
+        }
+
+    db = normalized.get("db", {})
+    lot_search_table = _resolve_table_name(normalized, "lot_search")
+    lot_id_column = db.get("lot_id_column") or "lot_id"
+    date_column = db.get("input_date_column") or ""
+    if not date_column:
+        defect_source = normalized.get("defect_rate_source", {})
+        if isinstance(defect_source, dict):
+            date_column = defect_source.get("update_date_column") or ""
+
+    factor_map = _grid_factor_column_map(normalized)
+    max_candidates = normalized.get("selection", {}).get("max_candidates", 0)
+    row_limit = max_candidates if isinstance(max_candidates, int) and max_candidates > 0 else 0
+
+    items = []
+    for candidate in design_candidates[:3]:
+        if not isinstance(candidate, dict):
+            continue
+        design = candidate.get("design")
+        if not isinstance(design, dict) or not design:
+            continue
+        filters = []
+        if chip_prod_id:
+            filters.append(
+                {
+                    "column": db.get("chip_prod_id_column") or "chip_prod_id",
+                    "operator": "=",
+                    "value": chip_prod_id,
+                }
+            )
+        design_columns = []
+        for key, value in design.items():
+            column = factor_map.get(key) or key
+            if not column:
+                continue
+            design_columns.append(column)
+            if value is None or value == "":
+                continue
+            filters.append({"column": column, "operator": "=", "value": value})
+        if not filters:
+            continue
+
+        query_columns = list(
+            dict.fromkeys(
+                [lot_id_column]
+                + design_columns
+                + ([date_column] if date_column else [])
+                + defect_columns
+            )
+        )
+        source, rows = _query_rows_for_filters(
+            normalized,
+            filters,
+            query_columns,
+            row_limit,
+            table_name=lot_search_table,
+        )
+        rows = _filter_rows_by_recent_months(rows, date_column, recent_months)
+        stats = _summarize_post_grid_defects(rows, defect_columns, value_unit)
+        items.append(
+            {
+                "rank": candidate.get("rank"),
+                "design": design,
+                "lot_count": len(rows),
+                "defect_stats": stats,
+                "sample_lots": [
+                    row.get(lot_id_column)
+                    for row in rows
+                    if row.get(lot_id_column) is not None
+                ][:5],
+                "source": source,
+            }
+        )
+
+    return {
+        "columns": defect_columns,
+        "items": items,
+        "recent_months": recent_months,
+        "value_unit": value_unit,
+    }

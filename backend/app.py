@@ -33,6 +33,7 @@ from .observability import WorkflowRunHooks, emit_workflow_log
 from .pipeline_store import pipeline_store
 from .reference_lot import (
     build_grid_values,
+    collect_post_grid_defects,
     load_reference_rules,
     normalize_reference_rules,
     select_reference_from_params,
@@ -346,6 +347,100 @@ def _format_simulation_result(result: dict | None) -> str:
     return ", ".join(parts)
 
 
+MEMORY_SUMMARY_MAX_LEN = 600
+MEMORY_SUMMARY_SKIP_KEYS = {
+    "top_candidates",
+    "grid_results",
+    "defect_rates",
+    "rows",
+    "row",
+    "columns",
+    "defect_stats",
+    "post_grid_defects",
+}
+
+
+def _summary_token(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(round(value, 6))
+    if isinstance(value, str):
+        return value.strip()
+    return None
+
+
+def _join_summary_tokens(values: list[object], limit: int = 6) -> str | None:
+    tokens = [str(value) for value in values if value not in (None, "")]
+    if not tokens:
+        return None
+    if len(tokens) > limit:
+        extra = len(tokens) - limit
+        tokens = tokens[:limit] + [f"+{extra}"]
+    return ",".join(tokens)
+
+
+def _build_memory_summary(payload: dict, label: str = "final_briefing") -> str:
+    items: list[tuple[str, str]] = [("briefing", label)]
+    ordered_keys = [
+        "chip_prod_id",
+        "reference_lot",
+        "candidate_total",
+        "value1_count",
+        "value2_count",
+        "defect_rate_overall",
+        "source",
+    ]
+
+    for key in ordered_keys:
+        token = _summary_token(payload.get(key))
+        if token:
+            items.append((key, token))
+
+    top_candidates = payload.get("top_candidates")
+    if isinstance(top_candidates, list):
+        items.append(("top_candidates", str(len(top_candidates))))
+
+    defect_stats = payload.get("defect_stats")
+    if isinstance(defect_stats, dict):
+        for stat_key in ("avg", "min", "max", "count"):
+            token = _summary_token(defect_stats.get(stat_key))
+            if token:
+                items.append((f"defect_{stat_key}", token))
+
+    post_grid_defects = payload.get("post_grid_defects")
+    if isinstance(post_grid_defects, dict):
+        columns = post_grid_defects.get("columns")
+        if isinstance(columns, list):
+            token = _join_summary_tokens(columns)
+            if token:
+                items.append(("post_grid_cols", token))
+        pg_items = post_grid_defects.get("items")
+        if isinstance(pg_items, list):
+            items.append(("post_grid_items", str(len(pg_items))))
+        recent = _summary_token(post_grid_defects.get("recent_months"))
+        if recent:
+            items.append(("post_grid_recent_months", recent))
+
+    for key, value in payload.items():
+        if key in MEMORY_SUMMARY_SKIP_KEYS:
+            continue
+        if any(key == existing[0] for existing in items):
+            continue
+        token = _summary_token(value)
+        if token:
+            items.append((key, token))
+
+    summary = "BRIEFING_SUMMARY " + "; ".join(f"{key}={value}" for key, value in items)
+    if len(summary) > MEMORY_SUMMARY_MAX_LEN:
+        summary = summary[: MEMORY_SUMMARY_MAX_LEN - 3].rstrip() + "..."
+    return summary
+
+
 def _format_missing_fields(missing: list[str]) -> str:
     if not missing:
         return "없음"
@@ -382,7 +477,9 @@ async def _append_user_message(session_id: str, content: str) -> None:
 
 async def _append_assistant_message(session_id: str, content: str) -> None:
     session = SQLiteSession(session_id, SESSION_DB_PATH)
-    await session.add_items([{"role": "assistant", "content": content}])
+    summary = pipeline_store.pop_pending_memory_summary(session_id)
+    store_content = summary or content
+    await session.add_items([{"role": "assistant", "content": store_content}])
 
 
 async def _emit_chat_message(session_id: str, content: str) -> None:
@@ -1595,6 +1692,7 @@ def _build_final_briefing_payload(
     grid_results: list[dict],
     top_candidates: list[dict],
     defect_stats: dict,
+    post_grid_defects: dict | None = None,
     value1_count: int | None = None,
     value2_count: int | None = None,
     defect_rates: list[dict] | None = None,
@@ -1633,6 +1731,8 @@ def _build_final_briefing_payload(
         payload["chip_prod_id_count"] = chip_prod_id_count
     if chip_prod_id_samples is not None:
         payload["chip_prod_id_samples"] = chip_prod_id_samples
+    if post_grid_defects is not None:
+        payload["post_grid_defects"] = post_grid_defects
     return payload
 
 
@@ -1833,6 +1933,11 @@ async def _run_reference_pipeline(
     for idx, item in enumerate(top_candidates, start=1):
         item["rank"] = idx
 
+    post_grid_defects = collect_post_grid_defects(
+        top_candidates,
+        rules,
+        chip_prod_id=chip_prod_id,
+    )
     pipeline_store.set_grid(
         session_id,
         {
@@ -1873,6 +1978,7 @@ async def _run_reference_pipeline(
         grid_results,
         top_candidates,
         defect_stats,
+        post_grid_defects=post_grid_defects,
         value1_count=value1_count,
         value2_count=value2_count,
         defect_rates=defect_rates,
@@ -1880,24 +1986,59 @@ async def _run_reference_pipeline(
         chip_prod_id_count=chip_prod_id_count,
         chip_prod_id_samples=chip_prod_id_samples,
     )
+    memory_summary = _build_memory_summary(summary_payload)
     await event_bus.broadcast({"type": "final_briefing", "payload": summary_payload})
     pipeline_store.set_event(session_id, "final_briefing", summary_payload)
     await _emit_pipeline_status("grid", "그리드 탐색 완료", done=True)
 
     if simulation_result and simulation_result.get("result"):
         summary = _format_simulation_result(simulation_result.get("result"))
-        return {
-            "message": (
-                f"추천 기종은 {chip_prod_id}입니다. 기준 LOT를 선정했고 그리드 서치를 완료했습니다. "
-                f"추천 결과 요약: {summary}. 상위 후보를 확인해 주세요."
-            ),
-            "simulation_result": simulation_result,
-        }
+        post_grid_columns = post_grid_defects.get("columns", []) if isinstance(post_grid_defects, dict) else []
+        post_grid_items = post_grid_defects.get("items", []) if isinstance(post_grid_defects, dict) else []
+        if post_grid_columns:
+            if post_grid_items:
+                post_grid_step = (
+                    f"3) TOP3 설계조건으로 동일 조건 LOT 불량실적({', '.join(post_grid_columns)})을 조회했습니다."
+                )
+            else:
+                post_grid_step = (
+                    "3) TOP3 설계조건으로 동일 조건 LOT 불량실적을 조회했지만 매칭 LOT가 없습니다."
+                )
+        else:
+            post_grid_step = (
+                "3) TOP3 설계조건 기반 불량실적 컬럼 설정이 없어 해당 단계는 생략했습니다."
+            )
+        message = (
+            f"1) chip_prod_id {chip_prod_id} 기준으로 설계조건+불량조건을 함께 적용해 LOT 후보를 필터링했습니다. "
+            f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
+            f"{post_grid_step} "
+            f"4) 최종 요약: {summary}. 상위 후보를 확인해 주세요."
+        )
+        pipeline_store.update(
+            session_id,
+            briefing_text=message,
+            briefing_summary=memory_summary,
+        )
+        pipeline_store.set_pending_memory_summary(
+            session_id, memory_summary, label="final_briefing"
+        )
+        return {"message": message, "simulation_result": simulation_result}
+    message = (
+        f"1) chip_prod_id {chip_prod_id} 기준으로 설계조건+불량조건을 함께 적용해 LOT 후보를 필터링했습니다. "
+        f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
+        "3) TOP3 설계조건 기반 불량실적 조회를 진행했습니다. "
+        "4) 최종 요약: 추천 결과를 확인해 주세요."
+    )
+    pipeline_store.update(
+        session_id,
+        briefing_text=message,
+        briefing_summary=memory_summary,
+    )
+    pipeline_store.set_pending_memory_summary(
+        session_id, memory_summary, label="final_briefing"
+    )
     return {
-        "message": (
-            f"기종 {chip_prod_id} 기준으로 레퍼런스 LOT를 선정하고 그리드 서치를 완료했습니다. "
-            "상위 후보를 확인해 주세요."
-        ),
+        "message": message,
         "simulation_result": simulation_result,
     }
 

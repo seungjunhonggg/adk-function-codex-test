@@ -58,6 +58,22 @@ class PipelineStateStore:
         self._data[session_id] = record
         return dict(record)
 
+    def set_pending_memory_summary(
+        self, session_id: str, summary: str, label: str | None = None
+    ) -> dict[str, Any]:
+        return self.update(
+            session_id,
+            pending_memory_summary=summary,
+            pending_memory_label=label or "",
+        )
+
+    def pop_pending_memory_summary(self, session_id: str) -> str | None:
+        record = dict(self._data.get(session_id, {}))
+        summary = record.pop("pending_memory_summary", None)
+        record.pop("pending_memory_label", None)
+        self._data[session_id] = record
+        return summary
+
     def set_reference(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.update(session_id, reference=payload, stage="reference")
 

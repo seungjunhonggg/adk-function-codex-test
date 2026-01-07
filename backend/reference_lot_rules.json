@@ -47,6 +47,9 @@
     "rate_columns": [],
     "value_unit": "percent"
   },
+  "post_grid_defect_columns": [],
+  "post_grid_recent_months": 3,
+  "post_grid_defect_value_unit": "percent",
   "selection": {
     "max_candidates": 0
   },
