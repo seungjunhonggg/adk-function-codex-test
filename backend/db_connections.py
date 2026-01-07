@@ -173,6 +173,21 @@ def _introspect_postgres(conn: Any) -> dict:
         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
         ORDER BY table_schema, table_name, ordinal_position;
     """
+    matview_columns_query = """
+        SELECT n.nspname,
+               c.relname,
+               a.attname,
+               pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+               a.attnotnull
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+        WHERE c.relkind = 'm'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        ORDER BY n.nspname, c.relname, a.attnum;
+    """
     with conn.cursor() as cur:
         cur.execute(tables_query)
         for schema_name, table_name, _table_type in cur.fetchall():
@@ -204,6 +219,26 @@ def _introspect_postgres(conn: Any) -> dict:
                     "name": column_name,
                     "type": data_type,
                     "nullable": is_nullable == "YES",
+                }
+            )
+
+        cur.execute(matview_columns_query)
+        for row in cur.fetchall():
+            schema_name, table_name, column_name, data_type, attnotnull = row
+            schema_entry = schemas.setdefault(schema_name, {"tables": {}})
+            table_entry = schema_entry["tables"].setdefault(
+                table_name, {"columns": []}
+            )
+            existing_names = {
+                column.get("name") for column in table_entry.get("columns", [])
+            }
+            if column_name in existing_names:
+                continue
+            table_entry["columns"].append(
+                {
+                    "name": column_name,
+                    "type": data_type,
+                    "nullable": not attnotnull,
                 }
             )
     return {"schemas": schemas}
