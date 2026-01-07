@@ -3,6 +3,7 @@ from typing import Dict, Set
 from fastapi import WebSocket
 
 from .context import current_session_id
+from .pipeline_store import pipeline_store
 
 
 class EventBus:
@@ -29,10 +30,15 @@ class EventBus:
 
     async def broadcast(self, event: dict, session_id: str | None = None) -> None:
         session = (session_id or "").strip() or current_session_id.get()
+        event_out = dict(event) if isinstance(event, dict) else {"payload": event}
+        if "workflow_id" not in event_out:
+            workflow_id = pipeline_store.get(session).get("workflow_id")
+            if workflow_id:
+                event_out["workflow_id"] = workflow_id
         stale = []
         for ws in list(self._clients_by_session.get(session, set())):
             try:
-                await ws.send_json(event)
+                await ws.send_json(event_out)
             except Exception:
                 stale.append(ws)
         for ws in stale:

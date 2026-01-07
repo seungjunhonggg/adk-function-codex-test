@@ -1,8 +1,10 @@
 ﻿import json
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import asyncio
 import logging
+from typing import Any, Awaitable, Callable
 
 from agents import Runner, SQLiteSession
 from agents.tracing import set_tracing_disabled
@@ -78,6 +80,13 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="공정 모니터링 데모")
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class WorkflowOutcome:
+    message: str
+    ui_event: dict | None = None
+    memory_summary: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -166,6 +175,8 @@ async def chat(request: ChatRequest) -> dict:
         route_command = await _route_message(request.message, request.session_id)
         if route_command.get("needs_clarification") and route_command.get("clarifying_question"):
             clarifying = route_command.get("clarifying_question")
+            primary_intent = route_command.get("primary_intent") or "unknown"
+            pipeline_store.update(request.session_id, workflow_id=primary_intent)
             await emit_workflow_log(
                 "ROUTE",
                 "clarify",
@@ -181,7 +192,8 @@ async def chat(request: ChatRequest) -> dict:
             await _append_assistant_message(request.session_id, clarifying)
             return {"assistant_message": clarifying}
 
-        primary_intent = route_command.get("primary_intent")
+        primary_intent = route_command.get("primary_intent") or "unknown"
+        pipeline_store.update(request.session_id, workflow_id=primary_intent)
         await emit_workflow_log(
             "ROUTE",
             f"primary={primary_intent}",
@@ -191,92 +203,20 @@ async def chat(request: ChatRequest) -> dict:
                 "reason": route_command.get("reason"),
             },
         )
-        if primary_intent == "stage_view":
-            await emit_workflow_log("FLOW", "stage_view -> show_simulation_stage")
-            await _append_user_message(request.session_id, request.message)
-            response = await _handle_stage_view_request(
-                request.message, request.session_id, route_command
-            )
-            await _append_assistant_message(request.session_id, response)
-            return {"assistant_message": response}
-        if primary_intent == "chart_edit":
-            await emit_workflow_log("FLOW", "chart_edit -> apply_chart_config")
-            await _append_user_message(request.session_id, request.message)
-            response = await _handle_chart_request(
-                request.message, request.session_id, route_command
-            )
-            await _append_assistant_message(request.session_id, response)
-            return {"assistant_message": response}
-
-        if primary_intent == "simulation_edit":
-            await emit_workflow_log("FLOW", "simulation_edit -> edit_intent")
-            edit_response = await _maybe_handle_edit_intent(
-                request.message, request.session_id
-            )
-            if edit_response is not None:
-                message_text, ui_event = _split_edit_response(edit_response)
-                await _append_user_message(request.session_id, request.message)
-                if message_text:
-                    await _append_assistant_message(request.session_id, message_text)
-                response_payload = {"assistant_message": message_text}
-                if ui_event:
-                    response_payload["ui_event"] = ui_event
-                return response_payload
-            await emit_workflow_log("FLOW", "simulation_edit -> pipeline")
-            sim_response = await _maybe_handle_simulation_message(
-                request.message, request.session_id
-            )
-            if sim_response is not None:
-                await _append_user_message(request.session_id, request.message)
-                await _append_assistant_message(request.session_id, sim_response)
-                return {"assistant_message": sim_response}
-
-        if primary_intent == "simulation_run":
-            await emit_workflow_log("FLOW", "simulation_run -> edit_intent")
-            edit_response = await _maybe_handle_edit_intent(
-                request.message, request.session_id
-            )
-            if edit_response is not None:
-                message_text, ui_event = _split_edit_response(edit_response)
-                await _append_user_message(request.session_id, request.message)
-                if message_text:
-                    await _append_assistant_message(request.session_id, message_text)
-                response_payload = {"assistant_message": message_text}
-                if ui_event:
-                    response_payload["ui_event"] = ui_event
-                return response_payload
-
-            await emit_workflow_log("FLOW", "simulation_run -> pipeline")
-            sim_response = await _maybe_handle_simulation_message(
-                request.message, request.session_id
-            )
-            if sim_response is not None:
-                await _append_user_message(request.session_id, request.message)
-                await _append_assistant_message(request.session_id, sim_response)
-                return {"assistant_message": sim_response}
-
-        if primary_intent == "chat":
-            await emit_workflow_log("FLOW", "chat -> conversation_agent")
-            await _append_user_message(request.session_id, request.message)
-            convo = await Runner.run(
-                conversation_agent,
-                input=request.message,
-                session=session,
-                hooks=WorkflowRunHooks(),
-            )
-            response = (convo.final_output or "").strip()
-            await _append_assistant_message(request.session_id, response)
-            return {"assistant_message": response}
-
-        await emit_workflow_log("FLOW", "fallback -> conversation_agent")
-        fallback = await Runner.run(
-            conversation_agent,
-            input=request.message,
-            session=session,
-            hooks=WorkflowRunHooks(),
+        handler = WORKFLOW_HANDLERS.get(primary_intent)
+        outcome: WorkflowOutcome | None = None
+        if handler:
+            outcome = await handler(request.message, request.session_id, route_command)
+        if outcome is None:
+            if primary_intent == "chat":
+                outcome = await _handle_chat_workflow(request.message, session)
+            else:
+                outcome = await _handle_fallback_workflow(
+                    request.message, request.session_id, session
+                )
+        return await _record_workflow_outcome(
+            request.session_id, request.message, primary_intent, outcome
         )
-        await _maybe_update_simulation_from_message(request.message, request.session_id)
-        return {"assistant_message": (fallback.final_output or "").strip()}
     finally:
         current_session_id.reset(token)
 
@@ -348,6 +288,8 @@ def _format_simulation_result(result: dict | None) -> str:
 
 
 MEMORY_SUMMARY_MAX_LEN = 600
+MEMORY_SUMMARY_LONG_THRESHOLD = 420
+SUMMARY_ID_EXCLUDE_PREFIXES = ("param", "lot", "lotid", "lot_id")
 MEMORY_SUMMARY_SKIP_KEYS = {
     "top_candidates",
     "grid_results",
@@ -439,6 +381,169 @@ def _build_memory_summary(payload: dict, label: str = "final_briefing") -> str:
     if len(summary) > MEMORY_SUMMARY_MAX_LEN:
         summary = summary[: MEMORY_SUMMARY_MAX_LEN - 3].rstrip() + "..."
     return summary
+
+
+def _extract_summary_ids(message: str, limit: int = 6) -> list[str]:
+    candidates = re.findall(r"\b[a-z0-9][a-z0-9-_]{5,}\b", message, re.IGNORECASE)
+    tokens: list[str] = []
+    for token in candidates:
+        lowered = token.lower()
+        if any(lowered.startswith(prefix) for prefix in SUMMARY_ID_EXCLUDE_PREFIXES):
+            continue
+        if token in tokens:
+            continue
+        tokens.append(token)
+        if len(tokens) >= limit:
+            break
+    return tokens
+
+
+def _build_message_memory_summary(message: str, label: str) -> str:
+    compact = " ".join(message.split())
+    preview = compact[:160]
+    items = [f"label={label}"]
+
+    lot_id = _extract_lot_id(message) or ""
+    if lot_id:
+        items.append(f"lot={lot_id}")
+    ids = _extract_summary_ids(message)
+    if ids:
+        items.append(f"ids={','.join(ids)}")
+    numbers = re.findall(r"[-+]?\d+(?:\.\d+)?", message)
+    if numbers:
+        items.append(f"nums={','.join(numbers[:6])}")
+    if "추천" in message:
+        items.append("intent=추천")
+    items.append(f"preview={preview}")
+
+    summary = "MSG_SUMMARY " + "; ".join(items)
+    if len(summary) > MEMORY_SUMMARY_MAX_LEN:
+        summary = summary[: MEMORY_SUMMARY_MAX_LEN - 3].rstrip() + "..."
+    return summary
+
+
+def _queue_memory_summary(
+    session_id: str,
+    workflow_id: str,
+    message: str,
+    explicit_summary: str | None = None,
+) -> None:
+    if not message:
+        return
+    state = pipeline_store.get(session_id)
+    if state.get("pending_memory_summary"):
+        return
+    summary = explicit_summary
+    if not summary and len(message) >= MEMORY_SUMMARY_LONG_THRESHOLD:
+        summary = _build_message_memory_summary(message, workflow_id)
+    if summary:
+        pipeline_store.set_pending_memory_summary(
+            session_id, summary, label=workflow_id
+        )
+
+
+async def _record_workflow_outcome(
+    session_id: str,
+    message: str,
+    workflow_id: str,
+    outcome: WorkflowOutcome,
+) -> dict:
+    await _append_user_message(session_id, message)
+    if outcome.message:
+        _queue_memory_summary(
+            session_id,
+            workflow_id,
+            outcome.message,
+            explicit_summary=outcome.memory_summary,
+        )
+        await _append_assistant_message(session_id, outcome.message)
+    response_payload = {"assistant_message": outcome.message}
+    if outcome.ui_event:
+        response_payload["ui_event"] = outcome.ui_event
+    return response_payload
+
+
+async def _handle_stage_view_workflow(
+    message: str, session_id: str, route_command: dict
+) -> WorkflowOutcome:
+    await emit_workflow_log("FLOW", "stage_view -> show_simulation_stage")
+    response = await _handle_stage_view_request(message, session_id, route_command)
+    return WorkflowOutcome(response)
+
+
+async def _handle_chart_edit_workflow(
+    message: str, session_id: str, route_command: dict
+) -> WorkflowOutcome:
+    await emit_workflow_log("FLOW", "chart_edit -> apply_chart_config")
+    response = await _handle_chart_request(message, session_id, route_command)
+    return WorkflowOutcome(response)
+
+
+async def _handle_simulation_edit_workflow(
+    message: str, session_id: str, route_command: dict
+) -> WorkflowOutcome | None:
+    await emit_workflow_log("FLOW", "simulation_edit -> edit_intent")
+    edit_response = await _maybe_handle_edit_intent(message, session_id)
+    if edit_response is not None:
+        message_text, ui_event = _split_edit_response(edit_response)
+        return WorkflowOutcome(message_text, ui_event)
+    await emit_workflow_log("FLOW", "simulation_edit -> pipeline")
+    sim_response = await _maybe_handle_simulation_message(message, session_id)
+    if sim_response is None:
+        return None
+    return WorkflowOutcome(sim_response)
+
+
+async def _handle_simulation_run_workflow(
+    message: str, session_id: str, route_command: dict
+) -> WorkflowOutcome | None:
+    await emit_workflow_log("FLOW", "simulation_run -> edit_intent")
+    edit_response = await _maybe_handle_edit_intent(message, session_id)
+    if edit_response is not None:
+        message_text, ui_event = _split_edit_response(edit_response)
+        return WorkflowOutcome(message_text, ui_event)
+    await emit_workflow_log("FLOW", "simulation_run -> pipeline")
+    sim_response = await _maybe_handle_simulation_message(message, session_id)
+    if sim_response is None:
+        return None
+    return WorkflowOutcome(sim_response)
+
+
+async def _handle_chat_workflow(
+    message: str, session: SQLiteSession
+) -> WorkflowOutcome:
+    await emit_workflow_log("FLOW", "chat -> conversation_agent")
+    convo = await Runner.run(
+        conversation_agent,
+        input=message,
+        session=session,
+        hooks=WorkflowRunHooks(),
+    )
+    response = (convo.final_output or "").strip()
+    return WorkflowOutcome(response)
+
+
+async def _handle_fallback_workflow(
+    message: str, session_id: str, session: SQLiteSession
+) -> WorkflowOutcome:
+    await emit_workflow_log("FLOW", "fallback -> conversation_agent")
+    fallback = await Runner.run(
+        conversation_agent,
+        input=message,
+        session=session,
+        hooks=WorkflowRunHooks(),
+    )
+    await _maybe_update_simulation_from_message(message, session_id)
+    response = (fallback.final_output or "").strip()
+    return WorkflowOutcome(response)
+
+
+WORKFLOW_HANDLERS: dict[str, Callable[..., Awaitable[WorkflowOutcome | None]]] = {
+    "stage_view": _handle_stage_view_workflow,
+    "chart_edit": _handle_chart_edit_workflow,
+    "simulation_edit": _handle_simulation_edit_workflow,
+    "simulation_run": _handle_simulation_run_workflow,
+}
 
 
 def _format_missing_fields(missing: list[str]) -> str:
