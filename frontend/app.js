@@ -612,6 +612,7 @@ function resetEventPanel() {
   }
   if (finalDefectChartEl) {
     finalDefectChartEl.textContent = defaultFinalDefectChartText;
+    finalDefectChartEl.style.display = "";
   }
   if (designCandidatesEl) {
     designCandidatesEl.textContent = defaultDesignCandidatesText;
@@ -1750,6 +1751,7 @@ function renderFinalDefectChart(payload = {}) {
   if (!finalDefectChartEl) {
     return;
   }
+  finalDefectChartEl.style.display = "";
   lastFinalDefectChartPayload = payload;
   const charts = Array.isArray(payload.charts) ? payload.charts : null;
   finalDefectChartEl.innerHTML = "";
@@ -1853,147 +1855,125 @@ function renderFinalBriefing(payload = {}) {
     return;
   }
   hasFinalBriefing = true;
-  if (finalDefectChartEl && defaultFinalDefectChartText) {
-    finalDefectChartEl.textContent = defaultFinalDefectChartText;
-  }
-  const cards = [finalBriefingCard];
-  if (Array.isArray(payload.top_candidates) && payload.top_candidates.length) {
-    cards.push(designCandidatesCard);
-  }
-  showOnlyStreamCards(cards);
+  showOnlyStreamCards([finalBriefingCard]);
   finalBriefingEl.innerHTML = "";
+  if (finalDefectChartEl) {
+    finalDefectChartEl.textContent = "";
+    finalDefectChartEl.style.display = "none";
+  }
 
   const chipProdId = payload.chip_prod_id || "-";
   const referenceLot = payload.reference_lot || "-";
-  const candidateTotal =
-    payload.candidate_total !== undefined ? payload.candidate_total : "-";
-  const defectStats = payload.defect_stats || {};
-  const value1Count = payload.value1_count;
-  const value2Count = payload.value2_count;
-  const value1Num = Number(value1Count);
-  const value2Num = Number(value2Count);
-  const overallRateValue = Number(payload.defect_rate_overall);
-
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
   kpiRow.appendChild(createKpiCard("추천 기종", chipProdId, "accent"));
   kpiRow.appendChild(createKpiCard("레퍼런스 LOT", referenceLot));
-  if (candidateTotal !== "-") {
-    kpiRow.appendChild(createKpiCard("그리드 후보", candidateTotal));
-  }
-  if (Number.isFinite(overallRateValue)) {
-    kpiRow.appendChild(
-      createKpiCard(
-        "불량률(전체)",
-        `${(overallRateValue * 100).toFixed(2)}%`
-      )
-    );
-  } else if (
-    Number.isFinite(value1Num) &&
-    Number.isFinite(value2Num) &&
-    value1Num > 0
-  ) {
-    const overallRate = ((value1Num - value2Num) / value1Num) * 100;
-    kpiRow.appendChild(createKpiCard("불량률(전체)", `${overallRate.toFixed(2)}%`));
-  }
-  if (defectStats && defectStats.count) {
-    const avg = `${(defectStats.avg * 100).toFixed(2)}%`;
-    kpiRow.appendChild(createKpiCard("불량률 평균", avg));
-  }
   finalBriefingEl.appendChild(kpiRow);
 
-  if (defectStats && defectStats.count) {
-    const meta = document.createElement("div");
-    meta.className = "candidate-meta";
-    const avg = `${(defectStats.avg * 100).toFixed(2)}%`;
-    const min = `${(defectStats.min * 100).toFixed(2)}%`;
-    const max = `${(defectStats.max * 100).toFixed(2)}%`;
-    meta.textContent = `불량률 ${defectStats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
-    finalBriefingEl.appendChild(meta);
-  }
-
-  if (lastFinalDefectChartPayload) {
-    renderFinalDefectChart(lastFinalDefectChartPayload);
-  } else if (lastDefectChartPayload) {
-    renderDefectRateChartInto(finalDefectChartEl, lastDefectChartPayload, {
-      includeMeta: false,
-    });
-  }
-
-  const defectRates = Array.isArray(payload.defect_rates)
-    ? payload.defect_rates
+  const blocks = Array.isArray(payload.design_blocks)
+    ? payload.design_blocks
     : [];
-  if (defectRates.length) {
-    const table = document.createElement("table");
-    table.className = "result-table";
-    const thead = document.createElement("thead");
-    thead.innerHTML = `
-      <tr>
-        <th>결함 조건</th>
-        <th>불량률</th>
-      </tr>
-    `;
-    table.appendChild(thead);
-
-    const tbody = document.createElement("tbody");
-    defectRates.forEach((item) => {
-      const row = document.createElement("tr");
-      const label = item.label || item.key || item.column || "-";
-      const rate = Number(item.defect_rate);
-      const rateText = Number.isFinite(rate) ? `${(rate * 100).toFixed(2)}%` : "-";
-      row.innerHTML = `
-        <td>${label}</td>
-        <td>${rateText}</td>
-      `;
-      tbody.appendChild(row);
-    });
-    table.appendChild(tbody);
-    finalBriefingEl.appendChild(table);
-  }
-
-  const candidates = Array.isArray(payload.top_candidates)
-    ? payload.top_candidates
-    : [];
-  if (!candidates.length) {
+  if (!blocks.length) {
     const empty = document.createElement("div");
     empty.className = "candidate-meta";
-    empty.textContent = "상위 후보가 아직 없습니다.";
+    empty.textContent = "설계 후보가 아직 없습니다.";
     finalBriefingEl.appendChild(empty);
     return;
   }
 
-  const table = document.createElement("table");
-  table.className = "result-table";
-  const thead = document.createElement("thead");
-  thead.innerHTML = `
-    <tr>
-      <th>순위</th>
-      <th>예측 지표</th>
-      <th>설계 값</th>
-    </tr>
-  `;
-  table.appendChild(thead);
+  const formatMetric = (value, unit) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      return "-";
+    }
+    if (unit === "ratio") {
+      return `${(num * 100).toFixed(2)}%`;
+    }
+    if (unit === "percent") {
+      return `${num.toFixed(2)}%`;
+    }
+    if (unit) {
+      return `${num.toFixed(3)} ${unit}`;
+    }
+    return num.toFixed(3);
+  };
 
-  const tbody = document.createElement("tbody");
-  candidates.forEach((item, index) => {
-    const row = document.createElement("tr");
-    const rank = item.rank || index + 1;
-    const target = item.predicted_target ?? "-";
-    const design =
-      item.design && typeof item.design === "object"
-        ? Object.entries(item.design)
-            .map(([key, value]) => `${key}=${renderValue(value)}`)
-            .join(", ")
-        : "-";
-    row.innerHTML = `
-      <td>${rank}</td>
-      <td>${target}</td>
-      <td>${design}</td>
-    `;
-    tbody.appendChild(row);
+  const container = document.createElement("div");
+  container.className = "design-blocks";
+  blocks.slice(0, 3).forEach((block, index) => {
+    const blockEl = document.createElement("div");
+    blockEl.className = "design-block";
+
+    const rank = block.rank || index + 1;
+    const predicted = block.predicted_target;
+    const lotCount = Number(block.lot_count);
+    const header = document.createElement("div");
+    header.className = "candidate-meta";
+    let headerText = `TOP${rank} 설계안`;
+    if (predicted !== undefined && predicted !== null && predicted !== "") {
+      headerText += ` · 예측지표 ${renderValue(predicted)}`;
+    }
+    if (Number.isFinite(lotCount) && lotCount >= 0) {
+      headerText += ` · LOT ${lotCount}개`;
+    }
+    header.textContent = headerText;
+    blockEl.appendChild(header);
+
+    const designDisplay = Array.isArray(block.design_display)
+      ? block.design_display
+      : [];
+    if (designDisplay.length) {
+      const table = document.createElement("table");
+      table.className = "result-table";
+      const tbody = document.createElement("tbody");
+      designDisplay.forEach((item) => {
+        const row = document.createElement("tr");
+        const label = item.label || item.key || "-";
+        row.innerHTML = `
+          <td>${label}</td>
+          <td>${renderValue(item.value)}</td>
+        `;
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+      blockEl.appendChild(table);
+    } else {
+      const emptyDesign = document.createElement("div");
+      emptyDesign.className = "candidate-meta";
+      emptyDesign.textContent = "설계 값이 없습니다.";
+      blockEl.appendChild(emptyDesign);
+    }
+
+    const metrics = Array.isArray(block.metrics) ? block.metrics : [];
+    if (metrics.length) {
+      const pills = document.createElement("div");
+      pills.className = "summary-pills";
+      metrics.forEach((metric) => {
+        const pill = document.createElement("span");
+        pill.className = "pill summary-pill";
+        pill.textContent = `${metric.label || metric.key} ${formatMetric(metric.value, metric.unit)}`;
+        pills.appendChild(pill);
+      });
+      blockEl.appendChild(pills);
+    }
+
+    if (block.chart && typeof block.chart === "object") {
+      const chartEl = document.createElement("div");
+      chartEl.className = "defect-chart";
+      renderDefectRateChartInto(chartEl, block.chart, {
+        includeMeta: true,
+      });
+      blockEl.appendChild(chartEl);
+    } else {
+      const emptyChart = document.createElement("div");
+      emptyChart.className = "candidate-meta";
+      emptyChart.textContent = "불량률 데이터가 없습니다.";
+      blockEl.appendChild(emptyChart);
+    }
+
+    container.appendChild(blockEl);
   });
-  table.appendChild(tbody);
-  finalBriefingEl.appendChild(table);
+  finalBriefingEl.appendChild(container);
 }
 
 function buildResultTable(result) {
@@ -2129,6 +2109,9 @@ function handleEvent(event) {
     addEventLog(label, "그래프 업데이트");
   }
   if (event.type === "final_defect_chart") {
+    if (hasFinalBriefing) {
+      return;
+    }
     renderFinalDefectChart(event.payload);
     const label = event.payload?.metric_label || "불량률";
     addEventLog(label, "최종 그래프 업데이트");

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from functools import cmp_to_key
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,13 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     normalized.setdefault("grid_search", {})
     normalized.setdefault("defect_rate_aggregate", {})
     normalized.setdefault("defect_rate_source", {})
-    normalized["selection"].setdefault("max_candidates", 500)
+    normalized.setdefault("final_briefing", {})
+    selection = normalized.get("selection")
+    if not isinstance(selection, dict):
+        selection = {}
+        normalized["selection"] = selection
+    selection.setdefault("max_candidates", 500)
+    selection.setdefault("lot_search_sort", [])
     param_columns = normalized.get("param_columns")
     if not isinstance(param_columns, dict):
         param_columns = {}
@@ -75,6 +82,15 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     defect_rate_source.setdefault("update_date_column", "")
     defect_rate_source.setdefault("rate_columns", [])
     defect_rate_source.setdefault("value_unit", "")
+
+    final_briefing = normalized.get("final_briefing")
+    if not isinstance(final_briefing, dict):
+        final_briefing = {}
+        normalized["final_briefing"] = final_briefing
+    final_briefing.setdefault("max_blocks", 3)
+    final_briefing.setdefault("design_fields", [])
+    final_briefing.setdefault("design_labels", {})
+    final_briefing.setdefault("chart_bins", 8)
 
     db = normalized.get("db", {})
     tables = db.get("tables")
@@ -247,6 +263,61 @@ def _normalize_defect_conditions(rules: dict) -> list[dict]:
             }
         )
     return normalized
+
+
+def _normalize_lot_search_sort(rules: dict) -> list[dict]:
+    selection = rules.get("selection") or {}
+    sort_specs = selection.get("lot_search_sort") or []
+    if not isinstance(sort_specs, list):
+        return []
+    normalized: list[dict] = []
+    for item in sort_specs:
+        if not isinstance(item, dict):
+            continue
+        columns = item.get("columns")
+        normalized_columns = [
+            str(column) for column in columns if column
+        ] if isinstance(columns, list) else []
+        if not normalized_columns:
+            column = item.get("column") or item.get("name")
+            if not column:
+                continue
+            normalized_columns = [str(column)]
+        order = str(item.get("order") or item.get("direction") or "asc").lower()
+        if order not in {"asc", "desc"}:
+            order = "asc"
+        priority = item.get("value_priority")
+        value_priority: dict[str, int] | None = None
+        if isinstance(priority, dict):
+            value_priority = {}
+            for key, value in priority.items():
+                try:
+                    value_priority[str(key)] = int(value)
+                except (TypeError, ValueError):
+                    continue
+            if not value_priority:
+                value_priority = None
+        combine = str(item.get("combine") or "").lower()
+        if combine not in {"min", "max", "sum"}:
+            combine = "min" if len(normalized_columns) > 1 else ""
+        normalized.append(
+            {
+                "columns": normalized_columns,
+                "order": order,
+                "value_priority": value_priority,
+                "combine": combine,
+            }
+        )
+    return normalized
+
+
+def _lot_search_sort_columns(rules: dict) -> list[str]:
+    columns: list[str] = []
+    for item in _normalize_lot_search_sort(rules):
+        for column in item.get("columns") or []:
+            if column:
+                columns.append(column)
+    return columns
 
 
 def _get_param_columns(rules: dict, table_key: str | None = None) -> dict:
@@ -458,6 +529,118 @@ def _select_latest_row(rows: list[dict], date_column: str) -> dict | None:
             latest = row
             latest_dt = dt
     return latest
+
+
+def _compare_sort_values(a_value: Any, b_value: Any, order: str) -> int:
+    if a_value is None and b_value is None:
+        return 0
+    if a_value is None:
+        return 1
+    if b_value is None:
+        return -1
+    if isinstance(a_value, datetime) or isinstance(b_value, datetime):
+        a_dt = a_value if isinstance(a_value, datetime) else _parse_datetime(a_value)
+        b_dt = b_value if isinstance(b_value, datetime) else _parse_datetime(b_value)
+        if a_dt is None and b_dt is None:
+            return 0
+        if a_dt is None:
+            return 1
+        if b_dt is None:
+            return -1
+        if a_dt == b_dt:
+            return 0
+        if order == "desc":
+            return -1 if a_dt > b_dt else 1
+        return -1 if a_dt < b_dt else 1
+    a_num = _coerce_float(a_value)
+    b_num = _coerce_float(b_value)
+    if a_num is not None and b_num is not None:
+        if a_num == b_num:
+            return 0
+        if order == "desc":
+            return -1 if a_num > b_num else 1
+        return -1 if a_num < b_num else 1
+    a_text = str(a_value)
+    b_text = str(b_value)
+    if a_text == b_text:
+        return 0
+    if order == "desc":
+        return -1 if a_text > b_text else 1
+    return -1 if a_text < b_text else 1
+
+
+def _priority_rank(value: Any, priority: dict[str, int], default_rank: int) -> int:
+    if value is None:
+        return default_rank
+    return priority.get(str(value), default_rank)
+
+
+def _combine_priority_ranks(ranks: list[int], combine: str) -> int:
+    if not ranks:
+        return 0
+    if combine == "max":
+        return max(ranks)
+    if combine == "sum":
+        return sum(ranks)
+    return min(ranks)
+
+
+def _select_lot_search_row(
+    rows: list[dict], rules: dict, date_column: str
+) -> dict | None:
+    if not rows:
+        return None
+    sort_specs = _normalize_lot_search_sort(rules)
+    if not sort_specs:
+        return _select_latest_row(rows, date_column)
+
+    def compare(left: dict, right: dict) -> int:
+        for spec in sort_specs:
+            columns = spec.get("columns") or []
+            if not columns:
+                continue
+            order = spec.get("order") or "asc"
+            priority = spec.get("value_priority")
+            if isinstance(priority, dict) and priority:
+                min_rank = min(priority.values())
+                max_rank = max(priority.values())
+                default_rank = (
+                    min_rank - 1 if order == "desc" else max_rank + 1
+                )
+                left_ranks = [
+                    _priority_rank(_get_value(left, column), priority, default_rank)
+                    for column in columns
+                ]
+                right_ranks = [
+                    _priority_rank(_get_value(right, column), priority, default_rank)
+                    for column in columns
+                ]
+                combine = spec.get("combine") or "min"
+                result = _compare_sort_values(
+                    _combine_priority_ranks(left_ranks, combine),
+                    _combine_priority_ranks(right_ranks, combine),
+                    order,
+                )
+                if result != 0:
+                    return result
+                continue
+            for column in columns:
+                result = _compare_sort_values(
+                    _get_value(left, column),
+                    _get_value(right, column),
+                    order,
+                )
+                if result != 0:
+                    return result
+        if date_column:
+            return _compare_sort_values(
+                _parse_datetime(_get_value(left, date_column)),
+                _parse_datetime(_get_value(right, date_column)),
+                "desc",
+            )
+        return 0
+
+    return sorted(rows, key=cmp_to_key(compare))[0]
 
 
 def _build_columns(rules: dict) -> list[str]:
@@ -707,7 +890,10 @@ def select_reference_from_params(
             }
         )
 
-    base_columns = [chip_prod_column, lot_id_column, input_date_column]
+    sort_columns = _lot_search_sort_columns(rules)
+    base_columns = list(
+        dict.fromkeys([chip_prod_column, lot_id_column, input_date_column] + sort_columns)
+    )
     source = ""
     chip_prod_ids: list[str] = []
     if not use_chip_prod_like:
@@ -780,7 +966,7 @@ def select_reference_from_params(
             }
     value1_counts = _count_by_key(value1_rows, chip_prod_column, lot_id_column)
 
-    latest_row = _select_latest_row(value2_all_rows, input_date_column)
+    latest_row = _select_lot_search_row(value2_all_rows, rules, input_date_column)
     if not latest_row:
         return {
             "status": "missing",
@@ -1473,6 +1659,7 @@ def collect_post_grid_defects(
         items.append(
             {
                 "rank": candidate.get("rank"),
+                "predicted_target": candidate.get("predicted_target"),
                 "design": design,
                 "lot_count": len(lot_defect_rates),
                 "defect_stats": stats,

@@ -56,16 +56,20 @@ flowchart TD
 3) 레퍼런스 파이프라인 실행  
    - `backend/app.py::_run_reference_pipeline`  
    - 내부 주요 단계:
-     - 레퍼런스 LOT 선택 (`reference_lot.py`)
-     - LOT 불량률 히스토그램(1차) 이벤트 송신
+    - 레퍼런스 LOT 선택 (`reference_lot.py`)
+      - lot_search 불량 필터: cutting_defect/measure_defect는 MCS_GRADE_S/A/B, contact_defect=0,
+        x_fr_ispass/pass_halt/pass_8585/pass_burn_in/x_df_ispass/x_odb_pass_yn은 OK
+      - 정렬 우선순위: cutting_defect+measure_defect 등급(S > A > B) → bdv_avg 내림차순
+        → x_tr_short_defect_rate 오름차순 → 최신 input_date
+    - LOT 불량률 히스토그램(1차) 이벤트 송신
      - grid_search 후보 생성
      - TOP3 설계안의 최근 3개월 LOT 불량률 통계 조회
-     - 최종 브리핑 이벤트/메시지 송신
+     - 최종 브리핑 이벤트/메시지 송신 (`design_blocks` 포함)
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  
    - 주요 이벤트: `simulation_form`, `lot_result`, `defect_rate_chart`,  
-     `design_candidates`, `final_defect_chart`, `final_briefing`
+     `design_candidates`, `final_briefing`
 
 핵심 파일:
 - `backend/reference_lot.py`: 레퍼런스 LOT, post-grid 불량 통계
@@ -124,11 +128,14 @@ flowchart TD
 
 ## 이벤트 패널 업데이트 규칙
 UI는 `event_bus` 이벤트만 보고 갱신합니다.
-- 예: `defect_rate_chart`, `final_defect_chart`, `final_briefing`
+- 예: `defect_rate_chart`, `final_briefing`
 - `pipeline_store`는 이벤트 재생/복구용 캐시 역할
   
 추가: 새 시뮬레이션 요청에 파라미터가 부족한 경우, `/api/chat` 응답에
 `ui_event=simulation_form`을 함께 넣어 WebSocket 미연결 상태에서도 입력 패널이 즉시 표시됩니다.
+
+추가: 최종 브리핑은 `design_blocks`를 받아 설계값 표 + 평균 불량률 히스토그램을
+후보별로 묶어서 렌더링합니다. (Top3 기준)
 
 ## 확장 포인트
 1) 새로운 워크플로우 추가  

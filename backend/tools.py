@@ -26,7 +26,7 @@ STAGE_EVENT_MAP = {
     "recommendation": ["simulation_result"],
     "reference": ["lot_result", "defect_rate_chart"],
     "grid": ["design_candidates"],
-    "final": ["final_briefing", "final_defect_chart"],
+    "final": ["final_briefing"],
 }
 
 STAGE_ALIASES = {

@@ -1195,6 +1195,26 @@ body::before {
   gap: 8px;
 }
 
+.design-blocks {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.design-block {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  display: grid;
+  gap: 10px;
+}
+
+.design-block .result-table td:first-child {
+  width: 45%;
+  color: var(--text-soft);
+}
+
 .defect-chart-stack {
   display: grid;
   gap: 12px;

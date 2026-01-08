@@ -300,6 +300,7 @@ MEMORY_SUMMARY_SKIP_KEYS = {
     "columns",
     "defect_stats",
     "post_grid_defects",
+    "design_blocks",
 }
 
 
@@ -347,6 +348,10 @@ def _build_memory_summary(payload: dict, label: str = "final_briefing") -> str:
     top_candidates = payload.get("top_candidates")
     if isinstance(top_candidates, list):
         items.append(("top_candidates", str(len(top_candidates))))
+
+    design_blocks = payload.get("design_blocks")
+    if isinstance(design_blocks, list):
+        items.append(("design_blocks", str(len(design_blocks))))
 
     defect_stats = payload.get("defect_stats")
     if isinstance(defect_stats, dict):
@@ -1866,6 +1871,7 @@ def _build_final_briefing_payload(
     grid_results: list[dict],
     top_candidates: list[dict],
     defect_stats: dict,
+    rules: dict | None = None,
     post_grid_defects: dict | None = None,
     value1_count: int | None = None,
     value2_count: int | None = None,
@@ -1874,8 +1880,10 @@ def _build_final_briefing_payload(
     chip_prod_id_count: int | None = None,
     chip_prod_id_samples: list[str] | None = None,
 ) -> dict:
+    rules = rules or {}
+    config = _resolve_final_briefing_config(rules)
     preview = []
-    for item in top_candidates[:5]:
+    for item in top_candidates[: config.get("max_blocks", 3)]:
         if not isinstance(item, dict):
             continue
         preview.append(
@@ -1907,6 +1915,7 @@ def _build_final_briefing_payload(
         payload["chip_prod_id_samples"] = chip_prod_id_samples
     if post_grid_defects is not None:
         payload["post_grid_defects"] = post_grid_defects
+        payload["design_blocks"] = _build_design_blocks(post_grid_defects, rules)
     return payload
 
 
@@ -1975,6 +1984,126 @@ def _compute_histogram(
         "normalize": normalize,
         "value_unit": value_unit,
     }
+
+
+def _resolve_final_briefing_config(rules: dict) -> dict:
+    config = rules.get("final_briefing")
+    if not isinstance(config, dict):
+        config = {}
+    try:
+        max_blocks = int(config.get("max_blocks", 3))
+    except (TypeError, ValueError):
+        max_blocks = 3
+    if max_blocks <= 0:
+        max_blocks = 3
+    design_fields = config.get("design_fields")
+    if not isinstance(design_fields, list):
+        design_fields = []
+    design_labels = config.get("design_labels")
+    if not isinstance(design_labels, dict):
+        design_labels = {}
+    try:
+        chart_bins = int(config.get("chart_bins", 8))
+    except (TypeError, ValueError):
+        chart_bins = 8
+    chart_bins = max(1, chart_bins)
+    return {
+        "max_blocks": max_blocks,
+        "design_fields": design_fields,
+        "design_labels": design_labels,
+        "chart_bins": chart_bins,
+    }
+
+
+def _build_design_display(
+    design: dict, design_fields: list[str], design_labels: dict
+) -> list[dict]:
+    if not isinstance(design, dict) or not design:
+        return []
+    keys = design_fields or list(design.keys())
+    display = []
+    for key in keys:
+        if key not in design:
+            continue
+        value = design.get(key)
+        if value is None or value == "":
+            continue
+        label = design_labels.get(key) or key
+        display.append({"key": key, "label": label, "value": value})
+    return display
+
+
+def _build_design_blocks(post_grid_defects: dict | None, rules: dict) -> list[dict]:
+    if not isinstance(post_grid_defects, dict):
+        return []
+    items = post_grid_defects.get("items")
+    if not isinstance(items, list) or not items:
+        return []
+    config = _resolve_final_briefing_config(rules)
+    value_unit = str(post_grid_defects.get("value_unit") or "").strip().lower()
+    blocks: list[dict] = []
+    for index, item in enumerate(items[: config["max_blocks"]], start=1):
+        if not isinstance(item, dict):
+            continue
+        design = item.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        display = _build_design_display(
+            design,
+            config.get("design_fields", []),
+            config.get("design_labels", {}),
+        )
+        lot_rates = item.get("lot_defect_rates")
+        if not isinstance(lot_rates, list):
+            lot_rates = []
+        values: list[float] = []
+        for entry in lot_rates:
+            if not isinstance(entry, dict):
+                continue
+            rate = entry.get("defect_rate")
+            try:
+                values.append(float(rate))
+            except (TypeError, ValueError):
+                continue
+        stats = _summarize_metric_values(values)
+        if value_unit:
+            stats["value_unit"] = value_unit
+        metrics = []
+        if stats.get("avg") is not None:
+            metrics.append(
+                {
+                    "key": "defect_avg",
+                    "label": "평균 불량률",
+                    "value": stats.get("avg"),
+                    "unit": value_unit,
+                }
+            )
+        chart = None
+        if values:
+            histogram = _compute_histogram(
+                values, config.get("chart_bins", 8), None, None, "count", value_unit
+            )
+            chart = {
+                "histogram": histogram,
+                "stats": stats,
+                "chart_type": "histogram",
+                "metric_label": "평균 불량률",
+                "value_unit": value_unit,
+            }
+        rank = item.get("rank") or index
+        blocks.append(
+            {
+                "rank": rank,
+                "predicted_target": item.get("predicted_target"),
+                "design_display": display,
+                "design": design,
+                "metrics": metrics,
+                "lot_count": item.get("lot_count"),
+                "lot_samples": item.get("sample_lots"),
+                "chart": chart,
+            }
+        )
+    return blocks
 
 
 def _build_post_grid_chart_payload(post_grid_defects: dict | None) -> dict | None:
@@ -2300,7 +2429,6 @@ async def _run_reference_pipeline(
         rules,
         chip_prod_id=chip_prod_id,
     )
-    post_grid_chart = _build_post_grid_chart_payload(post_grid_defects)
     pipeline_store.set_grid(
         session_id,
         {
@@ -2311,12 +2439,7 @@ async def _run_reference_pipeline(
             "overrides": grid_overrides,
         },
     )
-
-    if post_grid_chart:
-        await event_bus.broadcast(
-            {"type": "final_defect_chart", "payload": post_grid_chart}
-        )
-        pipeline_store.set_event(session_id, "final_defect_chart", post_grid_chart)
+    pipeline_store.set_event(session_id, "final_defect_chart", None)
 
     await event_bus.broadcast(
         {
@@ -2347,6 +2470,7 @@ async def _run_reference_pipeline(
         grid_results,
         top_candidates,
         defect_stats,
+        rules=rules,
         post_grid_defects=post_grid_defects,
         value1_count=value1_count,
         value2_count=value2_count,
