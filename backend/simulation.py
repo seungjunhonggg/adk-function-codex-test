@@ -214,12 +214,35 @@ async def call_grid_search_api(payload: dict) -> list[dict]:
             response = await client.post(GRID_SEARCH_API_URL, json=payload)
             response.raise_for_status()
             data = response.json()
-            if isinstance(data, dict) and isinstance(data.get("results"), list):
-                return data["results"]
-            if isinstance(data, list):
-                return data
-            return []
+            return _normalize_grid_search_results(data)
     return _simulate_grid_search(payload)
+
+
+def _normalize_grid_search_results(data: object) -> list[dict]:
+    if isinstance(data, dict):
+        if isinstance(data.get("results"), list):
+            return _normalize_grid_candidates(data.get("results"))
+        datas = data.get("datas") or data.get("data")
+        if isinstance(datas, dict) and isinstance(datas.get("sim"), list):
+            return _normalize_grid_candidates(datas.get("sim"))
+    if isinstance(data, list):
+        return _normalize_grid_candidates(data)
+    return []
+
+
+def _normalize_grid_candidates(items: object) -> list[dict]:
+    if not isinstance(items, list):
+        return []
+    results: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        design = item.get("design") if isinstance(item.get("design"), dict) else dict(item)
+        entry = {"design": design}
+        if "predicted_target" in item:
+            entry["predicted_target"] = item.get("predicted_target")
+        results.append(entry)
+    return results
 
 
 def _predict_locally(params: Dict[str, float | str]) -> Dict[str, float | str]:

@@ -37,6 +37,20 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     normalized.setdefault("defect_rate_aggregate", {})
     normalized.setdefault("defect_rate_source", {})
     normalized.setdefault("final_briefing", {})
+    normalized.setdefault(
+        "grid_match_fields",
+        [
+            "active_powder_base",
+            "active_powder_additives",
+            "ldn_avr_value",
+            "cast_dsgn_thk",
+        ],
+    )
+    normalized.setdefault("grid_match_field_aliases", {"ldn_avr_value": ["ldn_avg_value"]})
+    normalized.setdefault("grid_match_recent_months", 6)
+    normalized.setdefault("grid_match_row_limit", 50)
+    normalized.setdefault("grid_defect_columns", [])
+    normalized.setdefault("grid_defect_value_unit", "")
     selection = normalized.get("selection")
     if not isinstance(selection, dict):
         selection = {}
@@ -91,6 +105,26 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     final_briefing.setdefault("design_fields", [])
     final_briefing.setdefault("design_labels", {})
     final_briefing.setdefault("chart_bins", 8)
+
+    match_fields = normalized.get("grid_match_fields")
+    if not isinstance(match_fields, list):
+        normalized["grid_match_fields"] = []
+    match_aliases = normalized.get("grid_match_field_aliases")
+    if not isinstance(match_aliases, dict):
+        normalized["grid_match_field_aliases"] = {}
+    grid_defect_columns = normalized.get("grid_defect_columns")
+    if not isinstance(grid_defect_columns, list):
+        normalized["grid_defect_columns"] = []
+    try:
+        grid_recent = int(normalized.get("grid_match_recent_months", 6))
+    except (TypeError, ValueError):
+        grid_recent = 6
+    normalized["grid_match_recent_months"] = max(0, grid_recent)
+    try:
+        grid_row_limit = int(normalized.get("grid_match_row_limit", 50))
+    except (TypeError, ValueError):
+        grid_row_limit = 50
+    normalized["grid_match_row_limit"] = max(1, grid_row_limit)
 
     db = normalized.get("db", {})
     tables = db.get("tables")
@@ -318,6 +352,90 @@ def _lot_search_sort_columns(rules: dict) -> list[str]:
             if column:
                 columns.append(column)
     return columns
+
+
+def _resolve_grid_match_fields(rules: dict) -> list[str]:
+    fields = rules.get("grid_match_fields") or []
+    if not isinstance(fields, list):
+        return []
+    return [str(field) for field in fields if field]
+
+
+def _resolve_grid_match_aliases(rules: dict) -> dict[str, list[str]]:
+    aliases = rules.get("grid_match_field_aliases") or {}
+    if not isinstance(aliases, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for key, value in aliases.items():
+        if not key or not isinstance(value, list):
+            continue
+        items = [str(item) for item in value if item]
+        if items:
+            normalized[str(key)] = items
+    return normalized
+
+
+def _resolve_grid_defect_columns(
+    rules: dict, available: list[str] | None = None
+) -> list[str]:
+    columns = [column for column in (rules.get("grid_defect_columns") or []) if column]
+    if columns:
+        return columns
+    columns = [column for column in (rules.get("post_grid_defect_columns") or []) if column]
+    if columns:
+        return columns
+    columns = _resolve_post_grid_defect_columns(rules)
+    if columns:
+        return columns
+    if available:
+        return [column for column in available if _looks_like_defect_column(column)]
+    return []
+
+
+def _resolve_grid_defect_value_unit(rules: dict) -> str:
+    value_unit = str(rules.get("grid_defect_value_unit") or "").strip().lower()
+    if value_unit:
+        return value_unit
+    return str(rules.get("post_grid_defect_value_unit") or "").strip().lower()
+
+
+def _extract_match_values(
+    design: dict, fields: list[str], aliases: dict[str, list[str]]
+) -> dict[str, object]:
+    if not isinstance(design, dict) or not fields:
+        return {}
+    extracted: dict[str, object] = {}
+    for field in fields:
+        if not field:
+            continue
+        value = design.get(field)
+        if value in (None, ""):
+            for alias in aliases.get(field, []):
+                value = design.get(alias)
+                if value not in (None, ""):
+                    break
+        if value in (None, ""):
+            continue
+        extracted[field] = value
+    return extracted
+
+
+def _summarize_defect_column_avgs(
+    rows: list[dict], columns: list[str]
+) -> list[dict]:
+    summary = []
+    for column in columns:
+        values: list[float] = []
+        for row in rows:
+            value = _coerce_float(_get_value(row, column))
+            if value is None:
+                continue
+            values.append(value)
+        avg = sum(values) / len(values) if values else None
+        summary.append(
+            {"column": column, "avg": avg, "count": len(values)}
+        )
+    return summary
 
 
 def _get_param_columns(rules: dict, table_key: str | None = None) -> dict:
@@ -1585,6 +1703,7 @@ def collect_post_grid_defects(
             date_column = defect_source.get("update_date_column") or ""
 
     factor_map = _grid_factor_column_map(normalized)
+    allowed_design_keys = set(factor_map.keys())
     max_candidates = normalized.get("selection", {}).get("max_candidates", 0)
     row_limit = max_candidates if isinstance(max_candidates, int) and max_candidates > 0 else 0
 
@@ -1606,6 +1725,8 @@ def collect_post_grid_defects(
             )
         design_columns = []
         for key, value in design.items():
+            if allowed_design_keys and key not in allowed_design_keys:
+                continue
             column = factor_map.get(key) or key
             if not column:
                 continue
@@ -1674,4 +1795,144 @@ def collect_post_grid_defects(
         "items": items,
         "recent_months": recent_months,
         "value_unit": output_unit,
+    }
+
+
+def collect_grid_candidate_matches(design_candidates: list[dict], rules: dict) -> dict:
+    normalized = normalize_reference_rules(rules)
+    if not isinstance(design_candidates, list) or not design_candidates:
+        return {
+            "items": [],
+            "match_fields": [],
+            "defect_columns": [],
+            "recent_months": normalized.get("grid_match_recent_months", 6),
+            "value_unit": _resolve_grid_defect_value_unit(normalized),
+            "row_limit": normalized.get("grid_match_row_limit", 50),
+        }
+
+    db = normalized.get("db", {})
+    connection_id = db.get("connection_id") or ""
+    schema_name = db.get("schema") or "public"
+    lot_search_table = _resolve_table_name(normalized, "lot_search")
+    lot_id_column = db.get("lot_id_column") or "lot_id"
+    chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
+    date_column = db.get("input_date_column") or "design_input_date"
+
+    available = None
+    if connection_id and lot_search_table:
+        available = _get_available_columns(connection_id, schema_name, lot_search_table)
+
+    match_fields = _resolve_grid_match_fields(normalized)
+    match_aliases = _resolve_grid_match_aliases(normalized)
+    defect_columns = _resolve_grid_defect_columns(normalized, available)
+    recent_months = normalized.get("grid_match_recent_months", 6)
+    row_limit = normalized.get("grid_match_row_limit", 50)
+    value_unit = _resolve_grid_defect_value_unit(normalized)
+
+    items: list[dict] = []
+    max_blocks = normalized.get("final_briefing", {}).get("max_blocks", 3)
+    try:
+        max_blocks = int(max_blocks)
+    except (TypeError, ValueError):
+        max_blocks = 3
+    max_blocks = max(1, max_blocks)
+
+    for index, candidate in enumerate(design_candidates[:max_blocks], start=1):
+        if not isinstance(candidate, dict):
+            continue
+        design = candidate.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        match_values = _extract_match_values(design, match_fields, match_aliases)
+        missing_fields = [
+            field for field in match_fields if field not in match_values
+        ]
+        filters = []
+        if match_values:
+            for field, value in match_values.items():
+                if available and field not in available:
+                    continue
+                filters.append({"column": field, "operator": "=", "value": value})
+
+        if not filters:
+            items.append(
+                {
+                    "rank": candidate.get("rank") or index,
+                    "design": design,
+                    "match_fields": match_fields,
+                    "missing_fields": missing_fields,
+                    "matched_values": match_values,
+                    "rows": [],
+                    "columns": [],
+                    "row_count": 0,
+                    "defect_column_avgs": [],
+                    "source": "none",
+                }
+            )
+            continue
+
+        if date_column and isinstance(recent_months, int) and recent_months > 0:
+            cutoff = datetime.now() - timedelta(days=recent_months * 30)
+            if connection_id:
+                filters.append(
+                    {
+                        "column": date_column,
+                        "operator": "between",
+                        "value": [cutoff.isoformat(), datetime.now().isoformat()],
+                    }
+                )
+
+        query_columns = [
+            column
+            for column in dict.fromkeys(
+                [lot_id_column, chip_prod_column, date_column]
+                + list(match_values.keys())
+                + defect_columns
+            )
+            if column
+        ]
+
+        source = "demo"
+        rows: list[dict] = []
+        error = None
+        try:
+            source, rows = _query_rows_for_filters(
+                normalized,
+                filters,
+                query_columns,
+                row_limit,
+                table_name=lot_search_table,
+            )
+        except Exception as exc:
+            error = str(exc)
+            rows = []
+            source = "error"
+
+        if not connection_id and date_column and isinstance(recent_months, int):
+            rows = _filter_rows_by_recent_months(rows, date_column, recent_months)
+
+        averages = _summarize_defect_column_avgs(rows, defect_columns)
+        item_payload = {
+            "rank": candidate.get("rank") or index,
+            "design": design,
+            "match_fields": match_fields,
+            "missing_fields": missing_fields,
+            "matched_values": match_values,
+            "rows": rows,
+            "columns": query_columns,
+            "row_count": len(rows),
+            "defect_column_avgs": averages,
+            "source": source,
+        }
+        if error:
+            item_payload["error"] = error
+        items.append(item_payload)
+
+    return {
+        "items": items,
+        "match_fields": match_fields,
+        "defect_columns": defect_columns,
+        "recent_months": recent_months,
+        "value_unit": value_unit,
+        "row_limit": row_limit,
     }

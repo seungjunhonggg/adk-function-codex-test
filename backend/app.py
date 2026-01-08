@@ -37,6 +37,7 @@ from .observability import WorkflowRunHooks, emit_workflow_log
 from .pipeline_store import pipeline_store
 from .reference_lot import (
     collect_post_grid_defects,
+    collect_grid_candidate_matches,
     load_reference_rules,
     normalize_reference_rules,
     select_reference_from_params,
@@ -629,6 +630,16 @@ def _json_safe_value(value: object) -> object:
 
 def _json_safe_dict(payload: dict) -> dict:
     return {str(key): _json_safe_value(value) for key, value in payload.items()}
+
+
+def _json_safe_rows(rows: list[object]) -> list[object]:
+    safe_rows: list[object] = []
+    for row in rows:
+        if isinstance(row, dict):
+            safe_rows.append(_json_safe_dict(row))
+        else:
+            safe_rows.append(_json_safe_value(row))
+    return safe_rows
 
 
 def _build_grid_search_payload(
@@ -1973,6 +1984,7 @@ def _build_final_briefing_payload(
     defect_stats: dict,
     rules: dict | None = None,
     post_grid_defects: dict | None = None,
+    design_blocks_override: list[dict] | None = None,
     value1_count: int | None = None,
     value2_count: int | None = None,
     defect_rates: list[dict] | None = None,
@@ -2016,6 +2028,8 @@ def _build_final_briefing_payload(
     if post_grid_defects is not None:
         payload["post_grid_defects"] = post_grid_defects
         payload["design_blocks"] = _build_design_blocks(post_grid_defects, rules)
+    if design_blocks_override:
+        payload["design_blocks"] = design_blocks_override
     return payload
 
 
@@ -2206,6 +2220,91 @@ def _build_design_blocks(post_grid_defects: dict | None, rules: dict) -> list[di
     return blocks
 
 
+def _build_design_blocks_from_matches(match_payload: dict | None, rules: dict) -> list[dict]:
+    if not isinstance(match_payload, dict):
+        return []
+    items = match_payload.get("items")
+    if not isinstance(items, list) or not items:
+        return []
+    config = _resolve_final_briefing_config(rules)
+    value_unit = str(match_payload.get("value_unit") or "").strip().lower()
+    row_limit = match_payload.get("row_limit")
+    blocks: list[dict] = []
+    for index, item in enumerate(items[: config["max_blocks"]], start=1):
+        if not isinstance(item, dict):
+            continue
+        design = item.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        display = _build_design_display(
+            design,
+            config.get("design_fields", []),
+            config.get("design_labels", {}),
+        )
+        row_count = item.get("row_count")
+        metrics = []
+        if isinstance(row_count, int):
+            metrics.append(
+                {
+                    "key": "match_rows",
+                    "label": "매칭 LOT",
+                    "value": row_count,
+                    "unit": "건",
+                }
+            )
+        chart = None
+        averages = item.get("defect_column_avgs")
+        if isinstance(averages, list) and averages:
+            values = []
+            lots = []
+            for entry in averages:
+                if not isinstance(entry, dict):
+                    continue
+                avg_value = entry.get("avg")
+                try:
+                    avg_num = float(avg_value)
+                except (TypeError, ValueError):
+                    continue
+                values.append(avg_num)
+                lots.append(
+                    {
+                        "label": entry.get("column"),
+                        "defect_rate": avg_num,
+                    }
+                )
+            if values:
+                stats = _summarize_metric_values(values)
+                if value_unit:
+                    stats["value_unit"] = value_unit
+                chart = {
+                    "lots": lots,
+                    "stats": stats,
+                    "chart_type": "bar",
+                    "metric_label": "불량 인자 평균",
+                    "value_unit": value_unit,
+                }
+
+        rank = item.get("rank") or index
+        blocks.append(
+            {
+                "rank": rank,
+                "predicted_target": item.get("predicted_target"),
+                "design_display": display,
+                "design": design,
+                "metrics": metrics,
+                "lot_count": row_count,
+                "lot_samples": item.get("sample_lots"),
+                "chart": chart,
+                "match_rows": _json_safe_rows(item.get("rows") or []),
+                "match_columns": item.get("columns") or [],
+                "match_row_count": row_count,
+                "match_row_limit": row_limit,
+                "match_recent_months": match_payload.get("recent_months"),
+            }
+        )
+    return blocks
+
+
 def _build_post_grid_chart_payload(post_grid_defects: dict | None) -> dict | None:
     if not isinstance(post_grid_defects, dict):
         return None
@@ -2262,6 +2361,61 @@ def _build_post_grid_chart_payload(post_grid_defects: dict | None) -> dict | Non
     return {
         "charts": charts,
         "metric_label": "설계안별 평균 불량률",
+        "value_unit": value_unit,
+    }
+
+
+def _build_candidate_defect_chart_payload(match_payload: dict | None) -> dict | None:
+    if not isinstance(match_payload, dict):
+        return None
+    items = match_payload.get("items")
+    if not isinstance(items, list) or not items:
+        return None
+    value_unit = str(match_payload.get("value_unit") or "").strip().lower()
+    target = next(
+        (
+            item
+            for item in items
+            if isinstance(item, dict)
+            and isinstance(item.get("defect_column_avgs"), list)
+            and item.get("defect_column_avgs")
+        ),
+        None,
+    )
+    if not target:
+        return None
+    averages = target.get("defect_column_avgs") or []
+    lots = []
+    values: list[float] = []
+    for entry in averages:
+        if not isinstance(entry, dict):
+            continue
+        avg_value = entry.get("avg")
+        try:
+            avg_num = float(avg_value)
+        except (TypeError, ValueError):
+            continue
+        values.append(avg_num)
+        lots.append(
+            {
+                "label": entry.get("column"),
+                "defect_rate": avg_num,
+            }
+        )
+    if not values:
+        return None
+    stats = _summarize_metric_values(values)
+    if value_unit:
+        stats["value_unit"] = value_unit
+    rank = target.get("rank")
+    label = "불량 인자 평균"
+    if isinstance(rank, int):
+        label = f"TOP{rank} 불량 인자 평균"
+    return {
+        "lots": lots,
+        "stats": stats,
+        "chart_type": "bar",
+        "metric_label": label,
         "value_unit": value_unit,
     }
 
@@ -2518,6 +2672,9 @@ async def _run_reference_pipeline(
     for idx, item in enumerate(top_candidates, start=1):
         item["rank"] = idx
 
+    candidate_matches = collect_grid_candidate_matches(top_candidates, rules)
+    design_blocks_override = _build_design_blocks_from_matches(candidate_matches, rules)
+
     post_grid_defects = collect_post_grid_defects(
         top_candidates,
         rules,
@@ -2534,6 +2691,17 @@ async def _run_reference_pipeline(
         },
     )
     pipeline_store.set_event(session_id, "final_defect_chart", None)
+
+    candidate_chart = _build_candidate_defect_chart_payload(candidate_matches)
+    if candidate_chart:
+        await event_bus.broadcast(
+            {"type": "defect_rate_chart", "payload": candidate_chart}
+        )
+        pipeline_store.set_event(
+            session_id,
+            "defect_rate_chart",
+            candidate_chart,
+        )
 
     await event_bus.broadcast(
         {
@@ -2566,6 +2734,7 @@ async def _run_reference_pipeline(
         defect_stats,
         rules=rules,
         post_grid_defects=post_grid_defects,
+        design_blocks_override=design_blocks_override or None,
         value1_count=value1_count,
         value2_count=value2_count,
         defect_rates=defect_rates,

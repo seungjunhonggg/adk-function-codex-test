@@ -1971,6 +1971,42 @@ function renderFinalBriefing(payload = {}) {
       blockEl.appendChild(emptyChart);
     }
 
+    const matchRows = Array.isArray(block.match_rows) ? block.match_rows : [];
+    const matchColumns = Array.isArray(block.match_columns)
+      ? block.match_columns
+      : [];
+    const matchCount = Number(block.match_row_count);
+    if (matchRows.length) {
+      const matchMeta = document.createElement("div");
+      matchMeta.className = "candidate-meta";
+      let matchText = Number.isFinite(matchCount)
+        ? `매칭 LOT ${matchCount}개`
+        : `매칭 LOT ${matchRows.length}개`;
+      if (
+        Number.isFinite(matchCount) &&
+        matchCount > matchRows.length
+      ) {
+        matchText += ` (상위 ${matchRows.length}개 표시)`;
+      }
+      if (block.match_recent_months) {
+        matchText += ` · 최근 ${block.match_recent_months}개월`;
+      }
+      matchMeta.textContent = matchText;
+      blockEl.appendChild(matchMeta);
+      const matchTable = buildResultTable({
+        rows: matchRows,
+        columns: matchColumns,
+      });
+      if (matchTable) {
+        blockEl.appendChild(matchTable);
+      }
+    } else {
+      const emptyMatch = document.createElement("div");
+      emptyMatch.className = "candidate-meta";
+      emptyMatch.textContent = "매칭 LOT가 없습니다.";
+      blockEl.appendChild(emptyMatch);
+    }
+
     container.appendChild(blockEl);
   });
   finalBriefingEl.appendChild(container);

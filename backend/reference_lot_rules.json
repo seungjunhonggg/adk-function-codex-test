@@ -50,6 +50,19 @@
   "post_grid_defect_columns": [],
   "post_grid_recent_months": 3,
   "post_grid_defect_value_unit": "percent",
+  "grid_match_fields": [
+    "active_powder_base",
+    "active_powder_additives",
+    "ldn_avr_value",
+    "cast_dsgn_thk"
+  ],
+  "grid_match_field_aliases": {
+    "ldn_avr_value": ["ldn_avg_value"]
+  },
+  "grid_match_recent_months": 6,
+  "grid_match_row_limit": 50,
+  "grid_defect_columns": [],
+  "grid_defect_value_unit": "",
   "final_briefing": {
     "max_blocks": 3,
     "design_fields": [],
