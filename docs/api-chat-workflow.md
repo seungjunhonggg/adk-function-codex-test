@@ -81,7 +81,11 @@ flowchart TD
       - 데모 환경에서도 포스트그리드 불량 인자를 보이려면 해당 컬럼 리스트를
         `grid_defect_columns`/`post_grid_defect_columns`에 명시해야 함
     - TOP3 설계안의 최근 3개월 LOT 불량률 통계 조회
-    - 최종 브리핑 이벤트/메시지 송신 (`design_blocks` 포함, 레퍼런스 LOT 표 포함)
+    - 최종 브리핑 이벤트/메시지 송신
+      - 순차 브리핑 구성: 1) 레퍼 LOT 후보 요약+표(상위 10개) →
+        2) 선택 Ref LOT 상세 표(컬럼 다수는 분할 표) →
+        3) 그리드 서치 요약 표(rank/electrode_c_avg/grinding_t_avg/active_layer/cast_dsgn_thk/ldn_avr_value)
+      - `design_blocks` 포함
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  

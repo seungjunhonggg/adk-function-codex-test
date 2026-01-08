@@ -1,0 +1,309 @@
+# NOTE: Documentation-only YAML. The app reads backend/reference_lot_rules.json.
+# Keep this file in sync with the JSON structure and values.
+
+# DB connection and table mapping used by reference lot + grid queries.
+db:
+  # Connection id for DB (blank = demo mode).
+  connection_id: ""
+  # Schema name for queries.
+  schema: "public"
+  # Default table name (used when tables.* is blank).
+  table: "mdh_base_view_total"
+  # Per-role table overrides.
+  tables:
+    # Table used for param mapping lookups.
+    param_map: ""
+    # Table used for chip_prod_id lookup.
+    chip_prod: "mdh_base_view_total"
+    # Table used for reference lot search.
+    lot_search: "mdh_base_view_total"
+  # Column names in the lot table.
+  lot_id_column: "lot_id"
+  chip_prod_id_column: "chip_prod_id"
+  input_date_column: "design_input_date"
+
+# Optional param mapping table to normalize user inputs to DB values.
+param_mapping:
+  schema: ""
+  table: ""
+  name_column: ""
+  mappings: {}
+
+# Default param-to-column mapping (used when param_columns_by_table is not set).
+param_columns:
+  temperature: "temperature"
+  voltage: "voltage"
+  size: "size"
+  capacity: "capacity"
+  production_mode: "lot_type"
+
+# Per-table param mapping overrides.
+param_columns_by_table:
+  chip_prod:
+    temperature: "temperature"
+    voltage: "voltage"
+    size: "size"
+    capacity: "capacity"
+    production_mode: "lot_type"
+  lot_search:
+    production_mode: "lot_type"
+
+# Optional per-param value mapping (e.g., user values to DB enums).
+param_value_map: {}
+
+# Optional defect-rate source (separate table) used when defect_conditions are not present.
+defect_rate_source:
+  connection_id: "AAAA"
+  schema: "BBBB"
+  table: "CCCC"
+  lot_id_column: "x_lot_id"
+  update_date_column: "x_update_date"
+  rate_columns: []
+  # percent or ratio
+  value_unit: "percent"
+
+# Post-grid defect stats columns (used for TOP3 defect summary).
+# If empty, falls back to defect_rate_aggregate + defect_conditions.
+post_grid_defect_columns: []
+post_grid_recent_months: 3
+post_grid_defect_value_unit: "percent"
+
+# Fields used to match grid candidates to historical lots.
+grid_match_fields:
+  - "active_powder_base"
+  - "active_powder_additives"
+  - "ldn_avr_value"
+  - "cast_dsgn_thk"
+grid_match_field_aliases:
+  ldn_avr_value:
+    - "ldn_avg_value"
+grid_match_recent_months: 6
+grid_match_row_limit: 50
+
+# Defect columns for candidate match chart (event panel).
+grid_defect_columns: []
+grid_defect_value_unit: ""
+
+# Final briefing formatting controls.
+final_briefing:
+  # Number of design blocks to show in final briefing.
+  max_blocks: 3
+  # Whitelist of design keys to display (empty = all).
+  design_fields: []
+  # Optional display labels for design fields.
+  design_labels: {}
+  # Histogram bins for defect summary charts.
+  chart_bins: 8
+  # Max rows for the reference candidate table in the briefing.
+  reference_table_max_rows: 10
+  # Number of columns per table chunk for Ref LOT detail tables.
+  reference_detail_chunk_size: 6
+  # Optional whitelist for Ref LOT detail columns (empty = use available).
+  reference_detail_columns: []
+
+# Reference lot selection behavior.
+selection:
+  # Max candidates queried for reference selection (0 = no limit).
+  max_candidates: 0
+  # Sorting priority for reference lot selection.
+  lot_search_sort:
+    - columns:
+        - "cutting_defect"
+        - "measure_defect"
+      order: "desc"
+      combine: "min"
+      value_priority:
+        MCS_GRADE_S: 3
+        MCS_GRADE_A: 2
+        MCS_GRADE_B: 1
+    - column: "bdv_avg"
+      order: "desc"
+    - column: "x_tr_short_defect_rate"
+      order: "asc"
+
+# Non-null guard columns used for reference lot filtering.
+value1_not_null_columns:
+  - "grinding_l_avg"
+  - "grinding_t_avg"
+  - "grinding_w_avg"
+  - "electrode_c_avg"
+  - "cast_dsgn_thk"
+  - "ldn_avr_value"
+  - "screen_chip_size_leng"
+  - "screen_mrgn_leng"
+  - "screen_chip_size_widh"
+  - "screen_mrgn_widh"
+  - "cover_sheet_thk"
+  - "top_cover_layer_num"
+  - "bot_cover_layer_num"
+  - "gap_sheet_thk"
+  - "active_layer"
+  - "upper_equal_dirtn_value"
+  - "lower_equal_dirtn_vaue"
+
+# Defect condition filters used during reference lot selection.
+defect_conditions:
+  - key: "cutting_defect"
+    column: "cutting_defect"
+    operator: "in"
+    value:
+      - "MCS_GRADE_S"
+      - "MCS_GRADE_A"
+      - "MCS_GRADE_B"
+  - key: "x_fr_ispass"
+    column: "x_fr_ispass"
+    operator: "="
+    value: "OK"
+  - key: "contact_defect"
+    column: "contact_defect"
+    operator: "="
+    value: 0
+  - key: "measure_defect"
+    column: "measure_defect"
+    operator: "in"
+    value:
+      - "MCS_GRADE_S"
+      - "MCS_GRADE_A"
+      - "MCS_GRADE_B"
+  - key: "pass_halt"
+    column: "pass_halt"
+    operator: "="
+    value: "OK"
+  - key: "pass_8585"
+    column: "pass_8585"
+    operator: "="
+    value: "OK"
+  - key: "pass_burn_in"
+    column: "pass_burn_in"
+    operator: "="
+    value: "OK"
+  - key: "x_df_ispass"
+    column: "x_df_ispass"
+    operator: "="
+    value: "OK"
+  - key: "x_odb_pass_yn"
+    column: "x_odb_pass_yn"
+    operator: "="
+    value: "OK"
+
+# Extra columns to include when fetching LOT detail (used when no explicit override).
+detail_columns: []
+
+# Additional condition rules used by reference lot filtering.
+conditions:
+  screen_durable_spec:
+    column: "screen_durable_spec_name"
+    contains_any:
+      - "Normal"
+      - "MF"
+    min_length: null
+  required_not_null:
+    - "grinding_l_avg"
+    - "grinding_t_avg"
+    - "grinding_w_avg"
+    - "electrode_c_avg"
+    - "cast_dsgn_thk"
+    - "ldn_avr_value"
+    - "screen_chip_size_leng"
+    - "screen_mrgn_leng"
+    - "screen_chip_size_widh"
+    - "screen_mrgn_widh"
+    - "cover_sheet_thk"
+    - "top_cover_layer_num"
+    - "bot_cover_layer_num"
+    - "gap_sheet_thk"
+    - "active_layer"
+    - "upper_equal_dirtn_value"
+    - "lower_equal_dirtn_vaue"
+
+# Grid search factor settings for design candidate generation.
+grid_search:
+  factors:
+    - name: "sheet_t"
+      column: "sheet_t"
+      range_percent: 10
+      points: 5
+    - name: "laydown"
+      column: "laydown"
+      range_percent: 10
+      points: 5
+    - name: "active_layer"
+      column: "active_layer"
+      range_percent: 10
+      points: 5
+    - name: "design_factor_04"
+      column: "design_factor_04"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_05"
+      column: "design_factor_05"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_06"
+      column: "design_factor_06"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_07"
+      column: "design_factor_07"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_08"
+      column: "design_factor_08"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_09"
+      column: "design_factor_09"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_10"
+      column: "design_factor_10"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_11"
+      column: "design_factor_11"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_12"
+      column: "design_factor_12"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_13"
+      column: "design_factor_13"
+      range_percent: 0
+      points: 1
+      default: 1
+    - name: "design_factor_14"
+      column: "design_factor_14"
+      range_percent: 0
+      points: 1
+      default: 1
+  # Max number of grid results to keep.
+  max_results: 100
+  # Number of top candidates to show in UI.
+  top_k: 10
+
+# Aggregate defect-rate columns used when post_grid_defect_columns is empty.
+defect_rate_aggregate:
+  columns:
+    - "defect_metric_1"
+    - "defect_metric_2"
+    - "defect_metric_3"
+    - "defect_metric_4"
+    - "defect_metric_5"
+    - "defect_metric_6"
+    - "defect_metric_7"
+    - "defect_metric_8"
+    - "defect_metric_9"
+    - "defect_metric_10"
+    - "defect_metric_11"
+  # avg or sum
+  mode: "avg"

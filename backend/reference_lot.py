@@ -1164,9 +1164,25 @@ def select_reference_from_params(
     }
 
 
-def get_lot_detail_by_id(lot_id: str) -> dict:
+def _resolve_reference_detail_columns(rules: dict) -> list[str]:
+    config = rules.get("final_briefing") or {}
+    columns = config.get("reference_detail_columns") if isinstance(config, dict) else []
+    if not isinstance(columns, list) or not columns:
+        columns = rules.get("reference_detail_columns") or []
+    if not isinstance(columns, list):
+        return []
+    return [str(column) for column in columns if column]
+
+
+def get_lot_detail_by_id(
+    lot_id: str,
+    columns: list[str] | None = None,
+    use_available_columns: bool = False,
+) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
     db = rules.get("db", {})
+    connection_id = db.get("connection_id") or ""
+    schema_name = db.get("schema") or "public"
     lot_id_column = db.get("lot_id_column") or "lot_id"
     chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
     input_date_column = db.get("input_date_column") or "input_date"
@@ -1177,9 +1193,29 @@ def get_lot_detail_by_id(lot_id: str) -> dict:
         if factor.get("column")
     ]
     lot_search_table = _resolve_table_name(rules, "lot_search")
-    query_columns = list(
-        dict.fromkeys([chip_prod_column, lot_id_column, input_date_column] + grid_columns + list(detail_columns))
-    )
+    query_columns = []
+    if isinstance(columns, list) and columns:
+        query_columns = list(columns)
+    else:
+        override_columns = _resolve_reference_detail_columns(rules)
+        if override_columns:
+            query_columns = override_columns
+        elif use_available_columns and connection_id and lot_search_table:
+            available = _get_available_columns(connection_id, schema_name, lot_search_table)
+            if available:
+                query_columns = list(available)
+        if not query_columns:
+            query_columns = list(
+                dict.fromkeys(
+                    [chip_prod_column, lot_id_column, input_date_column]
+                    + grid_columns
+                    + list(detail_columns)
+                )
+            )
+    if lot_id_column and lot_id_column not in query_columns:
+        query_columns.insert(0, lot_id_column)
+    if not query_columns:
+        query_columns = [lot_id_column]
     source, rows = _query_rows_for_filters(
         rules,
         [{"column": lot_id_column, "operator": "=", "value": lot_id}],

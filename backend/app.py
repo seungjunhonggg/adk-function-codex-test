@@ -821,7 +821,9 @@ async def _generate_edit_auto_message(
 
     pipeline_message = context.get("pipeline_message") if isinstance(context, dict) else ""
     pipeline_message = str(pipeline_message or "")
-    table_block = _extract_markdown_table_block(pipeline_message)
+    table_blocks = _extract_markdown_table_blocks(pipeline_message)
+    if pipeline_message and action in {"rerun", "update_grid", "update_reference"}:
+        return pipeline_message
 
     payload = {"action": action, "context": context}
     prompt = (
@@ -845,8 +847,10 @@ async def _generate_edit_auto_message(
         message = ""
     if not message:
         message = fallback
-    if table_block and table_block not in message:
-        message = f"{message.rstrip()}\n\n{table_block}"
+    if table_blocks:
+        missing = [block for block in table_blocks if block not in message]
+        if missing:
+            message = f"{message.rstrip()}\n\n" + "\n\n".join(missing)
     return message
 
 
@@ -2191,11 +2195,27 @@ def _resolve_final_briefing_config(rules: dict) -> dict:
     except (TypeError, ValueError):
         chart_bins = 8
     chart_bins = max(1, chart_bins)
+    try:
+        reference_table_max_rows = int(config.get("reference_table_max_rows", 10))
+    except (TypeError, ValueError):
+        reference_table_max_rows = 10
+    reference_table_max_rows = max(1, reference_table_max_rows)
+    try:
+        reference_detail_chunk_size = int(config.get("reference_detail_chunk_size", 6))
+    except (TypeError, ValueError):
+        reference_detail_chunk_size = 6
+    reference_detail_chunk_size = max(1, reference_detail_chunk_size)
+    reference_detail_columns = config.get("reference_detail_columns")
+    if not isinstance(reference_detail_columns, list):
+        reference_detail_columns = []
     return {
         "max_blocks": max_blocks,
         "design_fields": design_fields,
         "design_labels": design_labels,
         "chart_bins": chart_bins,
+        "reference_table_max_rows": reference_table_max_rows,
+        "reference_detail_chunk_size": reference_detail_chunk_size,
+        "reference_detail_columns": reference_detail_columns,
     }
 
 
@@ -2545,16 +2565,165 @@ def _build_markdown_table(
     return "\n".join(lines)
 
 
-def _extract_markdown_table_block(text: str) -> str | None:
+def _extract_markdown_table_blocks(text: str) -> list[str]:
     if not text:
-        return None
-    match = re.search(
+        return []
+    matches = re.findall(
         r"(?:^|\n)(\|.+\|\n\|[ -:|]+\|\n(?:\|.*\|\n?)*)",
         text,
     )
-    if not match:
-        return None
-    return match.group(1).strip()
+    blocks = [match.strip() for match in matches if match.strip()]
+    return blocks
+
+
+def _format_brief_value(value: object) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _format_capacity_value(value: object) -> str:
+    if value is None or value == "":
+        return "-"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    abs_value = abs(numeric)
+    if abs_value >= 1_000_000:
+        return f"{numeric / 1_000_000:.3g}uF"
+    if abs_value >= 1_000:
+        return f"{numeric / 1_000:.3g}nF"
+    return f"{numeric:.3g}pF"
+
+
+def _format_input_conditions(params: dict) -> str:
+    if not isinstance(params, dict):
+        return "입력 조건이 없습니다."
+    parts = []
+    temperature = params.get("temperature")
+    if temperature not in (None, ""):
+        parts.append(_format_brief_value(temperature))
+    voltage = params.get("voltage")
+    if voltage not in (None, ""):
+        parts.append(f"전압 {_format_brief_value(voltage)}V")
+    size = params.get("size")
+    if size not in (None, ""):
+        parts.append(f"사이즈 {_format_brief_value(size)}")
+    capacity = params.get("capacity")
+    if capacity not in (None, ""):
+        parts.append(f"용량 {_format_capacity_value(capacity)}")
+    if not parts:
+        return "입력 조건이 없습니다."
+    return f"프로님이 입력하신 조건은 {', '.join(parts)} 입니다."
+
+
+def _format_condition_value(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_format_brief_value(item) for item in value)
+    return _format_brief_value(value)
+
+
+def _format_defect_condition_summary(rules: dict) -> str:
+    conditions = rules.get("defect_conditions") or []
+    if not isinstance(conditions, list):
+        return ""
+    parts: list[str] = []
+    for item in conditions:
+        if not isinstance(item, dict):
+            continue
+        column = item.get("column") or item.get("key") or item.get("name")
+        if not column:
+            continue
+        operator = str(item.get("operator") or "=").lower()
+        value = item.get("value")
+        if operator in {"=", "=="}:
+            parts.append(f"{column}={_format_condition_value(value)}")
+        elif operator == "in":
+            parts.append(f"{column} in ({_format_condition_value(value)})")
+        elif operator == "between":
+            parts.append(f"{column} between {_format_condition_value(value)}")
+        elif operator == "is_null":
+            parts.append(f"{column} is null")
+        elif operator == "is_not_null":
+            parts.append(f"{column} is not null")
+        else:
+            parts.append(f"{column} {operator} {_format_condition_value(value)}")
+    return ", ".join(parts)
+
+
+def _format_sort_summary(rules: dict) -> str:
+    selection = rules.get("selection") or {}
+    sort_specs = selection.get("lot_search_sort") or []
+    if not isinstance(sort_specs, list):
+        return ""
+    parts: list[str] = []
+    for item in sort_specs:
+        if not isinstance(item, dict):
+            continue
+        columns = item.get("columns")
+        if not isinstance(columns, list):
+            columns = []
+        if not columns:
+            column = item.get("column") or item.get("name")
+            if column:
+                columns = [column]
+        if not columns:
+            continue
+        column_text = "+".join(str(column) for column in columns if column)
+        if not column_text:
+            continue
+        priority = item.get("value_priority")
+        if isinstance(priority, dict) and priority:
+            ordered = sorted(
+                ((str(key), value) for key, value in priority.items()),
+                key=lambda entry: entry[1],
+                reverse=True,
+            )
+            rank_text = " > ".join(key for key, _ in ordered if key)
+            if rank_text:
+                parts.append(f"{column_text} 등급({rank_text})")
+                continue
+        order = str(item.get("order") or item.get("direction") or "asc").lower()
+        order_text = "높은순" if order == "desc" else "낮은순"
+        parts.append(f"{column_text} {order_text}")
+    return " → ".join(parts)
+
+
+def _build_markdown_table_chunks(
+    columns: list[str], row: dict, chunk_size: int
+) -> list[str]:
+    if not columns or not isinstance(row, dict):
+        return []
+    try:
+        size = int(chunk_size)
+    except (TypeError, ValueError):
+        size = 6
+    size = max(1, size)
+    tables = []
+    for start in range(0, len(columns), size):
+        chunk = columns[start : start + size]
+        table = _build_markdown_table(chunk, [row])
+        if table:
+            tables.append(table)
+    return tables
+
+
+def _resolve_design_value(
+    design: dict, ref_row: dict, keys: tuple[str, ...]
+) -> object:
+    if isinstance(design, dict):
+        for key in keys:
+            value = design.get(key)
+            if value not in (None, ""):
+                return value
+    for key in keys:
+        value = _row_value(ref_row, key)
+        if value not in (None, ""):
+            return value
+    return None
 
 
 def _build_defect_condition_table_payload(
@@ -2613,9 +2782,12 @@ def _format_design_summary(design: dict, limit: int = 14) -> str:
     return ", ".join(parts)
 
 
-def _build_post_grid_step(post_grid_defects: dict | None) -> str:
+def _build_post_grid_step(
+    post_grid_defects: dict | None, include_prefix: bool = True
+) -> str:
+    prefix = "3) " if include_prefix else ""
     if not isinstance(post_grid_defects, dict):
-        return "3) TOP3 설계조건 기반 불량실적 조회를 진행했습니다."
+        return f"{prefix}TOP3 설계조건 기반 불량실적 조회를 진행했습니다."
     columns = post_grid_defects.get("columns")
     if not isinstance(columns, list):
         columns = []
@@ -2624,9 +2796,14 @@ def _build_post_grid_step(post_grid_defects: dict | None) -> str:
         items = []
     recent_months = post_grid_defects.get("recent_months")
     if not columns:
-        return "3) TOP3 설계조건 기반 불량실적 컬럼 설정이 없어 해당 단계는 생략했습니다."
+        return (
+            f"{prefix}TOP3 설계조건 기반 불량실적 컬럼 설정이 없어 해당 단계는 생략했습니다."
+        )
     if not items:
-        return "3) TOP3 설계조건으로 동일 조건 LOT 불량실적을 조회했지만 매칭 LOT가 없습니다."
+        return (
+            f"{prefix}TOP3 설계조건으로 동일 조건 LOT 불량실적을 조회했지만 "
+            "매칭 LOT가 없습니다."
+        )
     period = (
         f"최근 {recent_months}개월"
         if isinstance(recent_months, int) and recent_months > 0
@@ -2646,7 +2823,7 @@ def _build_post_grid_step(post_grid_defects: dict | None) -> str:
         details.append(f"TOP{rank} 설계안[{design_text}] → LOT {lot_detail}")
     summary = " / ".join(details) if details else "매칭 LOT 없음"
     return (
-        f"3) TOP3 설계조건으로 {period} LOT 불량실적({', '.join(columns)})을 조회했습니다. "
+        f"{prefix}TOP3 설계조건으로 {period} LOT 불량실적({', '.join(columns)})을 조회했습니다. "
         f"{summary}"
     )
 
@@ -2939,24 +3116,145 @@ async def _run_reference_pipeline(
     pipeline_store.set_event(session_id, "final_briefing", summary_payload)
     await _emit_pipeline_status("grid", "그리드 탐색 완료", done=True)
 
-    reference_table = _build_markdown_table(reference_columns, reference_rows)
+    briefing_config = _resolve_final_briefing_config(rules)
+    reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
+    detail_chunk_size = briefing_config.get("reference_detail_chunk_size", 6)
+
+    safe_reference_rows = _json_safe_rows(reference_rows)
+    reference_table = _build_markdown_table(
+        reference_columns, safe_reference_rows, row_limit=reference_table_limit
+    )
     reference_table_text = ""
     if reference_table:
+        display_count = min(len(reference_rows), reference_table_limit)
         reference_table_text = (
-            f"\n\n레퍼런스 LOT 후보 {len(reference_rows)}개"
-            " (LOT_ID + defect_conditions):\n\n"
-            f"{reference_table}"
+            f"\n\n레퍼런스 LOT 후보 표 (상위 {display_count}개):\n\n{reference_table}"
         )
+        if len(reference_rows) > reference_table_limit:
+            reference_table_text += f"\n\n※ 상위 {reference_table_limit}개만 표시"
+    else:
+        reference_table_text = "\n\n레퍼런스 LOT 후보 표를 생성하지 못했습니다."
+
+    detail_result = (
+        get_lot_detail_by_id(selected_lot_id, use_available_columns=True)
+        if selected_lot_id
+        else {}
+    )
+    detail_row = detail_result.get("row") if detail_result.get("status") == "ok" else None
+    if not isinstance(detail_row, dict):
+        detail_row = selected_row if isinstance(selected_row, dict) else {}
+    detail_columns = detail_result.get("columns") if detail_result.get("status") == "ok" else None
+    if not isinstance(detail_columns, list) or not detail_columns:
+        detail_columns = list(detail_row.keys()) if isinstance(detail_row, dict) else []
+    detail_columns = [str(column) for column in detail_columns if column]
+    if not detail_columns and isinstance(detail_row, dict):
+        detail_columns = [str(column) for column in detail_row.keys() if column]
+    detail_row_safe = _json_safe_dict(detail_row) if isinstance(detail_row, dict) else {}
+    detail_tables = _build_markdown_table_chunks(
+        detail_columns, detail_row_safe, detail_chunk_size
+    )
+    detail_table_text = (
+        "\n\n".join(detail_tables) if detail_tables else "상세 정보를 찾지 못했습니다."
+    )
+    detail_note = ""
+    if len(detail_tables) > 1:
+        detail_note = "컬럼이 많아 표를 여러 개로 나눴습니다."
+
+    grid_rows = []
+    for index, candidate in enumerate(top_candidates[:3], start=1):
+        if not isinstance(candidate, dict):
+            continue
+        design = candidate.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        grid_rows.append(
+            {
+                "rank": candidate.get("rank") or index,
+                "electrode_c_avg": _resolve_design_value(
+                    design, selected_row, ("electrode_c_avg", "target_electrode_c_avg")
+                ),
+                "grinding_t_avg": _resolve_design_value(
+                    design, selected_row, ("grinding_t_avg", "grinding_t_size")
+                ),
+                "active_layer": _resolve_design_value(
+                    design, selected_row, ("active_layer",)
+                ),
+                "cast_dsgn_thk": _resolve_design_value(
+                    design, selected_row, ("cast_dsgn_thk",)
+                ),
+                "ldn_avr_value": _resolve_design_value(
+                    design, selected_row, ("ldn_avr_value", "ldn_avg_value")
+                ),
+            }
+        )
+    grid_columns = [
+        "rank",
+        "electrode_c_avg",
+        "grinding_t_avg",
+        "active_layer",
+        "cast_dsgn_thk",
+        "ldn_avr_value",
+    ]
+    grid_table = _build_markdown_table(
+        grid_columns, _json_safe_rows(grid_rows)
+    )
+
+    input_summary = _format_input_conditions(params)
+    condition_summary = _format_defect_condition_summary(rules)
+    sort_summary = _format_sort_summary(rules)
+    intro_parts = [input_summary]
+    if condition_summary:
+        intro_parts.append(f"해당 조건으로 {condition_summary} 조건을 필터링하였으며")
+    if sort_summary:
+        intro_parts.append(f"정렬 우선순위는 {sort_summary} 입니다.")
+    reference_intro = " ".join(intro_parts).strip()
+    total_lot_count = len(reference_rows)
+    reference_step = (
+        "1) 레퍼 LOT 추천 결과\n"
+        f"{reference_intro} 나온 LOT는 총 {total_lot_count}개입니다. "
+        f"검색된 LOT {total_lot_count}개 중 가장 적합한 LOT를 선정하였습니다."
+        f"{reference_table_text}"
+    )
+
+    ref_label = selected_lot_id or "Ref LOT"
+    detail_intro = f"선택된 Ref는 {ref_label} 으로 정보는 하기와 같습니다."
+    if detail_note:
+        detail_intro = f"{detail_intro}\n{detail_note}"
+    reference_detail_step = (
+        "2) 레퍼 정보 제공\n"
+        f"{detail_intro}\n\n{detail_table_text}"
+    )
+
+    electrode_ref_value = _row_value(selected_row, "electrode_c_avg")
+    electrode_ref_text = _format_brief_value(electrode_ref_value)
+    grid_intro = (
+        "Ref LOT의 모재/첨가제가 동일하다는 조건 하에 S/T, L/D, 층수를 변경하여 "
+        "최적 설계를 진행하였습니다."
+    )
+    if electrode_ref_value not in (None, ""):
+        grid_intro += (
+            f" 최적설계는 {ref_label}의 연마용량인 {electrode_ref_text}로부터 "
+            "5% 증가시켜 설계를 진행하였습니다."
+        )
+    grid_intro += " Sheet T, LayDown, 층수를 가변하여 최적설계를 진행한 결과는 하기와 같습니다."
+    grid_step = (
+        "3) 그리드 서치 결과 제공\n"
+        f"{grid_intro}\n\n{grid_table or '그리드 결과가 없습니다.'}"
+    )
+
+    post_grid_step = f"4) {_build_post_grid_step(post_grid_defects, include_prefix=False)}"
 
     if simulation_result and simulation_result.get("result"):
         summary = _format_simulation_result(simulation_result.get("result"))
-        post_grid_step = _build_post_grid_step(post_grid_defects)
-        message = (
-            f"1) chip_prod_id {chip_prod_id} 기준으로 설계조건+불량조건을 함께 적용해 LOT 후보를 필터링했습니다. "
-            f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
-            f"{post_grid_step} "
-            f"4) 최종 요약: {summary}. 상위 후보를 확인해 주세요."
-            f"{reference_table_text}"
+        message = "\n\n".join(
+            [
+                "브리핑 시작",
+                reference_step,
+                reference_detail_step,
+                grid_step,
+                post_grid_step,
+                f"5) 최종 요약: {summary}. 상위 후보를 확인해 주세요.",
+            ]
         )
         pipeline_store.update(
             session_id,
@@ -2967,12 +3265,15 @@ async def _run_reference_pipeline(
             session_id, memory_summary, label="final_briefing"
         )
         return {"message": message, "simulation_result": simulation_result}
-    message = (
-        f"1) chip_prod_id {chip_prod_id} 기준으로 설계조건+불량조건을 함께 적용해 LOT 후보를 필터링했습니다. "
-        f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
-        f"{_build_post_grid_step(post_grid_defects)} "
-        "4) 최종 요약: 추천 결과를 확인해 주세요."
-        f"{reference_table_text}"
+    message = "\n\n".join(
+        [
+            "브리핑 시작",
+            reference_step,
+            reference_detail_step,
+            grid_step,
+            post_grid_step,
+            "5) 최종 요약: 추천 결과를 확인해 주세요.",
+        ]
     )
     pipeline_store.update(
         session_id,

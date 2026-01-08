@@ -67,7 +67,10 @@
     "max_blocks": 3,
     "design_fields": [],
     "design_labels": {},
-    "chart_bins": 8
+    "chart_bins": 8,
+    "reference_table_max_rows": 10,
+    "reference_detail_chunk_size": 6,
+    "reference_detail_columns": []
   },
   "selection": {
     "max_candidates": 0,
