@@ -343,8 +343,6 @@ def _build_memory_summary(payload: dict, label: str = "final_briefing") -> str:
         "chip_prod_id",
         "reference_lot",
         "candidate_total",
-        "value1_count",
-        "value2_count",
         "defect_rate_overall",
         "source",
     ]
@@ -821,12 +819,17 @@ async def _generate_edit_auto_message(
     if not OPENAI_API_KEY:
         return fallback
 
+    pipeline_message = context.get("pipeline_message") if isinstance(context, dict) else ""
+    pipeline_message = str(pipeline_message or "")
+    table_block = _extract_markdown_table_block(pipeline_message)
+
     payload = {"action": action, "context": context}
     prompt = (
         "다음 JSON을 참고해 한국어로 1~2문장 답변을 작성하세요. "
         "규칙: 도구/라우팅 언급 금지, 과한 추측 금지. "
         "missing_fields가 있으면 그 항목만 질문하세요. "
         "pipeline_message가 있으면 자연스럽게 요약하세요. "
+        "pipeline_message 안에 마크다운 표가 있으면 표는 수정하지 말고 마지막에 그대로 포함하세요. "
         "result가 있으면 recommended_chip_prod_id, representative_lot, param_count를 짧게 언급하세요. "
         "ask_prediction=true 일 때만 추가 시뮬레이션 여부를 질문하세요. "
         f"JSON: {json.dumps(payload, ensure_ascii=False)}"
@@ -840,7 +843,11 @@ async def _generate_edit_auto_message(
         message = (run.final_output or "").strip()
     except Exception:
         message = ""
-    return message or fallback
+    if not message:
+        message = fallback
+    if table_block and table_block not in message:
+        message = f"{message.rstrip()}\n\n{table_block}"
+    return message
 
 
 def _format_prediction_result(result: dict | None) -> str:
@@ -2054,8 +2061,6 @@ def _build_final_briefing_payload(
     rules: dict | None = None,
     post_grid_defects: dict | None = None,
     design_blocks_override: list[dict] | None = None,
-    value1_count: int | None = None,
-    value2_count: int | None = None,
     defect_rates: list[dict] | None = None,
     defect_rate_overall: float | None = None,
     chip_prod_id_count: int | None = None,
@@ -2082,10 +2087,6 @@ def _build_final_briefing_payload(
         "defect_stats": defect_stats,
         "source": reference_result.get("source") or "postgresql",
     }
-    if value1_count is not None:
-        payload["value1_count"] = value1_count
-    if value2_count is not None:
-        payload["value2_count"] = value2_count
     if defect_rates is not None:
         payload["defect_rates"] = defect_rates
     if defect_rate_overall is not None:
@@ -2503,6 +2504,59 @@ def _format_defect_rate_display(value: object, value_unit: str) -> str:
     return f"{numeric:.4f}"
 
 
+def _escape_markdown_cell(value: object) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, float):
+        value = round(value, 6)
+    text = str(value)
+    return (
+        text.replace("\r", " ")
+        .replace("\n", " ")
+        .replace("|", "\\|")
+    )
+
+
+def _build_markdown_table(
+    columns: list[str], rows: list[object], row_limit: int | None = None
+) -> str | None:
+    if not columns or not rows:
+        return None
+    safe_columns = [str(column) for column in columns]
+    header = "| " + " | ".join(safe_columns) + " |"
+    separator = "| " + " | ".join(["---"] * len(safe_columns)) + " |"
+    lines = [header, separator]
+    if isinstance(row_limit, int) and row_limit > 0:
+        rows = rows[:row_limit]
+    for row in rows:
+        if isinstance(row, dict):
+            cells = [_escape_markdown_cell(row.get(column)) for column in safe_columns]
+        elif isinstance(row, (list, tuple)):
+            cells = [
+                _escape_markdown_cell(row[index] if index < len(row) else None)
+                for index in range(len(safe_columns))
+            ]
+        else:
+            cells = [
+                _escape_markdown_cell(row) if index == 0 else "-"
+                for index in range(len(safe_columns))
+            ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _extract_markdown_table_block(text: str) -> str | None:
+    if not text:
+        return None
+    match = re.search(
+        r"(?:^|\n)(\|.+\|\n\|[ -:|]+\|\n(?:\|.*\|\n?)*)",
+        text,
+    )
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
 def _build_defect_condition_table_payload(
     defect_rates: list[dict] | None,
     chip_prod_id: str,
@@ -2640,12 +2694,11 @@ async def _run_reference_pipeline(
                         "selected_chip_prod_id": override_chip_id,
                         "selected_lot_id": reference_override,
                         "selected_row": override_row,
-                        "value1_counts": {},
-                        "value2_all_counts": {},
-                        "value2_counts_by_condition": {},
                         "defect_rates": [],
                         "columns": override_detail.get("columns", []),
                         "source": override_detail.get("source"),
+                        "reference_columns": [],
+                        "reference_rows": [],
                     }
                 reference_result["selected_lot_id"] = reference_override
                 reference_result["selected_row"] = override_row
@@ -2672,15 +2725,17 @@ async def _run_reference_pipeline(
     )
     chip_prod_id = selected_chip_prod_id or chip_prod_override or ""
 
-    value1_counts = reference_result.get("value1_counts") or {}
-    value2_all_counts = reference_result.get("value2_all_counts") or {}
     chip_prod_ids = reference_result.get("chip_prod_ids") or []
     if not isinstance(chip_prod_ids, list):
         chip_prod_ids = []
     chip_prod_id_count = len(chip_prod_ids)
     chip_prod_id_samples = [str(item) for item in chip_prod_ids[:10]]
-    value1_count = value1_counts.get(chip_prod_id, 0)
-    value2_count = value2_all_counts.get(chip_prod_id, 0)
+    reference_columns = reference_result.get("reference_columns") or []
+    reference_rows = reference_result.get("reference_rows") or []
+    if not isinstance(reference_columns, list):
+        reference_columns = []
+    if not isinstance(reference_rows, list):
+        reference_rows = []
 
     reference_payload = {
         "status": "ok",
@@ -2689,8 +2744,8 @@ async def _run_reference_pipeline(
         "row": selected_row,
         "columns": reference_result.get("columns", []),
         "source": reference_result.get("source") or "postgresql",
-        "value1_count": value1_count,
-        "value2_count": value2_count,
+        "reference_columns": reference_columns,
+        "reference_rows": _json_safe_rows(reference_rows),
     }
     pipeline_store.set_reference(session_id, reference_payload)
     lot_payload = {
@@ -2874,8 +2929,6 @@ async def _run_reference_pipeline(
         rules=rules,
         post_grid_defects=post_grid_defects,
         design_blocks_override=design_blocks_override or None,
-        value1_count=value1_count,
-        value2_count=value2_count,
         defect_rates=defect_rates,
         defect_rate_overall=defect_rate_overall,
         chip_prod_id_count=chip_prod_id_count,
@@ -2886,6 +2939,15 @@ async def _run_reference_pipeline(
     pipeline_store.set_event(session_id, "final_briefing", summary_payload)
     await _emit_pipeline_status("grid", "그리드 탐색 완료", done=True)
 
+    reference_table = _build_markdown_table(reference_columns, reference_rows)
+    reference_table_text = ""
+    if reference_table:
+        reference_table_text = (
+            f"\n\n레퍼런스 LOT 후보 {len(reference_rows)}개"
+            " (LOT_ID + defect_conditions):\n\n"
+            f"{reference_table}"
+        )
+
     if simulation_result and simulation_result.get("result"):
         summary = _format_simulation_result(simulation_result.get("result"))
         post_grid_step = _build_post_grid_step(post_grid_defects)
@@ -2894,6 +2956,7 @@ async def _run_reference_pipeline(
             f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
             f"{post_grid_step} "
             f"4) 최종 요약: {summary}. 상위 후보를 확인해 주세요."
+            f"{reference_table_text}"
         )
         pipeline_store.update(
             session_id,
@@ -2909,6 +2972,7 @@ async def _run_reference_pipeline(
         f"2) 최신 LOT {selected_lot_id}를 기준으로 설계조건을 흔들어 그리드 탐색을 실행했습니다. "
         f"{_build_post_grid_step(post_grid_defects)} "
         "4) 최종 요약: 추천 결과를 확인해 주세요."
+        f"{reference_table_text}"
     )
     pipeline_store.update(
         session_id,

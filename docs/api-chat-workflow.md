@@ -65,6 +65,8 @@ flowchart TD
         x_fr_ispass/pass_halt/pass_8585/pass_burn_in/x_df_ispass/x_odb_pass_yn은 OK
       - 정렬 우선순위: cutting_defect+measure_defect 등급(S > A > B) → bdv_avg 내림차순
         → x_tr_short_defect_rate 오름차순 → 최신 input_date
+      - 필터링 결과(LOT_ID + defect_conditions 컬럼)는 최종 브리핑 메시지에
+        마크다운 표로 포함
       - rerun 시 이전 grid_overrides가 있으면 재활용
     - LOT 불량 조건 요약 표 이벤트 송신(차트 대신 table 렌더링)
     - grid_search 후보 생성
@@ -79,7 +81,7 @@ flowchart TD
       - 데모 환경에서도 포스트그리드 불량 인자를 보이려면 해당 컬럼 리스트를
         `grid_defect_columns`/`post_grid_defect_columns`에 명시해야 함
     - TOP3 설계안의 최근 3개월 LOT 불량률 통계 조회
-    - 최종 브리핑 이벤트/메시지 송신 (`design_blocks` 포함)
+    - 최종 브리핑 이벤트/메시지 송신 (`design_blocks` 포함, 레퍼런스 LOT 표 포함)
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  
@@ -124,6 +126,8 @@ flowchart TD
 - 이벤트 패널 재현에 필요한 payload를 저장
 - `PIPELINE_STATE_DB_PATH`(기본 `sessions.db`)의 `pipeline_state` 테이블에 스냅샷을 저장해
   서버 재시작 시에도 세션별 이벤트 복원이 가능하도록 함
+- `reference` 페이로드에는 최종 브리핑 표 생성을 위한
+  `reference_columns`/`reference_rows`(LOT_ID + defect_conditions) 포함
 
 ### 3) 시뮬레이션 파라미터 메모리
 - `simulation_store`: 온도/전압/사이즈/용량/양산 여부 + chip_prod_id

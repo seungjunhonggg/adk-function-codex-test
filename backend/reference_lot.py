@@ -985,9 +985,19 @@ def select_reference_from_params(
             }
         )
 
+    defect_conditions = _normalize_defect_conditions(rules)
+    defect_columns = [
+        condition.get("column")
+        for condition in defect_conditions
+        if condition.get("column")
+    ]
     sort_columns = _lot_search_sort_columns(rules)
     base_columns = list(
-        dict.fromkeys([chip_prod_column, lot_id_column, input_date_column] + sort_columns)
+        dict.fromkeys(
+            [chip_prod_column, lot_id_column, input_date_column]
+            + sort_columns
+            + defect_columns
+        )
     )
     source = ""
     chip_prod_ids: list[str] = []
@@ -1024,7 +1034,6 @@ def select_reference_from_params(
     )
     if not source:
         source = value1_source
-    defect_conditions = _normalize_defect_conditions(rules)
     defect_filters_all = _build_defect_filters(defect_conditions)
     value2_all_rows = value1_rows
     if defect_filters_all:
@@ -1060,14 +1069,12 @@ def select_reference_from_params(
                 "source": source,
             }
     value1_counts = _count_by_key(value1_rows, chip_prod_column, lot_id_column)
-
     latest_row = _select_lot_search_row(value2_all_rows, rules, input_date_column)
     if not latest_row:
         return {
             "status": "missing",
             "error": "조건에 맞는 LOT가 없습니다.",
             "chip_prod_ids": chip_prod_ids,
-            "value1_counts": value1_counts,
             "source": source,
         }
 
@@ -1082,9 +1089,7 @@ def select_reference_from_params(
             chip_prod_ids[0] if chip_prod_ids else ""
         )
 
-    value2_all_counts = _count_by_key(value2_all_rows, chip_prod_column, lot_id_column)
     defect_rates = []
-    value2_counts_by_condition: dict[str, int] = {}
     for condition in defect_conditions:
         condition_filters = value1_filters + _build_defect_filters([condition])
         _, condition_rows = _query_rows_for_filters(
@@ -1096,7 +1101,6 @@ def select_reference_from_params(
         )
         counts = _count_by_key(condition_rows, chip_prod_column, lot_id_column)
         value2_count = counts.get(selected_chip_prod_id or "", 0)
-        value2_counts_by_condition[condition["key"]] = value2_count
         value1_count = value1_counts.get(selected_chip_prod_id or "", 0)
         rate = None
         if value1_count > 0:
@@ -1132,18 +1136,31 @@ def select_reference_from_params(
         )
         detail_row = detail_rows[0] if detail_rows else None
 
+    reference_columns = list(
+        dict.fromkeys([lot_id_column] + defect_columns)
+    )
+    reference_rows = []
+    if reference_columns:
+        for row in value2_all_rows:
+            if selected_chip_prod_id:
+                chip_value = _get_value(row, chip_prod_column)
+                if str(chip_value or "") != selected_chip_prod_id:
+                    continue
+            reference_rows.append(
+                {column: _get_value(row, column) for column in reference_columns}
+            )
+
     return {
         "status": "ok",
         "chip_prod_ids": chip_prod_ids,
         "selected_chip_prod_id": selected_chip_prod_id,
         "selected_lot_id": selected_lot_id,
         "selected_row": detail_row or latest_row,
-        "value1_counts": value1_counts,
-        "value2_all_counts": value2_all_counts,
-        "value2_counts_by_condition": value2_counts_by_condition,
         "defect_rates": defect_rates,
         "source": source,
         "columns": detail_query_columns,
+        "reference_columns": reference_columns,
+        "reference_rows": reference_rows,
     }
 
 

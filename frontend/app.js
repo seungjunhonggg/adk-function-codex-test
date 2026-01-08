@@ -2249,14 +2249,6 @@ function handleEvent(event) {
     renderFinalBriefing(event.payload);
     renderMatchSummary(event.payload);
     addEventLog("브리핑", "최종 브리핑 업데이트");
-    const value1Count = Number(event.payload?.value1_count);
-    const value2Count = Number(event.payload?.value2_count);
-    if (Number.isFinite(value1Count) && Number.isFinite(value2Count)) {
-      addEventLog(
-        "브리핑",
-        `value1/value2 카운트: ${value1Count} / ${value2Count}`
-      );
-    }
   }
 
   if (event.type === "stage_focus") {
