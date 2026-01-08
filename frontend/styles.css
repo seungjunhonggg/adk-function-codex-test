@@ -821,6 +821,30 @@ body::before {
   font-weight: 600;
 }
 
+.message.streaming .stream-block {
+  margin-top: 10px;
+}
+
+.message.streaming .stream-block:first-child {
+  margin-top: 0;
+}
+
+.stream-table {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.stream-table.animate-in {
+  animation: tableIn 0.35s ease forwards;
+}
+
+@keyframes tableIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .status-spinner {
   width: 14px;
   height: 14px;

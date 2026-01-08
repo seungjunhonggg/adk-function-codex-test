@@ -47,9 +47,51 @@
     "rate_columns": [],
     "value_unit": "percent"
   },
-  "post_grid_defect_columns": [],
+  "post_grid_defect_columns": [
+    "ci_def_rate",
+    "ci_def_01",
+    "ci_def_02",
+    "ci_def_03",
+    "ci_def_04",
+    "ci_def_05",
+    "ci_def_99",
+    "fr_defect_rate",
+    "fr_def_01",
+    "fr_def_02",
+    "fr_def_03",
+    "fr_def_04",
+    "fr_def_04_1",
+    "fr_def_05",
+    "fr_def_06",
+    "fr_def_07",
+    "fr_def_08",
+    "fr_def_09",
+    "fr_def_10",
+    "fr_def_11",
+    "fr_def_99",
+    "gr_short_defect_rate",
+    "tvi_defect_rate_f",
+    "tr_short_defect_rate",
+    "df_def_rate",
+    "dr_def_01",
+    "dr_def_02",
+    "dr_def_03",
+    "soul_defect_rate_f",
+    "gm_defect_rate_f",
+    "pi_def_rate",
+    "pi_def_01",
+    "pi_def_02",
+    "pi_def_03",
+    "pi_def_04",
+    "pi_def_99",
+    "mf_def_rate",
+    "ttm_defect_rate_f",
+    "sum_burn_ppm",
+    "sum_8585_ppm",
+    "fail_halt_ppm"
+  ],
   "post_grid_recent_months": 3,
-  "post_grid_defect_value_unit": "percent",
+  "post_grid_defect_value_unit": "",
   "grid_match_fields": [
     "active_powder_base",
     "active_powder_additives",
@@ -61,8 +103,198 @@
   },
   "grid_match_recent_months": 6,
   "grid_match_row_limit": 50,
-  "grid_defect_columns": [],
+  "grid_defect_columns": [
+    "ci_def_rate",
+    "ci_def_01",
+    "ci_def_02",
+    "ci_def_03",
+    "ci_def_04",
+    "ci_def_05",
+    "ci_def_99",
+    "fr_defect_rate",
+    "fr_def_01",
+    "fr_def_02",
+    "fr_def_03",
+    "fr_def_04",
+    "fr_def_04_1",
+    "fr_def_05",
+    "fr_def_06",
+    "fr_def_07",
+    "fr_def_08",
+    "fr_def_09",
+    "fr_def_10",
+    "fr_def_11",
+    "fr_def_99",
+    "gr_short_defect_rate",
+    "tvi_defect_rate_f",
+    "tr_short_defect_rate",
+    "df_def_rate",
+    "dr_def_01",
+    "dr_def_02",
+    "dr_def_03",
+    "soul_defect_rate_f",
+    "gm_defect_rate_f",
+    "pi_def_rate",
+    "pi_def_01",
+    "pi_def_02",
+    "pi_def_03",
+    "pi_def_04",
+    "pi_def_99",
+    "mf_def_rate",
+    "ttm_defect_rate_f",
+    "sum_burn_ppm",
+    "sum_8585_ppm",
+    "fail_halt_ppm"
+  ],
   "grid_defect_value_unit": "",
+  "defect_metric_catalog": {
+    "groups": [
+      {
+        "key": "cutting_chip_defect",
+        "metric": "ci_def_rate",
+        "children": [
+          "ci_def_01",
+          "ci_def_02",
+          "ci_def_03",
+          "ci_def_04",
+          "ci_def_05",
+          "ci_def_99"
+        ],
+        "unit": "percent"
+      },
+      {
+        "key": "firing_chip_defect",
+        "metric": "fr_defect_rate",
+        "children": [
+          "fr_def_01",
+          "fr_def_02",
+          "fr_def_03",
+          "fr_def_04",
+          "fr_def_04_1",
+          "fr_def_05",
+          "fr_def_06",
+          "fr_def_07",
+          "fr_def_08",
+          "fr_def_09",
+          "fr_def_10",
+          "fr_def_11",
+          "fr_def_99"
+        ],
+        "unit": "ppm"
+      },
+      {
+        "key": "grinding_chip_defect",
+        "metric": "gr_short_defect_rate",
+        "children": [],
+        "unit": "percent"
+      },
+      {
+        "key": "grinding_visual_defect",
+        "metric": "tvi_defect_rate_f",
+        "children": [],
+        "unit": "percent"
+      },
+      {
+        "key": "electrode_chip_defect",
+        "metric": "tr_short_defect_rate",
+        "children": [],
+        "unit": "percent"
+      },
+      {
+        "key": "measurement_defect",
+        "metric": "df_def_rate",
+        "children": ["dr_def_01", "dr_def_02", "dr_def_03"],
+        "unit": "percent"
+      },
+      {
+        "key": "measurement_ultrasound_defect",
+        "metric": "soul_defect_rate_f",
+        "children": [],
+        "unit": "percent"
+      },
+      {
+        "key": "measurement_good_mold_defect",
+        "metric": "gm_defect_rate_f",
+        "children": [],
+        "unit": "percent"
+      },
+      {
+        "key": "appearance_defect",
+        "metric": "pi_def_rate",
+        "children": [
+          "pi_def_01",
+          "pi_def_02",
+          "pi_def_03",
+          "pi_def_04",
+          "pi_def_99"
+        ],
+        "unit": "percent"
+      },
+      {
+        "key": "mf_defect",
+        "metric": "mf_def_rate",
+        "children": [],
+        "unit": "percent"
+      },
+      {
+        "key": "electrode_grinding_visual_defect",
+        "metric": "ttm_defect_rate_f",
+        "children": [],
+        "unit": "percent"
+      },
+      {
+        "key": "burn_in",
+        "metric": "sum_burn_ppm",
+        "children": [],
+        "unit": "ppm"
+      },
+      {
+        "key": "reliability_8585",
+        "metric": "sum_8585_ppm",
+        "children": [],
+        "unit": "ppm"
+      },
+      {
+        "key": "halt",
+        "metric": "fail_halt_ppm",
+        "children": [],
+        "unit": "ppm"
+      }
+    ],
+    "chart_groups": {
+      "process_defect_rate": {
+        "unit": "percent",
+        "metrics": [
+          "ci_def_rate",
+          "tvi_defect_rate_f",
+          "df_def_rate",
+          "pi_def_rate",
+          "mf_def_rate",
+          "ttm_defect_rate_f"
+        ]
+      },
+      "inspection_defect_rate": {
+        "ppm": {
+          "unit": "ppm",
+          "metrics": [
+            "fr_defect_rate",
+            "sum_burn_ppm",
+            "sum_8585_ppm",
+            "fail_halt_ppm"
+          ]
+        },
+        "percent": {
+          "unit": "percent",
+          "metrics": [
+            "gr_short_defect_rate",
+            "tr_short_defect_rate",
+            "soul_defect_rate_f",
+            "gm_defect_rate_f"
+          ]
+        }
+      }
+    }
+  },
   "final_briefing": {
     "max_blocks": 3,
     "design_fields": [],

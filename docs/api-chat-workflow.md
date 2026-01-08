@@ -88,15 +88,21 @@ flowchart TD
       - `design_blocks` 포함
       - OPENAI_API_KEY가 있으면 서술부 문장만 LLM으로 다듬고(표/숫자 고정),
         검증 실패 시 템플릿을 그대로 사용
-      - WebSocket이 연결된 경우 브리핑 섹션을 `chat_message`로 순차 스트리밍
+      - WebSocket이 연결된 경우 브리핑 텍스트를 `chat_stream_*`로 델타 스트리밍하고,
+        표는 `briefing_table`로 분리 전송
         (응답에는 `streamed=true`가 포함되어 HTTP 응답의 중복 출력 방지)
       - 섹션 간 딜레이는 `BRIEFING_STREAM_DELAY_SECONDS`로 조정 가능 (기본 0)
+      - 가짜 스트리밍 모드: 텍스트는 `chat_stream_*` 델타로 흘리고,
+        표는 `briefing_table` 이벤트로 분리 전송해 애니메이션 표시
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  
    - 주요 이벤트: `simulation_form`, `lot_result`, `defect_rate_chart`,  
      `design_candidates`, `final_briefing`
-   - 브리핑 본문은 `chat_message` 이벤트로 섹션 단위 송신 가능
+   - 브리핑 본문은 아래 이벤트로 스트리밍 가능
+     - `chat_stream_start` → `chat_stream_block_start` → `chat_stream_delta` →
+       `chat_stream_block_end` → `chat_stream_end`
+     - 표는 `briefing_table`로 별도 전송 (프론트에서 애니메이션 처리)
 
 핵심 파일:
 - `backend/reference_lot.py`: 레퍼런스 LOT, post-grid 불량 통계

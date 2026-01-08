@@ -1,4 +1,5 @@
 ﻿import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -313,6 +314,7 @@ MEMORY_SUMMARY_SKIP_KEYS = {
     "post_grid_defects",
     "design_blocks",
 }
+BRIEFING_STREAM_CHUNK_SIZE = 80
 
 
 def _summary_token(value: object) -> str | None:
@@ -759,26 +761,107 @@ async def _emit_chat_message(session_id: str, content: str) -> None:
     )
 
 
-async def _stream_briefing_sections(
-    session_id: str, sections: list[str]
+def _split_stream_chunks(
+    text: str, max_chars: int = BRIEFING_STREAM_CHUNK_SIZE
+) -> list[str]:
+    if not text:
+        return []
+    parts = re.split(r"(\s+)", text)
+    chunks: list[str] = []
+    buffer = ""
+    for part in parts:
+        if not part:
+            continue
+        if buffer and len(buffer) + len(part) > max_chars:
+            chunks.append(buffer)
+            buffer = part
+        else:
+            buffer += part
+    if buffer:
+        chunks.append(buffer)
+    return chunks
+
+
+async def _stream_briefing_blocks(
+    session_id: str, blocks: list[dict]
 ) -> bool:
-    if not sections:
+    if not blocks:
         return False
     if not event_bus.has_clients(session_id):
         return False
+    message_id = f"briefing-{uuid.uuid4().hex}"
+    await event_bus.broadcast(
+        {
+            "type": "chat_stream_start",
+            "payload": {"message_id": message_id, "role": "assistant"},
+        },
+        session_id=session_id,
+    )
     delay = BRIEFING_STREAM_DELAY_SECONDS
-    for section in sections:
-        if not section:
+    block_index = 0
+    for block in blocks:
+        if not isinstance(block, dict):
             continue
-        await event_bus.broadcast(
-            {
-                "type": "chat_message",
-                "payload": {"role": "assistant", "content": section},
-            },
-            session_id=session_id,
-        )
-        if delay > 0:
-            await asyncio.sleep(delay)
+        block_type = block.get("type")
+        if block_type == "text":
+            text = str(block.get("value") or "")
+            if not text:
+                continue
+            block_index += 1
+            block_id = f"{message_id}-b{block_index}"
+            await event_bus.broadcast(
+                {
+                    "type": "chat_stream_block_start",
+                    "payload": {"message_id": message_id, "block_id": block_id},
+                },
+                session_id=session_id,
+            )
+            for chunk in _split_stream_chunks(text):
+                await event_bus.broadcast(
+                    {
+                        "type": "chat_stream_delta",
+                        "payload": {
+                            "message_id": message_id,
+                            "block_id": block_id,
+                            "delta": chunk,
+                        },
+                    },
+                    session_id=session_id,
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            await event_bus.broadcast(
+                {
+                    "type": "chat_stream_block_end",
+                    "payload": {"message_id": message_id, "block_id": block_id},
+                },
+                session_id=session_id,
+            )
+            continue
+        if block_type == "table":
+            markdown = str(block.get("markdown") or "")
+            if not markdown:
+                continue
+            await event_bus.broadcast(
+                {
+                    "type": "briefing_table",
+                    "payload": {
+                        "message_id": message_id,
+                        "markdown": markdown,
+                        "animate": True,
+                    },
+                },
+                session_id=session_id,
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
+    await event_bus.broadcast(
+        {
+            "type": "chat_stream_end",
+            "payload": {"message_id": message_id},
+        },
+        session_id=session_id,
+    )
     return True
 
 
@@ -3238,16 +3321,15 @@ async def _run_reference_pipeline(
     reference_table = _build_markdown_table(
         reference_columns, safe_reference_rows, row_limit=reference_table_limit
     )
-    reference_table_text = ""
+    reference_table_label = ""
+    reference_table_note = ""
     if reference_table:
         display_count = min(len(reference_rows), reference_table_limit)
-        reference_table_text = (
-            f"\n\n레퍼런스 LOT 후보 표 (상위 {display_count}개):\n\n{reference_table}"
-        )
+        reference_table_label = f"레퍼런스 LOT 후보 표 (상위 {display_count}개):"
         if len(reference_rows) > reference_table_limit:
-            reference_table_text += f"\n\n※ 상위 {reference_table_limit}개만 표시"
+            reference_table_note = f"※ 상위 {reference_table_limit}개만 표시"
     else:
-        reference_table_text = "\n\n레퍼런스 LOT 후보 표를 생성하지 못했습니다."
+        reference_table_label = "레퍼런스 LOT 후보 표를 생성하지 못했습니다."
 
     detail_result = (
         get_lot_detail_by_id(selected_lot_id, use_available_columns=True)
@@ -3357,31 +3439,71 @@ async def _run_reference_pipeline(
     }
     rewritten = await _maybe_rewrite_briefing_sections(rewrite_sections)
 
-    reference_step = (
+    reference_step_text = (
         "1) 레퍼 LOT 추천 결과\n"
         f"{rewritten.get('1', rewrite_sections['1'])}"
-        f"{reference_table_text}"
     )
-    reference_detail_step = (
+    if reference_table_label:
+        reference_step_text = f"{reference_step_text}\n\n{reference_table_label}"
+    reference_step = reference_step_text
+    if reference_table:
+        reference_step = f"{reference_step}\n\n{reference_table}"
+    if reference_table_note:
+        reference_step = f"{reference_step}\n\n{reference_table_note}"
+
+    reference_detail_text = (
         "2) 레퍼 정보 제공\n"
-        f"{rewritten.get('2', rewrite_sections['2'])}\n\n{detail_table_text}"
+        f"{rewritten.get('2', rewrite_sections['2'])}"
     )
-    grid_step = (
+    reference_detail_step = reference_detail_text
+    reference_detail_step = f"{reference_detail_step}\n\n{detail_table_text}"
+
+    grid_text = (
         "3) 그리드 서치 결과 제공\n"
-        f"{rewritten.get('3', rewrite_sections['3'])}\n\n"
-        f"{grid_table or '그리드 결과가 없습니다.'}"
+        f"{rewritten.get('3', rewrite_sections['3'])}"
     )
+    if grid_table:
+        grid_step = f"{grid_text}\n\n{grid_table}"
+    else:
+        grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
     post_grid_step = f"4) {rewritten.get('4', rewrite_sections['4'])}"
+    summary_step = f"5) {rewritten.get('5', rewrite_sections['5'])}"
     sections = [
         "브리핑 시작",
         reference_step,
         reference_detail_step,
         grid_step,
         post_grid_step,
-        f"5) {rewritten.get('5', rewrite_sections['5'])}",
+        summary_step,
     ]
     message = "\n\n".join(sections)
-    streamed = await _stream_briefing_sections(session_id, sections)
+    stream_blocks: list[dict] = [{"type": "text", "value": "브리핑 시작"}]
+    if reference_step_text:
+        stream_blocks.append({"type": "text", "value": reference_step_text})
+    if reference_table:
+        stream_blocks.append({"type": "table", "markdown": reference_table})
+        if reference_table_note:
+            stream_blocks.append({"type": "text", "value": reference_table_note})
+    if reference_detail_text:
+        if detail_tables:
+            stream_blocks.append({"type": "text", "value": reference_detail_text})
+            for table in detail_tables:
+                stream_blocks.append({"type": "table", "markdown": table})
+        else:
+            stream_blocks.append(
+                {"type": "text", "value": reference_detail_step}
+            )
+    if grid_text:
+        stream_blocks.append({"type": "text", "value": grid_text})
+        if grid_table:
+            stream_blocks.append({"type": "table", "markdown": grid_table})
+        else:
+            stream_blocks.append({"type": "text", "value": "그리드 결과가 없습니다."})
+    if post_grid_step:
+        stream_blocks.append({"type": "text", "value": post_grid_step})
+    if summary_step:
+        stream_blocks.append({"type": "text", "value": summary_step})
+    streamed = await _stream_briefing_blocks(session_id, stream_blocks)
     pipeline_store.update(
         session_id,
         briefing_text=message,

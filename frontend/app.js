@@ -154,6 +154,7 @@ let statusAnimationInterval = null;
 let historyEntries = [];
 let lastDefectChartPayload = null;
 let lastFinalDefectChartPayload = null;
+const streamingMessages = new Map();
 
 function loadSessions() {
   try {
@@ -422,17 +423,21 @@ function buildHistoryEntry(role, text) {
   };
 }
 
-function appendMessageToChat(entry) {
-  const message = document.createElement("div");
-  message.className = `message ${entry.role}`;
-  message.dataset.messageId = entry.id;
-  message.innerHTML = renderMarkdown(entry.text);
+function insertMessageElement(message) {
   if (statusMessageEl && statusMessageEl.parentNode === messages) {
     messages.insertBefore(message, statusMessageEl);
   } else {
     messages.appendChild(message);
   }
   messages.scrollTop = messages.scrollHeight;
+}
+
+function appendMessageToChat(entry) {
+  const message = document.createElement("div");
+  message.className = `message ${entry.role}`;
+  message.dataset.messageId = entry.id;
+  message.innerHTML = renderMarkdown(entry.text);
+  insertMessageElement(message);
 }
 
 function addMessage(role, text) {
@@ -444,6 +449,112 @@ function addMessage(role, text) {
   saveHistory(currentSessionId, historyEntries);
   appendMessageToChat(entry);
   updateSessionMeta(currentSessionId, entry);
+  renderSessionList(sessions);
+}
+
+function normalizeStreamMessageId(messageId) {
+  if (messageId) {
+    return messageId;
+  }
+  return `stream-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getOrCreateStreamingMessage(messageId) {
+  const normalizedId = normalizeStreamMessageId(messageId);
+  if (streamingMessages.has(normalizedId)) {
+    return streamingMessages.get(normalizedId);
+  }
+  clearChatStatus();
+  const entry = {
+    id: normalizedId,
+    role: "assistant",
+    text: "",
+    timestamp: new Date().toISOString(),
+  };
+  historyEntries.push(entry);
+  const messageEl = document.createElement("div");
+  messageEl.className = "message assistant streaming";
+  messageEl.dataset.messageId = normalizedId;
+  insertMessageElement(messageEl);
+  const streamState = {
+    entry,
+    messageEl,
+    blocks: [],
+    blockElements: new Map(),
+  };
+  streamingMessages.set(normalizedId, streamState);
+  return streamState;
+}
+
+function syncStreamingEntry(streamState) {
+  streamState.entry.text = streamState.blocks.join("\n\n");
+}
+
+function startStreamingBlock(messageId, blockId) {
+  const streamState = getOrCreateStreamingMessage(messageId);
+  const normalizedBlockId =
+    blockId || `block-${streamState.blocks.length + 1}`;
+  const blockEl = document.createElement("div");
+  blockEl.className = "stream-block stream-text";
+  streamState.messageEl.appendChild(blockEl);
+  const index = streamState.blocks.length;
+  streamState.blocks.push("");
+  streamState.blockElements.set(normalizedBlockId, { index, element: blockEl });
+  messages.scrollTop = messages.scrollHeight;
+  return { streamState, blockId: normalizedBlockId };
+}
+
+function appendStreamingDelta(messageId, blockId, delta) {
+  if (!delta) {
+    return;
+  }
+  const streamState = getOrCreateStreamingMessage(messageId);
+  let blockInfo = streamState.blockElements.get(blockId || "");
+  if (!blockInfo) {
+    const created = startStreamingBlock(messageId, blockId);
+    blockInfo = streamState.blockElements.get(created.blockId);
+  }
+  if (!blockInfo) {
+    return;
+  }
+  streamState.blocks[blockInfo.index] =
+    (streamState.blocks[blockInfo.index] || "") + delta;
+  blockInfo.element.innerHTML = renderMarkdown(
+    streamState.blocks[blockInfo.index]
+  );
+  syncStreamingEntry(streamState);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function appendStreamingTable(messageId, markdown, animate = true) {
+  if (!markdown) {
+    return;
+  }
+  const streamState = getOrCreateStreamingMessage(messageId);
+  const tableEl = document.createElement("div");
+  tableEl.className = "stream-block stream-table";
+  if (animate) {
+    tableEl.classList.add("animate-in");
+  }
+  tableEl.innerHTML = renderMarkdown(markdown);
+  streamState.messageEl.appendChild(tableEl);
+  streamState.blocks.push(markdown);
+  syncStreamingEntry(streamState);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function finalizeStreamingMessage(messageId) {
+  if (!messageId) {
+    return;
+  }
+  const streamState = streamingMessages.get(messageId);
+  if (!streamState) {
+    return;
+  }
+  syncStreamingEntry(streamState);
+  saveHistory(currentSessionId, historyEntries);
+  streamState.messageEl.classList.remove("streaming");
+  streamingMessages.delete(normalizedId);
   renderSessionList(sessions);
 }
 
@@ -2196,6 +2307,45 @@ function renderPredictionResult(payload) {
 
 function handleEvent(event) {
   if (!event || !event.type) {
+    return;
+  }
+
+  if (event.type === "chat_stream_start") {
+    const messageId = event.payload?.message_id || "";
+    getOrCreateStreamingMessage(messageId);
+    return;
+  }
+
+  if (event.type === "chat_stream_block_start") {
+    const messageId = event.payload?.message_id || "";
+    const blockId = event.payload?.block_id || "";
+    startStreamingBlock(messageId, blockId);
+    return;
+  }
+
+  if (event.type === "chat_stream_delta") {
+    const messageId = event.payload?.message_id || "";
+    const blockId = event.payload?.block_id || "";
+    const delta = event.payload?.delta || "";
+    appendStreamingDelta(messageId, blockId, delta);
+    return;
+  }
+
+  if (event.type === "chat_stream_block_end") {
+    return;
+  }
+
+  if (event.type === "chat_stream_end") {
+    const messageId = event.payload?.message_id || "";
+    finalizeStreamingMessage(messageId);
+    return;
+  }
+
+  if (event.type === "briefing_table") {
+    const messageId = event.payload?.message_id || "";
+    const markdown = event.payload?.markdown || "";
+    const animate = event.payload?.animate !== false;
+    appendStreamingTable(messageId, markdown, animate);
     return;
   }
 
