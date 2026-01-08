@@ -14,6 +14,7 @@
 
 *** 1) 생각하는 규칙
 - 사용자가 현재 코드에서 엣지케이스를 말하며 개선을 요청하면 딱 그 예시만 해결하려고 하지 말고, 그 예시가 왜 어떤 엣지케이스에서 비롯됐는지 파악하고, 그 근간을 해결할수 있는 해결책을 고민해
+ - 코드를 수정하거나 추가 기능을 개발할 시 늘 사용자가 해당 과정에 대해서 변경요ㅓㅇ을 할때에 잘 대응할 수 있을지 고려하여 메모리 구조를 짜야한다.
 <!-- ## 1) Always consider OpenAI Agents SDK first
 - When implementing anything "agentic" (multi-agent orchestration, handoffs, tool calling, guardrails, tracing),
   always check whether the OpenAI Agents SDK already provides a supported primitive/pattern.

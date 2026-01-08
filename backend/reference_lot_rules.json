@@ -151,19 +151,6 @@
       "active_layer",
       "upper_equal_dirtn_value",
       "lower_equal_dirtn_vaue"
-    ],
-    "defect_metrics": [
-      { "column": "defect_metric_1", "min": 0 },
-      { "column": "defect_metric_2", "min": 0 },
-      { "column": "defect_metric_3", "min": 0 },
-      { "column": "defect_metric_4", "min": 0 },
-      { "column": "defect_metric_5", "min": 0 },
-      { "column": "defect_metric_6", "min": 0 },
-      { "column": "defect_metric_7", "min": 0 },
-      { "column": "defect_metric_8", "min": 0 },
-      { "column": "defect_metric_9", "min": 0 },
-      { "column": "defect_metric_10", "min": 0 },
-      { "column": "defect_metric_11", "min": 0 }
     ]
   },
   "grid_search": {

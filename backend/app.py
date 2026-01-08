@@ -1882,18 +1882,7 @@ def _is_affirmative(message: str) -> bool:
 
 
 def _is_recommendation_intent(message: str) -> bool:
-    return _contains_any(
-        message,
-        (
-            "추천",
-            "인접",
-            "시뮬",
-            "simulation",
-            "simulate",
-            "what-if",
-            "예측",
-        ),
-    )
+    return _contains_any(message, SIM_RUN_KEYWORDS + ("what-if",))
 
 
 def _is_progress_request(message: str) -> bool:
@@ -2502,6 +2491,56 @@ def _build_candidate_defect_chart_payload(match_payload: dict | None) -> dict | 
     }
 
 
+def _format_defect_rate_display(value: object, value_unit: str) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if value_unit == "ratio":
+        return f"{numeric * 100:.2f}%"
+    if value_unit == "percent":
+        return f"{numeric:.2f}%"
+    return f"{numeric:.4f}"
+
+
+def _build_defect_condition_table_payload(
+    defect_rates: list[dict] | None,
+    chip_prod_id: str,
+    value_unit: str = "ratio",
+) -> dict | None:
+    if not defect_rates:
+        return None
+    rows = []
+    for entry in defect_rates:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("label") or entry.get("key") or entry.get("column") or "-"
+        total = entry.get("value1_count")
+        passed = entry.get("value2_count")
+        fail_count = None
+        if isinstance(total, (int, float)) and isinstance(passed, (int, float)):
+            fail_count = int(total) - int(passed)
+        rows.append(
+            {
+                "조건": label,
+                "전체 LOT": total,
+                "조건통과 LOT": passed,
+                "미달 LOT": fail_count,
+                "불량률": _format_defect_rate_display(entry.get("defect_rate"), value_unit),
+            }
+        )
+    if not rows:
+        return None
+    return {
+        "chart_type": "table",
+        "metric_label": "불량 조건 요약",
+        "value_unit": value_unit,
+        "table_columns": ["조건", "전체 LOT", "조건통과 LOT", "미달 LOT", "불량률"],
+        "table_rows": rows,
+        "filters": {"chip_prod_id": chip_prod_id},
+    }
+
+
 def _format_design_summary(design: dict, limit: int = 14) -> str:
     if not isinstance(design, dict) or not design:
         return "-"
@@ -2686,10 +2725,14 @@ async def _run_reference_pipeline(
         if selected_lot_id
         else {"status": "missing", "defect_rates": [], "source": "none"}
     )
-    defect_rates = defect_payload.get("defect_rates", []) or []
+    condition_defect_rates = reference_result.get("defect_rates") or []
+    condition_table = _build_defect_condition_table_payload(
+        condition_defect_rates, chip_prod_id, "ratio"
+    )
+    defect_rates = condition_defect_rates
     defect_stats = {}
     defect_rate_overall = None
-    if defect_rates:
+    if condition_table:
         rate_values = [
             item.get("defect_rate")
             for item in defect_rates
@@ -2701,45 +2744,59 @@ async def _run_reference_pipeline(
                 "avg": sum(rate_values) / len(rate_values),
                 "min": min(rate_values),
                 "max": max(rate_values),
+                "value_unit": "ratio",
             }
-            defect_stats["value_unit"] = "ratio"
             defect_rate_overall = (
                 rate_values[0] if len(rate_values) == 1 else defect_stats.get("avg")
             )
-        chart_lots = [
-            {
-                "label": item.get("label") or item.get("key") or item.get("column"),
-                "defect_rate": item.get("defect_rate"),
-            }
-            for item in defect_rates
-            if item.get("defect_rate") is not None
-        ]
-        defect_source = defect_payload.get("source") or "postgresql"
         await event_bus.broadcast(
-            {
-                "type": "defect_rate_chart",
-                "payload": {
-                    "lots": chart_lots,
-                    "filters": {"chip_prod_id": chip_prod_id},
-                    "stats": defect_stats,
-                    "source": defect_source,
-                    "metric_label": "불량률",
-                    "value_unit": "ratio",
-                },
-            }
+            {"type": "defect_rate_chart", "payload": condition_table}
         )
-        pipeline_store.set_event(
-            session_id,
-            "defect_rate_chart",
-            {
+        pipeline_store.set_event(session_id, "defect_rate_chart", condition_table)
+    else:
+        defect_rates = defect_payload.get("defect_rates", []) or []
+        if defect_rates:
+            rate_values = [
+                item.get("defect_rate")
+                for item in defect_rates
+                if item.get("defect_rate") is not None
+            ]
+            if rate_values:
+                defect_stats = {
+                    "count": len(rate_values),
+                    "avg": sum(rate_values) / len(rate_values),
+                    "min": min(rate_values),
+                    "max": max(rate_values),
+                }
+                defect_stats["value_unit"] = "ratio"
+                defect_rate_overall = (
+                    rate_values[0] if len(rate_values) == 1 else defect_stats.get("avg")
+                )
+            chart_lots = [
+                {
+                    "label": item.get("label") or item.get("key") or item.get("column"),
+                    "defect_rate": item.get("defect_rate"),
+                }
+                for item in defect_rates
+                if item.get("defect_rate") is not None
+            ]
+            defect_source = defect_payload.get("source") or "postgresql"
+            chart_payload = {
                 "lots": chart_lots,
                 "filters": {"chip_prod_id": chip_prod_id},
                 "stats": defect_stats,
                 "source": defect_source,
                 "metric_label": "불량률",
                 "value_unit": "ratio",
-            },
-        )
+            }
+            await event_bus.broadcast(
+                {"type": "defect_rate_chart", "payload": chart_payload}
+            )
+            pipeline_store.set_event(
+                session_id,
+                "defect_rate_chart",
+                chart_payload,
+            )
 
     grid_overrides = grid_overrides or {}
     grid_payload = _build_grid_search_payload(selected_row, params, grid_overrides)

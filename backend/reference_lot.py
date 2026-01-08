@@ -75,7 +75,6 @@ def normalize_reference_rules(rules: dict | None) -> dict:
         normalized["value1_not_null_columns"] = value1_not_null
     normalized["conditions"].setdefault("required_not_null", [])
     normalized["conditions"].setdefault("design_factor_columns", [])
-    normalized["conditions"].setdefault("defect_metrics", [])
     if not value1_not_null and normalized["conditions"].get("required_not_null"):
         normalized["value1_not_null_columns"] = list(
             normalized["conditions"].get("required_not_null", [])
@@ -224,29 +223,14 @@ def _all_not_null(row: dict, columns: list[str]) -> bool:
     return True
 
 
-def _defect_thresholds_ok(row: dict, metrics: list[dict]) -> bool:
-    for metric in metrics:
-        column = metric.get("column")
-        minimum = metric.get("min")
-        if not column:
-            continue
-        value = _coerce_float(row.get(column))
-        if value is None:
-            return False
-        if minimum is not None and value < float(minimum):
-            return False
-    return True
-
-
 def _score_row(row: dict, rules: dict) -> tuple[int, dict]:
     conditions = rules.get("conditions", {})
     screen_rule = conditions.get("screen_durable_spec") or {}
     cond1 = _string_condition(row.get(screen_rule.get("column")), screen_rule)
     cond2 = _all_not_null(row, conditions.get("required_not_null", []))
     cond3 = _all_not_null(row, conditions.get("design_factor_columns", []))
-    cond4 = _defect_thresholds_ok(row, conditions.get("defect_metrics", []))
-    score = sum([cond1, cond2, cond3, cond4])
-    return score, {"cond1": cond1, "cond2": cond2, "cond3": cond3, "cond4": cond4}
+    score = sum([cond1, cond2, cond3])
+    return score, {"cond1": cond1, "cond2": cond2, "cond3": cond3}
 
 
 def _aggregate_defect_rate(row: dict, columns: list[str]) -> float | None:
@@ -776,10 +760,6 @@ def _build_columns(rules: dict) -> list[str]:
         columns.add(screen["column"])
     columns.update(conditions.get("required_not_null", []))
     columns.update(conditions.get("design_factor_columns", []))
-    for metric in conditions.get("defect_metrics", []):
-        column = metric.get("column")
-        if column:
-            columns.add(column)
     grid = rules.get("grid_search", {})
     for factor in grid.get("factors", []):
         column = factor.get("column")
@@ -1267,11 +1247,6 @@ def get_defect_rates_by_lot_id(lot_id: str) -> dict:
     if not rate_columns:
         conditions = rules.get("conditions", {})
         aggregate_columns = rules.get("defect_rate_aggregate", {}).get("columns", []) or []
-        metric_columns = [
-            metric.get("column")
-            for metric in conditions.get("defect_metrics", [])
-            if metric.get("column")
-        ]
         defect_condition_columns = [
             item.get("column") or item.get("name")
             for item in (rules.get("defect_conditions") or [])
@@ -1279,7 +1254,7 @@ def get_defect_rates_by_lot_id(lot_id: str) -> dict:
         ]
         candidate_columns = [
             col
-            for col in dict.fromkeys(aggregate_columns + metric_columns + defect_condition_columns)
+            for col in dict.fromkeys(aggregate_columns + defect_condition_columns)
             if col and col in selected_row
         ]
         if candidate_columns:
@@ -1354,17 +1329,12 @@ def _build_demo_rows(
     value1_required = rules.get("value1_not_null_columns", []) or []
     required = list(dict.fromkeys(list(conditions.get("required_not_null", [])) + list(value1_required)))
     design_columns = list(conditions.get("design_factor_columns", []))
-    defect_columns = [
-        metric.get("column")
-        for metric in conditions.get("defect_metrics", [])
-        if metric.get("column")
-    ]
     defect_condition_columns = [
         item.get("column") or item.get("name")
         for item in (rules.get("defect_conditions") or [])
         if isinstance(item, dict) and (item.get("column") or item.get("name"))
     ]
-    defect_columns = list(dict.fromkeys(defect_columns + defect_condition_columns))
+    defect_columns = list(dict.fromkeys(defect_condition_columns))
     grid_columns = [
         factor.get("column")
         for factor in grid.get("factors", [])
@@ -1639,11 +1609,6 @@ def _resolve_post_grid_defect_columns(rules: dict) -> list[str]:
         return columns
     aggregate_columns = rules.get("defect_rate_aggregate", {}).get("columns", []) or []
     conditions = rules.get("conditions", {})
-    metric_columns = [
-        metric.get("column")
-        for metric in conditions.get("defect_metrics", [])
-        if metric.get("column")
-    ]
     defect_condition_columns = [
         item.get("column") or item.get("name")
         for item in (rules.get("defect_conditions") or [])
@@ -1651,7 +1616,7 @@ def _resolve_post_grid_defect_columns(rules: dict) -> list[str]:
     ]
     return [
         column
-        for column in dict.fromkeys(aggregate_columns + metric_columns + defect_condition_columns)
+        for column in dict.fromkeys(aggregate_columns + defect_condition_columns)
         if column
     ]
 

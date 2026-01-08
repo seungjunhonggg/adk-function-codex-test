@@ -1508,6 +1508,10 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
     (histogram && histogram.value_unit) ||
     config.value_unit ||
     "";
+  const tableRows = Array.isArray(payload.table_rows) ? payload.table_rows : [];
+  const tableColumns = Array.isArray(payload.table_columns)
+    ? payload.table_columns
+    : [];
   targetEl.innerHTML = "";
   if (stats && stats.count && options.includeMeta !== false) {
     const meta = document.createElement("div");
@@ -1539,6 +1543,24 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
       (metricLabel ? `${metricLabel}` : "필터");
     meta.textContent = `${prefix} ${stats.count}건 · 평균 ${avg} · 최소 ${min} · 최대 ${max}`;
     targetEl.appendChild(meta);
+  }
+
+  if (chartType === "table" || tableRows.length) {
+    const table = buildResultTable({
+      rows: tableRows,
+      columns: tableColumns,
+    });
+    if (table) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "table-scroll";
+      wrapper.appendChild(table);
+      targetEl.appendChild(wrapper);
+    } else {
+      targetEl.textContent = metricLabel
+        ? `${metricLabel} 표가 없습니다.`
+        : "표가 없습니다.";
+    }
+    return;
   }
 
   if (

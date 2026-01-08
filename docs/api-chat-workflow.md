@@ -39,6 +39,9 @@ flowchart TD
 - `stage_view`
 - `chat` / `unknown`
 
+참고: `simulation_run` 의도는 "추천/인접/시뮬/예측"뿐 아니라 "시작/실행" 키워드도 포함하며,
+파라미터가 없어도 입력 패널(`simulation_form`)을 바로 열어 줍니다.
+
 핵심 파일:
 - `backend/app.py`: `/api/chat`, 라우팅, 핸들러
 - `backend/agents.py`: `route_agent`, `chart_agent`, `db_agent`, `conversation_agent`
@@ -63,7 +66,7 @@ flowchart TD
       - 정렬 우선순위: cutting_defect+measure_defect 등급(S > A > B) → bdv_avg 내림차순
         → x_tr_short_defect_rate 오름차순 → 최신 input_date
       - rerun 시 이전 grid_overrides가 있으면 재활용
-    - LOT 불량률 히스토그램(1차) 이벤트 송신
+    - LOT 불량 조건 요약 표 이벤트 송신(차트 대신 table 렌더링)
     - grid_search 후보 생성
       - payload 형식: sim_type=ver4, data(ref/sim), targets(electrode_c_avg*1.05 등),
         params(screen_* / active_layer / cover_sheet_thk / total_cover_layer_num /
