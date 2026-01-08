@@ -492,7 +492,8 @@ async def _handle_simulation_edit_workflow(
     sim_response = await _maybe_handle_simulation_message(message, session_id)
     if sim_response is None:
         return None
-    return WorkflowOutcome(sim_response)
+    message_text, ui_event = _split_edit_response(sim_response)
+    return WorkflowOutcome(message_text, ui_event)
 
 
 async def _handle_simulation_run_workflow(
@@ -507,7 +508,8 @@ async def _handle_simulation_run_workflow(
     sim_response = await _maybe_handle_simulation_message(message, session_id)
     if sim_response is None:
         return None
-    return WorkflowOutcome(sim_response)
+    message_text, ui_event = _split_edit_response(sim_response)
+    return WorkflowOutcome(message_text, ui_event)
 
 
 async def _handle_db_query_workflow(
@@ -2426,7 +2428,7 @@ async def _handle_pipeline_edit_message(
 
 async def _handle_pipeline_run_message(
     message: str, session_id: str
-) -> str | None:
+) -> str | dict | None:
     params, conflicts = await extract_simulation_params_hybrid(message)
     for key in conflicts:
         params.pop(key, None)
@@ -2466,16 +2468,20 @@ async def _handle_pipeline_run_message(
             "params": simulation_store.get(session_id),
             "missing": simulation_store.missing(session_id),
         }
-    await emit_simulation_form(
+    form_payload = await emit_simulation_form(
         update_result.get("params", {}), update_result.get("missing", [])
     )
 
     chip_prod_override = update_result.get("params", {}).get("chip_prod_id")
     missing = update_result.get("missing", [])
     if missing and not chip_prod_override:
-        return await _generate_simulation_auto_message(
+        message_text = await _generate_simulation_auto_message(
             update_result.get("params", {}), missing, None
         )
+        return {
+            "message": message_text,
+            "ui_event": {"type": "simulation_form", "payload": form_payload},
+        }
 
     result = await _run_reference_pipeline(
         session_id,
@@ -2522,7 +2528,7 @@ async def _handle_stage_view_request(
 
 async def _maybe_handle_simulation_message(
     message: str, session_id: str
-) -> str | None:
+) -> str | dict | None:
     if _is_reset_request(message):
         await reset_simulation_state_impl(reason=message)
         missing = simulation_store.missing(session_id)

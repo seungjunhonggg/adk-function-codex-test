@@ -126,6 +126,9 @@ flowchart TD
 UI는 `event_bus` 이벤트만 보고 갱신합니다.
 - 예: `defect_rate_chart`, `final_defect_chart`, `final_briefing`
 - `pipeline_store`는 이벤트 재생/복구용 캐시 역할
+  
+추가: 새 시뮬레이션 요청에 파라미터가 부족한 경우, `/api/chat` 응답에
+`ui_event=simulation_form`을 함께 넣어 WebSocket 미연결 상태에서도 입력 패널이 즉시 표시됩니다.
 
 ## 확장 포인트
 1) 새로운 워크플로우 추가  
