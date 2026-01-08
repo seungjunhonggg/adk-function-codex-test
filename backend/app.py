@@ -28,6 +28,7 @@ from .config import (
     SESSION_DB_PATH,
     TRACING_ENABLED,
     DEMO_LATENCY_SECONDS,
+    BRIEFING_STREAM_DELAY_SECONDS,
 )
 from .context import current_session_id
 from .db_connections import connect_and_save, get_schema, list_connections, preload_schema
@@ -89,6 +90,7 @@ class WorkflowOutcome:
     message: str
     ui_event: dict | None = None
     memory_summary: str | None = None
+    streamed: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -473,6 +475,8 @@ async def _record_workflow_outcome(
     response_payload = {"assistant_message": outcome.message}
     if outcome.ui_event:
         response_payload["ui_event"] = outcome.ui_event
+    if outcome.streamed:
+        response_payload["streamed"] = True
     return response_payload
 
 
@@ -499,13 +503,15 @@ async def _handle_simulation_edit_workflow(
     edit_response = await _maybe_handle_edit_intent(message, session_id)
     if edit_response is not None:
         message_text, ui_event = _split_edit_response(edit_response)
-        return WorkflowOutcome(message_text, ui_event)
+        streamed = _extract_streamed_flag(edit_response)
+        return WorkflowOutcome(message_text, ui_event, streamed=streamed)
     await emit_workflow_log("FLOW", "simulation_edit -> pipeline")
     sim_response = await _maybe_handle_simulation_message(message, session_id)
     if sim_response is None:
         return None
     message_text, ui_event = _split_edit_response(sim_response)
-    return WorkflowOutcome(message_text, ui_event)
+    streamed = _extract_streamed_flag(sim_response)
+    return WorkflowOutcome(message_text, ui_event, streamed=streamed)
 
 
 async def _handle_simulation_run_workflow(
@@ -515,13 +521,15 @@ async def _handle_simulation_run_workflow(
     edit_response = await _maybe_handle_edit_intent(message, session_id)
     if edit_response is not None:
         message_text, ui_event = _split_edit_response(edit_response)
-        return WorkflowOutcome(message_text, ui_event)
+        streamed = _extract_streamed_flag(edit_response)
+        return WorkflowOutcome(message_text, ui_event, streamed=streamed)
     await emit_workflow_log("FLOW", "simulation_run -> pipeline")
     sim_response = await _maybe_handle_simulation_message(message, session_id)
     if sim_response is None:
         return None
     message_text, ui_event = _split_edit_response(sim_response)
-    return WorkflowOutcome(message_text, ui_event)
+    streamed = _extract_streamed_flag(sim_response)
+    return WorkflowOutcome(message_text, ui_event, streamed=streamed)
 
 
 async def _handle_db_query_workflow(
@@ -751,6 +759,29 @@ async def _emit_chat_message(session_id: str, content: str) -> None:
     )
 
 
+async def _stream_briefing_sections(
+    session_id: str, sections: list[str]
+) -> bool:
+    if not sections:
+        return False
+    if not event_bus.has_clients(session_id):
+        return False
+    delay = BRIEFING_STREAM_DELAY_SECONDS
+    for section in sections:
+        if not section:
+            continue
+        await event_bus.broadcast(
+            {
+                "type": "chat_message",
+                "payload": {"role": "assistant", "content": section},
+            },
+            session_id=session_id,
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+    return True
+
+
 def _split_edit_response(edit_response: object) -> tuple[str, dict | None]:
     if isinstance(edit_response, dict):
         message = str(edit_response.get("message") or "")
@@ -759,6 +790,12 @@ def _split_edit_response(edit_response: object) -> tuple[str, dict | None]:
             ui_event = None
         return message, ui_event
     return str(edit_response), None
+
+
+def _extract_streamed_flag(edit_response: object) -> bool:
+    if not isinstance(edit_response, dict):
+        return False
+    return bool(edit_response.get("streamed"))
 
 
 async def _emit_pipeline_status(stage: str, message: str, done: bool = False) -> None:
@@ -2692,6 +2729,83 @@ def _format_sort_summary(rules: dict) -> str:
     return " → ".join(parts)
 
 
+def _extract_preserve_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for match in re.findall(r"[-+]?\d+(?:\.\d+)?(?:\s*(?:%|V|uF|nF|pF))?", text):
+        candidate = match.strip()
+        if candidate and candidate not in tokens:
+            tokens.append(candidate)
+    for match in re.findall(r"\b[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*\b", text):
+        if match and match not in tokens:
+            tokens.append(match)
+    for match in re.findall(r"\b[A-Za-z0-9_.-]*[_/][A-Za-z0-9_.-]*\b", text):
+        if match and match not in tokens:
+            tokens.append(match)
+    return tokens
+
+
+def _token_present(token: str, text: str) -> bool:
+    if token in text:
+        return True
+    if " " in token:
+        compact_token = token.replace(" ", "")
+        if compact_token and compact_token in text.replace(" ", ""):
+            return True
+    return False
+
+
+async def _maybe_rewrite_briefing_sections(
+    sections: dict[str, str],
+) -> dict[str, str]:
+    if not OPENAI_API_KEY or not sections:
+        return sections
+    cleaned: dict[str, str] = {}
+    tokens_map: dict[str, list[str]] = {}
+    for key, value in sections.items():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        cleaned[key] = text
+        tokens_map[key] = _extract_preserve_tokens(text)
+    if not cleaned:
+        return sections
+
+    payload = {"sections": cleaned}
+    prompt = (
+        "다음 JSON의 sections 문장을 간결하고 자연스럽게 다듬어 주세요. "
+        "규칙: 1) 의미 변경 금지 2) 숫자/ID/기술용어/약어는 그대로 유지 "
+        "3) 각 섹션은 1~2문장 4) 목록/번호/표현 추가 금지 "
+        "5) 출력은 동일한 JSON 구조로만 반환\n"
+        f"JSON: {json.dumps(payload, ensure_ascii=False)}"
+    )
+    try:
+        run = await Runner.run(
+            conversation_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+        raw = (run.final_output or "").strip()
+        parsed = json.loads(raw)
+    except Exception:
+        return sections
+
+    output_sections = parsed.get("sections") if isinstance(parsed, dict) else None
+    if not isinstance(output_sections, dict):
+        return sections
+
+    merged = dict(sections)
+    for key, original in cleaned.items():
+        candidate = output_sections.get(key)
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        candidate = candidate.strip()
+        tokens = tokens_map.get(key, [])
+        if any(not _token_present(token, candidate) for token in tokens):
+            continue
+        merged[key] = candidate
+    return merged
+
+
 def _build_markdown_table_chunks(
     columns: list[str], row: dict, chunk_size: int
 ) -> list[str]:
@@ -3171,7 +3285,7 @@ async def _run_reference_pipeline(
             {
                 "rank": candidate.get("rank") or index,
                 "electrode_c_avg": _resolve_design_value(
-                    design, selected_row, ("electrode_c_avg", "target_electrode_c_avg")
+                    design, selected_row, ("electrode_c_avg",)
                 ),
                 "grinding_t_avg": _resolve_design_value(
                     design, selected_row, ("grinding_t_avg", "grinding_t_size")
@@ -3209,21 +3323,10 @@ async def _run_reference_pipeline(
         intro_parts.append(f"정렬 우선순위는 {sort_summary} 입니다.")
     reference_intro = " ".join(intro_parts).strip()
     total_lot_count = len(reference_rows)
-    reference_step = (
-        "1) 레퍼 LOT 추천 결과\n"
-        f"{reference_intro} 나온 LOT는 총 {total_lot_count}개입니다. "
-        f"검색된 LOT {total_lot_count}개 중 가장 적합한 LOT를 선정하였습니다."
-        f"{reference_table_text}"
-    )
-
     ref_label = selected_lot_id or "Ref LOT"
     detail_intro = f"선택된 Ref는 {ref_label} 으로 정보는 하기와 같습니다."
     if detail_note:
         detail_intro = f"{detail_intro}\n{detail_note}"
-    reference_detail_step = (
-        "2) 레퍼 정보 제공\n"
-        f"{detail_intro}\n\n{detail_table_text}"
-    )
 
     electrode_ref_value = _row_value(selected_row, "electrode_c_avg")
     electrode_ref_text = _format_brief_value(electrode_ref_value)
@@ -3237,44 +3340,48 @@ async def _run_reference_pipeline(
             "5% 증가시켜 설계를 진행하였습니다."
         )
     grid_intro += " Sheet T, LayDown, 층수를 가변하여 최적설계를 진행한 결과는 하기와 같습니다."
+    post_grid_body = _build_post_grid_step(post_grid_defects, include_prefix=False)
+    summary_body = (
+        f"최종 요약: {_format_simulation_result(simulation_result.get('result'))}. "
+        "상위 후보를 확인해 주세요."
+        if simulation_result and simulation_result.get("result")
+        else "최종 요약: 추천 결과를 확인해 주세요."
+    )
+    rewrite_sections = {
+        "1": f"{reference_intro} 나온 LOT는 총 {total_lot_count}개입니다. "
+        f"검색된 LOT {total_lot_count}개 중 가장 적합한 LOT를 선정하였습니다.",
+        "2": detail_intro,
+        "3": grid_intro,
+        "4": post_grid_body,
+        "5": summary_body,
+    }
+    rewritten = await _maybe_rewrite_briefing_sections(rewrite_sections)
+
+    reference_step = (
+        "1) 레퍼 LOT 추천 결과\n"
+        f"{rewritten.get('1', rewrite_sections['1'])}"
+        f"{reference_table_text}"
+    )
+    reference_detail_step = (
+        "2) 레퍼 정보 제공\n"
+        f"{rewritten.get('2', rewrite_sections['2'])}\n\n{detail_table_text}"
+    )
     grid_step = (
         "3) 그리드 서치 결과 제공\n"
-        f"{grid_intro}\n\n{grid_table or '그리드 결과가 없습니다.'}"
+        f"{rewritten.get('3', rewrite_sections['3'])}\n\n"
+        f"{grid_table or '그리드 결과가 없습니다.'}"
     )
-
-    post_grid_step = f"4) {_build_post_grid_step(post_grid_defects, include_prefix=False)}"
-
-    if simulation_result and simulation_result.get("result"):
-        summary = _format_simulation_result(simulation_result.get("result"))
-        message = "\n\n".join(
-            [
-                "브리핑 시작",
-                reference_step,
-                reference_detail_step,
-                grid_step,
-                post_grid_step,
-                f"5) 최종 요약: {summary}. 상위 후보를 확인해 주세요.",
-            ]
-        )
-        pipeline_store.update(
-            session_id,
-            briefing_text=message,
-            briefing_summary=memory_summary,
-        )
-        pipeline_store.set_pending_memory_summary(
-            session_id, memory_summary, label="final_briefing"
-        )
-        return {"message": message, "simulation_result": simulation_result}
-    message = "\n\n".join(
-        [
-            "브리핑 시작",
-            reference_step,
-            reference_detail_step,
-            grid_step,
-            post_grid_step,
-            "5) 최종 요약: 추천 결과를 확인해 주세요.",
-        ]
-    )
+    post_grid_step = f"4) {rewritten.get('4', rewrite_sections['4'])}"
+    sections = [
+        "브리핑 시작",
+        reference_step,
+        reference_detail_step,
+        grid_step,
+        post_grid_step,
+        f"5) {rewritten.get('5', rewrite_sections['5'])}",
+    ]
+    message = "\n\n".join(sections)
+    streamed = await _stream_briefing_sections(session_id, sections)
     pipeline_store.update(
         session_id,
         briefing_text=message,
@@ -3283,15 +3390,15 @@ async def _run_reference_pipeline(
     pipeline_store.set_pending_memory_summary(
         session_id, memory_summary, label="final_briefing"
     )
-    return {
-        "message": message,
-        "simulation_result": simulation_result,
-    }
+    response = {"message": message, "simulation_result": simulation_result}
+    if streamed:
+        response["streamed"] = True
+    return response
 
 
 async def _handle_pipeline_edit_message(
     message: str, session_id: str
-) -> str | None:
+) -> str | dict | None:
     state = pipeline_store.get(session_id)
     if not state:
         return None
@@ -3314,7 +3421,9 @@ async def _handle_pipeline_edit_message(
         reference_override=reference_override,
         grid_overrides=grid_overrides or (state.get("grid") or {}).get("overrides"),
     )
-    return result.get("message")
+    if isinstance(result, dict) and result.get("streamed"):
+        return result
+    return result.get("message") if isinstance(result, dict) else result
 
 
 async def _handle_pipeline_run_message(
@@ -3337,7 +3446,9 @@ async def _handle_pipeline_run_message(
             result = await _run_reference_pipeline(
                 session_id, stored_params, chip_prod_override=chip_prod_override
             )
-            return result.get("message")
+            if isinstance(result, dict) and result.get("streamed"):
+                return result
+            return result.get("message") if isinstance(result, dict) else result
         return None
 
     if not (has_params or intent):
@@ -3379,7 +3490,9 @@ async def _handle_pipeline_run_message(
         update_result.get("params", {}),
         chip_prod_override=chip_prod_override,
     )
-    return result.get("message")
+    if isinstance(result, dict) and result.get("streamed"):
+        return result
+    return result.get("message") if isinstance(result, dict) else result
 
 
 def _resolve_stage_request(
@@ -3602,7 +3715,10 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
         )
         message = pipeline_result.get("message")
         if message:
-            await _emit_chat_message(request.session_id, message)
+            if pipeline_result.get("streamed"):
+                await _append_assistant_message(request.session_id, message)
+            else:
+                await _emit_chat_message(request.session_id, message)
         simulation_result = pipeline_result.get("simulation_result") or {}
         inner = simulation_result.get("result") if isinstance(simulation_result, dict) else {}
         return {

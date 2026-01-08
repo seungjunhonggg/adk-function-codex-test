@@ -1,35 +1,35 @@
-# NOTE: Documentation-only YAML. The app reads backend/reference_lot_rules.json.
-# Keep this file in sync with the JSON structure and values.
+# NOTE: 설명용 YAML 파일입니다. 앱은 backend/reference_lot_rules.json을 읽습니다.
+# 이 파일은 JSON 구조/값과 항상 동기화하세요.
 
-# DB connection and table mapping used by reference lot + grid queries.
-db:
-  # Connection id for DB (blank = demo mode).
+# 레퍼런스 LOT + 그리드 조회에 사용하는 DB 연결/테이블 매핑
+ db:
+  # DB 연결 ID (빈 값이면 데모 모드)
   connection_id: ""
-  # Schema name for queries.
+  # 스키마 이름
   schema: "public"
-  # Default table name (used when tables.* is blank).
+  # 기본 테이블 (tables.*가 비어있을 때 사용)
   table: "mdh_base_view_total"
-  # Per-role table overrides.
+  # 역할별 테이블 오버라이드
   tables:
-    # Table used for param mapping lookups.
+    # 파라미터 매핑 조회용 테이블
     param_map: ""
-    # Table used for chip_prod_id lookup.
+    # chip_prod_id 조회용 테이블
     chip_prod: "mdh_base_view_total"
-    # Table used for reference lot search.
+    # 레퍼런스 LOT 검색용 테이블
     lot_search: "mdh_base_view_total"
-  # Column names in the lot table.
+  # LOT 테이블 내 컬럼명
   lot_id_column: "lot_id"
   chip_prod_id_column: "chip_prod_id"
   input_date_column: "design_input_date"
 
-# Optional param mapping table to normalize user inputs to DB values.
+# 사용자 입력을 DB 값으로 매핑할 때 쓰는 테이블 (옵션)
 param_mapping:
   schema: ""
   table: ""
   name_column: ""
   mappings: {}
 
-# Default param-to-column mapping (used when param_columns_by_table is not set).
+# 기본 파라미터-컬럼 매핑 (param_columns_by_table이 없을 때 사용)
 param_columns:
   temperature: "temperature"
   voltage: "voltage"
@@ -37,7 +37,7 @@ param_columns:
   capacity: "capacity"
   production_mode: "lot_type"
 
-# Per-table param mapping overrides.
+# 테이블별 파라미터 매핑 오버라이드
 param_columns_by_table:
   chip_prod:
     temperature: "temperature"
@@ -48,10 +48,10 @@ param_columns_by_table:
   lot_search:
     production_mode: "lot_type"
 
-# Optional per-param value mapping (e.g., user values to DB enums).
+# 파라미터 값 치환 맵 (예: 사용자 값 -> DB enum)
 param_value_map: {}
 
-# Optional defect-rate source (separate table) used when defect_conditions are not present.
+# 결함율 소스 테이블 (defect_conditions 미사용 시 대체용)
 defect_rate_source:
   connection_id: "AAAA"
   schema: "BBBB"
@@ -59,16 +59,16 @@ defect_rate_source:
   lot_id_column: "x_lot_id"
   update_date_column: "x_update_date"
   rate_columns: []
-  # percent or ratio
+  # percent 또는 ratio
   value_unit: "percent"
 
-# Post-grid defect stats columns (used for TOP3 defect summary).
-# If empty, falls back to defect_rate_aggregate + defect_conditions.
+# post-grid 불량 통계 컬럼 (TOP3 불량 요약에 사용)
+# 비어있으면 defect_rate_aggregate + defect_conditions로 fallback
 post_grid_defect_columns: []
 post_grid_recent_months: 3
 post_grid_defect_value_unit: "percent"
 
-# Fields used to match grid candidates to historical lots.
+# 그리드 후보와 동일 설계 LOT 매칭에 사용하는 필드
 grid_match_fields:
   - "active_powder_base"
   - "active_powder_additives"
@@ -80,32 +80,32 @@ grid_match_field_aliases:
 grid_match_recent_months: 6
 grid_match_row_limit: 50
 
-# Defect columns for candidate match chart (event panel).
+# 후보 매칭 이벤트 패널 차트용 불량 컬럼
 grid_defect_columns: []
 grid_defect_value_unit: ""
 
-# Final briefing formatting controls.
+# 최종 브리핑 출력 포맷 설정
 final_briefing:
-  # Number of design blocks to show in final briefing.
+  # 최종 브리핑에 표시할 설계 블록 수
   max_blocks: 3
-  # Whitelist of design keys to display (empty = all).
+  # 표시할 설계 필드 화이트리스트 (빈 값 = 전체)
   design_fields: []
-  # Optional display labels for design fields.
+  # 설계 필드 라벨 매핑
   design_labels: {}
-  # Histogram bins for defect summary charts.
+  # 히스토그램 bin 수
   chart_bins: 8
-  # Max rows for the reference candidate table in the briefing.
+  # 레퍼 후보 표 최대 표시 행 수
   reference_table_max_rows: 10
-  # Number of columns per table chunk for Ref LOT detail tables.
+  # Ref LOT 상세 표 분할 시 한 표의 컬럼 수
   reference_detail_chunk_size: 6
-  # Optional whitelist for Ref LOT detail columns (empty = use available).
+  # Ref LOT 상세 컬럼 화이트리스트 (빈 값 = 사용 가능 컬럼)
   reference_detail_columns: []
 
-# Reference lot selection behavior.
+# 레퍼런스 LOT 선택 로직
 selection:
-  # Max candidates queried for reference selection (0 = no limit).
+  # 레퍼런스 후보 조회 최대 개수 (0 = 제한 없음)
   max_candidates: 0
-  # Sorting priority for reference lot selection.
+  # 레퍼런스 LOT 정렬 우선순위
   lot_search_sort:
     - columns:
         - "cutting_defect"
@@ -121,7 +121,7 @@ selection:
     - column: "x_tr_short_defect_rate"
       order: "asc"
 
-# Non-null guard columns used for reference lot filtering.
+# 레퍼런스 LOT 필터링에 사용하는 필수 not-null 컬럼
 value1_not_null_columns:
   - "grinding_l_avg"
   - "grinding_t_avg"
@@ -141,7 +141,7 @@ value1_not_null_columns:
   - "upper_equal_dirtn_value"
   - "lower_equal_dirtn_vaue"
 
-# Defect condition filters used during reference lot selection.
+# 레퍼런스 LOT 선택에 사용하는 불량 조건 필터
 defect_conditions:
   - key: "cutting_defect"
     column: "cutting_defect"
@@ -186,10 +186,10 @@ defect_conditions:
     operator: "="
     value: "OK"
 
-# Extra columns to include when fetching LOT detail (used when no explicit override).
+# LOT 상세 조회 시 추가로 포함할 컬럼(옵션)
 detail_columns: []
 
-# Additional condition rules used by reference lot filtering.
+# 레퍼런스 LOT 필터링에 사용하는 추가 조건
 conditions:
   screen_durable_spec:
     column: "screen_durable_spec_name"
@@ -216,7 +216,7 @@ conditions:
     - "upper_equal_dirtn_value"
     - "lower_equal_dirtn_vaue"
 
-# Grid search factor settings for design candidate generation.
+# 그리드 서치 설계 인자 설정
 grid_search:
   factors:
     - name: "sheet_t"
@@ -286,12 +286,12 @@ grid_search:
       range_percent: 0
       points: 1
       default: 1
-  # Max number of grid results to keep.
+  # 그리드 결과 최대 개수
   max_results: 100
-  # Number of top candidates to show in UI.
+  # UI에 표시할 TOP 후보 수
   top_k: 10
 
-# Aggregate defect-rate columns used when post_grid_defect_columns is empty.
+# post-grid 불량 컬럼이 비어있을 때 사용하는 집계 컬럼
 defect_rate_aggregate:
   columns:
     - "defect_metric_1"
@@ -305,5 +305,5 @@ defect_rate_aggregate:
     - "defect_metric_9"
     - "defect_metric_10"
     - "defect_metric_11"
-  # avg or sum
+  # avg 또는 sum
   mode: "avg"

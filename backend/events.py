@@ -28,6 +28,10 @@ class EventBus:
         if not clients:
             self._clients_by_session.pop(session, None)
 
+    def has_clients(self, session_id: str | None = None) -> bool:
+        session = (session_id or "").strip() or current_session_id.get()
+        return bool(self._clients_by_session.get(session))
+
     async def broadcast(self, event: dict, session_id: str | None = None) -> None:
         session = (session_id or "").strip() or current_session_id.get()
         event_out = dict(event) if isinstance(event, dict) else {"payload": event}

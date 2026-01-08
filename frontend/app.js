@@ -2392,7 +2392,13 @@ async function sendChatMessage(message) {
     if (data.ui_event && shouldApplyUiEvent()) {
       handleEvent(data.ui_event);
     }
-    addMessage("assistant", data.assistant_message || "(응답 없음)");
+    const hasLiveSocket =
+      socket &&
+      socket.readyState === WebSocket.OPEN &&
+      activeSocketSessionId === currentSessionId;
+    if (!data.streamed || !hasLiveSocket) {
+      addMessage("assistant", data.assistant_message || "(응답 없음)");
+    }
   } catch (error) {
     addMessage("assistant", "네트워크 오류입니다. 백엔드 상태를 확인해 주세요.");
   } finally {

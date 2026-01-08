@@ -86,11 +86,17 @@ flowchart TD
         2) 선택 Ref LOT 상세 표(컬럼 다수는 분할 표) →
         3) 그리드 서치 요약 표(rank/electrode_c_avg/grinding_t_avg/active_layer/cast_dsgn_thk/ldn_avr_value)
       - `design_blocks` 포함
+      - OPENAI_API_KEY가 있으면 서술부 문장만 LLM으로 다듬고(표/숫자 고정),
+        검증 실패 시 템플릿을 그대로 사용
+      - WebSocket이 연결된 경우 브리핑 섹션을 `chat_message`로 순차 스트리밍
+        (응답에는 `streamed=true`가 포함되어 HTTP 응답의 중복 출력 방지)
+      - 섹션 간 딜레이는 `BRIEFING_STREAM_DELAY_SECONDS`로 조정 가능 (기본 0)
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  
    - 주요 이벤트: `simulation_form`, `lot_result`, `defect_rate_chart`,  
      `design_candidates`, `final_briefing`
+   - 브리핑 본문은 `chat_message` 이벤트로 섹션 단위 송신 가능
 
 핵심 파일:
 - `backend/reference_lot.py`: 레퍼런스 LOT, post-grid 불량 통계
