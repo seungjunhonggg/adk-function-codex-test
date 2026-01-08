@@ -9,6 +9,9 @@
 - Prefer minimal changes that integrate with existing patterns.
 - When unsure, inspect the codebase first (search, read nearby files) before implementing.
 
+## 문서 업데이트 규칙
+- `/api/chat` 워크플로우나 메모리 구조가 바뀌면 `docs/api-chat-workflow.md`를 같이 업데이트할 것
+
 *** 1) 생각하는 규칙
 - 사용자가 현재 코드에서 엣지케이스를 말하며 개선을 요청하면 딱 그 예시만 해결하려고 하지 말고, 그 예시가 왜 어떤 엣지케이스에서 비롯됐는지 파악하고, 그 근간을 해결할수 있는 해결책을 고민해
 <!-- ## 1) Always consider OpenAI Agents SDK first
