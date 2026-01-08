@@ -384,9 +384,6 @@ def _resolve_grid_defect_columns(
     columns = [column for column in (rules.get("post_grid_defect_columns") or []) if column]
     if columns:
         return columns
-    columns = _resolve_post_grid_defect_columns(rules)
-    if columns:
-        return columns
     if available:
         return [column for column in available if _looks_like_defect_column(column)]
     return []

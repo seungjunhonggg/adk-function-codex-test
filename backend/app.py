@@ -2360,6 +2360,7 @@ def _build_design_blocks_from_matches(match_payload: dict | None, rules: dict) -
                     "lots": lots,
                     "stats": stats,
                     "chart_type": "bar",
+                    "bar_orientation": "vertical",
                     "metric_label": "불량 인자 평균",
                     "value_unit": value_unit,
                 }
@@ -2495,6 +2496,7 @@ def _build_candidate_defect_chart_payload(match_payload: dict | None) -> dict | 
         "lots": lots,
         "stats": stats,
         "chart_type": "bar",
+        "bar_orientation": "vertical",
         "metric_label": label,
         "value_unit": value_unit,
     }

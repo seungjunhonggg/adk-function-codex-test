@@ -1210,7 +1210,7 @@ body::before {
   gap: 10px;
 }
 
-.design-block .result-table td:first-child {
+.design-block .result-table.kv-table td:first-child {
   width: 45%;
   color: var(--text-soft);
 }
@@ -1235,6 +1235,45 @@ body::before {
   padding: 8px 4px 4px;
   border-radius: var(--radius-md);
   background: rgba(148, 163, 184, 0.08);
+}
+
+.defect-column-chart {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  min-height: 180px;
+  padding: 8px 4px 4px;
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.08);
+  overflow-x: auto;
+}
+
+.defect-column {
+  min-width: 46px;
+  display: grid;
+  gap: 6px;
+  align-items: end;
+  text-align: center;
+}
+
+.defect-column-bar {
+  width: 100%;
+  min-height: 6px;
+  background: var(--accent-2);
+  border-radius: 6px 6px 4px 4px;
+}
+
+.defect-column-label {
+  font-size: 10px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.defect-column-value {
+  font-size: 10px;
+  color: var(--text-soft);
 }
 
 .defect-bin {
@@ -1322,6 +1361,18 @@ body::before {
   margin-bottom: 8px;
 }
 
+.table-scroll {
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.table-scroll .result-table {
+  margin-top: 0;
+  border: none;
+}
+
 .result-table {
   width: 100%;
   border-collapse: collapse;
@@ -1339,6 +1390,16 @@ body::before {
 .result-table thead th {
   background: rgba(15, 23, 42, 0.04);
   font-weight: 600;
+}
+
+.result-table tbody tr:nth-child(odd) {
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.design-table th,
+.design-table td {
+  text-align: center;
+  white-space: nowrap;
 }
 
 .param-item input.is-empty {

@@ -1687,6 +1687,54 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
     return;
   }
 
+  const barOrientation = String(
+    payload.bar_orientation || config.bar_orientation || "horizontal"
+  ).toLowerCase();
+  if (chartType === "bar" && (barOrientation === "vertical" || barOrientation === "column")) {
+    const maxRate = Math.max(
+      ...lots.map((item) => Number(item.defect_rate) || 0),
+      0.0001
+    );
+    const formatBarValue = (value) => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return "-";
+      }
+      if (valueUnit === "ratio") {
+        return `${(num * 100).toFixed(2)}%`;
+      }
+      if (valueUnit === "percent") {
+        return `${num.toFixed(2)}%`;
+      }
+      if (valueUnit) {
+        return `${num.toFixed(3)} ${valueUnit}`;
+      }
+      return num.toFixed(3);
+    };
+    const chart = document.createElement("div");
+    chart.className = "defect-column-chart";
+    lots.forEach((item) => {
+      const rate = Number(item.defect_rate) || 0;
+      const column = document.createElement("div");
+      column.className = "defect-column";
+      const value = document.createElement("div");
+      value.className = "defect-column-value";
+      value.textContent = formatBarValue(rate);
+      const bar = document.createElement("div");
+      bar.className = "defect-column-bar";
+      bar.style.height = `${Math.min(100, (rate / maxRate) * 100)}%`;
+      const label = document.createElement("div");
+      label.className = "defect-column-label";
+      label.textContent = item.label || item.lot_id || "-";
+      column.appendChild(value);
+      column.appendChild(bar);
+      column.appendChild(label);
+      chart.appendChild(column);
+    });
+    targetEl.appendChild(chart);
+    return;
+  }
+
   const maxRate = Math.max(
     ...lots.map((item) => Number(item.defect_rate) || 0),
     0.0001
@@ -1900,6 +1948,35 @@ function renderFinalBriefing(payload = {}) {
 
   const container = document.createElement("div");
   container.className = "design-blocks";
+  const wrapTable = (tableEl) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "table-scroll";
+    wrapper.appendChild(tableEl);
+    return wrapper;
+  };
+  const buildDesignTable = (items) => {
+    const table = document.createElement("table");
+    table.className = "result-table design-table";
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    items.forEach((item) => {
+      const th = document.createElement("th");
+      th.textContent = item.label || item.key || "-";
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    const valueRow = document.createElement("tr");
+    items.forEach((item) => {
+      const td = document.createElement("td");
+      td.textContent = renderValue(item.value);
+      valueRow.appendChild(td);
+    });
+    tbody.appendChild(valueRow);
+    table.appendChild(tbody);
+    return table;
+  };
   blocks.slice(0, 3).forEach((block, index) => {
     const blockEl = document.createElement("div");
     blockEl.className = "design-block";
@@ -1923,20 +2000,8 @@ function renderFinalBriefing(payload = {}) {
       ? block.design_display
       : [];
     if (designDisplay.length) {
-      const table = document.createElement("table");
-      table.className = "result-table";
-      const tbody = document.createElement("tbody");
-      designDisplay.forEach((item) => {
-        const row = document.createElement("tr");
-        const label = item.label || item.key || "-";
-        row.innerHTML = `
-          <td>${label}</td>
-          <td>${renderValue(item.value)}</td>
-        `;
-        tbody.appendChild(row);
-      });
-      table.appendChild(tbody);
-      blockEl.appendChild(table);
+      const table = buildDesignTable(designDisplay);
+      blockEl.appendChild(wrapTable(table));
     } else {
       const emptyDesign = document.createElement("div");
       emptyDesign.className = "candidate-meta";
@@ -1998,7 +2063,7 @@ function renderFinalBriefing(payload = {}) {
         columns: matchColumns,
       });
       if (matchTable) {
-        blockEl.appendChild(matchTable);
+        blockEl.appendChild(wrapTable(matchTable));
       }
     } else {
       const emptyMatch = document.createElement("div");

@@ -71,7 +71,10 @@ flowchart TD
       - 응답 형식: result.datas.sim 순서대로 TOP 후보 설계값 (0=1순위)
       - 후보 설계값에서 active_powder_base/active_powder_additives/ldn_avr_value/cast_dsgn_thk 추출
       - mdh_base_view_total에서 설계값 동일 + design_input_date 최근 6개월 조건으로 매칭 LOT 조회
-      - 후보별 불량 인자 평균(설정된 defect 컬럼) 막대그래프 이벤트(`defect_rate_chart`) 송신
+      - 후보별 불량 인자 평균( `grid_defect_columns` 또는 `post_grid_defect_columns` 설정값 )을
+        막대그래프 이벤트(`defect_rate_chart`, bar_orientation=vertical)로 송신
+      - 데모 환경에서도 포스트그리드 불량 인자를 보이려면 해당 컬럼 리스트를
+        `grid_defect_columns`/`post_grid_defect_columns`에 명시해야 함
     - TOP3 설계안의 최근 3개월 LOT 불량률 통계 조회
     - 최종 브리핑 이벤트/메시지 송신 (`design_blocks` 포함)
 
