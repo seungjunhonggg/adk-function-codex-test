@@ -62,9 +62,12 @@ flowchart TD
       - 정렬 우선순위: cutting_defect+measure_defect 등급(S > A > B) → bdv_avg 내림차순
         → x_tr_short_defect_rate 오름차순 → 최신 input_date
     - LOT 불량률 히스토그램(1차) 이벤트 송신
-     - grid_search 후보 생성
-     - TOP3 설계안의 최근 3개월 LOT 불량률 통계 조회
-     - 최종 브리핑 이벤트/메시지 송신 (`design_blocks` 포함)
+    - grid_search 후보 생성
+      - payload 형식: sim_type=ver4, data(ref/sim), targets(electrode_c_avg*1.05 등),
+        params(screen_* / active_layer / cover_sheet_thk / total_cover_layer_num /
+        gap_sheet_thk / ldn_avg_value / cast_dsgn_thk)
+    - TOP3 설계안의 최근 3개월 LOT 불량률 통계 조회
+    - 최종 브리핑 이벤트/메시지 송신 (`design_blocks` 포함)
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  

@@ -522,29 +522,38 @@ def _normalize_production_mode(value: object) -> str | None:
 
 
 def _simulate_grid_search(payload: dict) -> list[dict]:
-    grid = payload.get("grid") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return []
+    grid = payload.get("grid")
     if not isinstance(grid, dict):
-        return []
-    keys = list(grid.keys())
-    if not keys:
+        grid = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    if not isinstance(grid, dict) or not grid:
         return []
 
-    def _values(key: str) -> list[float]:
-        values = grid.get(key, [])
-        return [float(value) for value in values if _to_float(value) is not None]
-
-    values_list = [_values(key) for key in keys]
-    if not all(values_list):
+    grid_items: list[tuple[str, list[object]]] = []
+    for key, raw_values in grid.items():
+        values = raw_values
+        if not isinstance(values, list):
+            values = [values]
+        cleaned = [value for value in values if value not in (None, "")]
+        if not cleaned:
+            continue
+        grid_items.append((key, cleaned))
+    if not grid_items:
         return []
 
     results = []
-    base = 0.0
-    for values in values_list:
-        base += sum(values) / len(values)
+    numeric_samples: list[float] = []
+    for _, values in grid_items:
+        for value in values:
+            numeric = _to_float(value)
+            if numeric is not None:
+                numeric_samples.append(numeric)
+    base = sum(numeric_samples) / len(numeric_samples) if numeric_samples else 0.0
 
-    def _recurse(index: int, current: dict) -> None:
-        if index == len(keys):
-            score = base + sum(current.values()) * 0.01
+    def _recurse(index: int, current: dict, score_sum: float) -> None:
+        if index == len(grid_items):
+            score = base + score_sum * 0.01
             results.append(
                 {
                     "design": dict(current),
@@ -552,15 +561,16 @@ def _simulate_grid_search(payload: dict) -> list[dict]:
                 }
             )
             return
-        key = keys[index]
-        for value in values_list[index]:
+        key, values = grid_items[index]
+        for value in values:
+            numeric = _to_float(value)
             current[key] = value
-            _recurse(index + 1, current)
+            _recurse(index + 1, current, score_sum + (numeric or 0.0))
         current.pop(key, None)
 
-    _recurse(0, {})
+    _recurse(0, {}, 0.0)
     results.sort(key=lambda item: item.get("predicted_target", 0), reverse=True)
-    max_results = payload.get("max_results") if isinstance(payload, dict) else None
+    max_results = payload.get("max_results")
     limit = int(max_results) if isinstance(max_results, int) and max_results > 0 else 100
     return results[:limit]
 

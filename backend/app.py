@@ -1,5 +1,6 @@
 ﻿import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import re
 import asyncio
@@ -35,7 +36,6 @@ from .events import event_bus
 from .observability import WorkflowRunHooks, emit_workflow_log
 from .pipeline_store import pipeline_store
 from .reference_lot import (
-    build_grid_values,
     collect_post_grid_defects,
     load_reference_rules,
     normalize_reference_rules,
@@ -606,6 +606,106 @@ def _row_value(row: dict, column: str | None) -> object:
         return row.get(column)
     lower = column.lower()
     return row.get(lower)
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_safe_value(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    return str(value)
+
+
+def _json_safe_dict(payload: dict) -> dict:
+    return {str(key): _json_safe_value(value) for key, value in payload.items()}
+
+
+def _build_grid_search_payload(
+    ref_row: dict,
+    sim_params: dict,
+    grid_overrides: dict | None = None,
+) -> dict:
+    ref_payload = dict(ref_row) if isinstance(ref_row, dict) else {}
+    sim_payload = dict(sim_params) if isinstance(sim_params, dict) else {}
+    if grid_overrides:
+        sim_payload.update(
+            {key: value for key, value in grid_overrides.items() if value is not None}
+        )
+
+    electrode = _coerce_float(_row_value(ref_payload, "electrode_c_avg"))
+    grinding_l = _coerce_float(_row_value(ref_payload, "grinding_l_avg"))
+    grinding_t = _coerce_float(_row_value(ref_payload, "grinding_t_avg"))
+    grinding_w = _coerce_float(_row_value(ref_payload, "grinding_w_avg"))
+    if grinding_w is None:
+        grinding_w = grinding_t
+
+    total_cover = _row_value(ref_payload, "total_cover_layer_num")
+    if total_cover is None:
+        top_cover = _coerce_float(_row_value(ref_payload, "top_cover_layer_num"))
+        bot_cover = _coerce_float(_row_value(ref_payload, "bot_cover_layer_num"))
+        if top_cover is not None and bot_cover is not None:
+            total_cover = top_cover + bot_cover
+
+    ldn_avg_value = _row_value(ref_payload, "ldn_avg_value")
+    if ldn_avg_value is None:
+        ldn_avg_value = _row_value(ref_payload, "ldn_avr_value")
+
+    active_layer = (
+        grid_overrides.get("active_layer")
+        if isinstance(grid_overrides, dict) and "active_layer" in grid_overrides
+        else _row_value(ref_payload, "active_layer")
+    )
+
+    def _list_value(value: object) -> list[object]:
+        if value in (None, ""):
+            return []
+        return [value]
+
+    params_payload = {
+        "screen_chip_size_leng": _list_value(
+            _row_value(ref_payload, "screen_chip_size_leng")
+        ),
+        "screen_mrgn_leng": _list_value(_row_value(ref_payload, "screen_mrgn_leng")),
+        "screen_chip_size_widh": _list_value(
+            _row_value(ref_payload, "screen_chip_size_widh")
+        ),
+        "screen_mrgn_widh": _list_value(_row_value(ref_payload, "screen_mrgn_widh")),
+        "active_layer": _list_value(active_layer),
+        "cover_sheet_thk": _list_value(_row_value(ref_payload, "cover_sheet_thk")),
+        "total_cover_layer_num": _list_value(total_cover),
+        "gap_sheet_thk": _list_value(_row_value(ref_payload, "gap_sheet_thk")),
+        "ldn_avg_value": _list_value(ldn_avg_value),
+        "cast_dsgn_thk": _list_value(_row_value(ref_payload, "cast_dsgn_thk")),
+    }
+
+    targets = {
+        "target_electrode_c_avg": electrode * 1.05 if electrode is not None else None,
+        "target_grinding_l_avg": grinding_l,
+        "target_grinding_w_avg": grinding_w,
+        "target_grinding_t_avg": grinding_t,
+        "target_dc_cap": -1,
+    }
+
+    return {
+        "sim_type": "ver4",
+        "data": {
+            "ref": _json_safe_dict(ref_payload),
+            "sim": _json_safe_dict(sim_payload),
+        },
+        "targets": targets,
+        "params": params_payload,
+    }
 
 
 async def _append_system_note(session_id: str, content: str) -> None:
@@ -2406,13 +2506,7 @@ async def _run_reference_pipeline(
         )
 
     grid_overrides = grid_overrides or {}
-    grid_values = build_grid_values(selected_row, rules, grid_overrides)
-    grid_payload = {
-        "chip_prod_id": chip_prod_id,
-        "lot_id": selected_lot_id,
-        "grid": grid_values,
-        "max_results": rules.get("grid_search", {}).get("max_results", 100),
-    }
+    grid_payload = _build_grid_search_payload(selected_row, params, grid_overrides)
     await _emit_pipeline_status("grid", "그리드 탐색 중...")
     grid_results = await call_grid_search_api(grid_payload)
     await _maybe_demo_sleep()
