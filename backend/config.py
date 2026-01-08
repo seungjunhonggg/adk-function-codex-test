@@ -23,6 +23,9 @@ WORKFLOW_PATH = os.getenv("WORKFLOW_PATH", "workflow.json")
 WORKFLOW_STORE_PATH = os.getenv("WORKFLOW_STORE_PATH", "workflows.json")
 DB_CONNECTIONS_PATH = os.getenv("DB_CONNECTIONS_PATH", "db_connections.json")
 DB_VIEW_PROFILE_PATH = os.getenv("DB_VIEW_PROFILE_PATH", "db_view_profile.json")
+DB_VIEW_COLUMN_CATALOG_PATH = os.getenv(
+    "DB_VIEW_COLUMN_CATALOG_PATH", "db_view_columns.json"
+)
 REFERENCE_RULES_PATH = os.getenv("REFERENCE_RULES_PATH", "backend/reference_lot_rules.json")
 LOT_DB_CONNECTION_ID = os.getenv("LOT_DB_CONNECTION_ID", "")
 LOT_DB_SCHEMA = os.getenv("LOT_DB_SCHEMA", "public")
