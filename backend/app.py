@@ -226,19 +226,27 @@ async def chat(request: ChatRequest) -> dict:
 async def _maybe_update_simulation_from_message(message: str, session_id: str) -> None:
     if not simulation_store.is_active(session_id):
         return
+    clear_keys = _extract_clear_simulation_keys(message)
     parsed, conflicts = await extract_simulation_params_hybrid(message)
-    if not parsed and not conflicts:
+    if clear_keys:
+        for key in clear_keys:
+            parsed.pop(key, None)
+    if not parsed and not conflicts and not clear_keys:
         return
     for key in conflicts:
         parsed.pop(key, None)
     current = simulation_store.get(session_id)
     missing_only = {key: value for key, value in parsed.items() if key not in current}
-    if not missing_only and not conflicts:
+    if not missing_only and not conflicts and not clear_keys:
         return
+    combined_clears = []
+    for key in conflicts + clear_keys:
+        if key and key not in combined_clears:
+            combined_clears.append(key)
     update_result = collect_simulation_params(
         **missing_only,
-        clear_keys=conflicts,
-        extra_missing=conflicts,
+        clear_keys=combined_clears,
+        extra_missing=combined_clears,
     )
     await emit_simulation_form(
         update_result.get("params", {}),
@@ -1185,6 +1193,10 @@ def _normalize_edit_decision(raw: object) -> dict:
 
     updates = data.get("updates")
     updates = updates if isinstance(updates, dict) else {}
+    clear_fields = data.get("clear_fields")
+    if not isinstance(clear_fields, list):
+        clear_fields = []
+    clear_fields = [str(item) for item in clear_fields if item not in (None, "")]
     grid_overrides = data.get("grid_overrides")
     grid_overrides = grid_overrides if isinstance(grid_overrides, dict) else {}
     reference_lot_id = data.get("reference_lot_id")
@@ -1205,6 +1217,7 @@ def _normalize_edit_decision(raw: object) -> dict:
     return {
         "intent": intent,
         "updates": updates,
+        "clear_fields": clear_fields,
         "grid_overrides": grid_overrides,
         "reference_lot_id": reference_lot_id,
         "stage": stage,
@@ -1293,6 +1306,16 @@ def _build_simulation_summary(session_id: str) -> dict:
     state = pipeline_store.get(session_id)
     events = pipeline_store.get_events(session_id)
     status = pipeline_store.get_status(session_id)
+    reference = state.get("reference") if isinstance(state, dict) else {}
+    if not isinstance(reference, dict):
+        reference = {}
+    grid = state.get("grid") if isinstance(state, dict) else {}
+    if not isinstance(grid, dict):
+        grid = {}
+    reference_lot_id = reference.get("lot_id") or reference.get("selected_lot_id")
+    grid_overrides = grid.get("overrides")
+    if not isinstance(grid_overrides, dict):
+        grid_overrides = {}
     return {
         "params": params,
         "missing": missing,
@@ -1302,6 +1325,8 @@ def _build_simulation_summary(session_id: str) -> dict:
         "events": list(events.keys()),
         "status": status,
         "last_stage_request": state.get("last_stage_request"),
+        "reference_lot_id": reference_lot_id,
+        "grid_overrides": grid_overrides,
     }
 
 
@@ -1523,6 +1548,11 @@ async def _apply_edit_decision(
         )
 
     updates = decision.get("updates") if isinstance(decision.get("updates"), dict) else {}
+    clear_fields = (
+        decision.get("clear_fields")
+        if isinstance(decision.get("clear_fields"), list)
+        else []
+    )
     grid_overrides = (
         decision.get("grid_overrides")
         if isinstance(decision.get("grid_overrides"), dict)
@@ -1543,7 +1573,16 @@ async def _apply_edit_decision(
             for key, value in updates.items()
             if isinstance(key, str) and key.startswith("param")
         }
-        updated = recommendation_store.update_params(session_id, params)
+        clear_param_keys = [
+            key for key in clear_fields if isinstance(key, str) and key.startswith("param")
+        ]
+        updated = None
+        if clear_param_keys:
+            updated = recommendation_store.remove_params(session_id, clear_param_keys)
+        if params:
+            updated = recommendation_store.update_params(session_id, params)
+        if updated is None:
+            updated = current
         result_payload = {
             "recommended_chip_prod_id": updated.get("recommended_chip_prod_id"),
             "representative_lot": updated.get("representative_lot"),
@@ -1581,8 +1620,25 @@ async def _apply_edit_decision(
                 "chip_prod_id",
             }
         }
-        if sim_updates:
-            update_result = collect_simulation_params(**sim_updates)
+        clear_sim_keys = [
+            key
+            for key in clear_fields
+            if key
+            in {
+                "temperature",
+                "voltage",
+                "size",
+                "capacity",
+                "production_mode",
+                "chip_prod_id",
+            }
+        ]
+        if sim_updates or clear_sim_keys:
+            update_result = collect_simulation_params(
+                **sim_updates,
+                clear_keys=clear_sim_keys,
+                extra_missing=clear_sim_keys,
+            )
             await emit_simulation_form(
                 update_result.get("params", {}), update_result.get("missing", [])
             )
@@ -1598,10 +1654,18 @@ async def _apply_edit_decision(
                     fallback,
                 )
             if decision.get("rerun"):
+                state = pipeline_store.get(session_id)
+                grid_state = state.get("grid") if isinstance(state, dict) else {}
+                if not isinstance(grid_state, dict):
+                    grid_state = {}
+                stored_overrides = grid_state.get("overrides")
+                if not isinstance(stored_overrides, dict):
+                    stored_overrides = {}
                 result = await _run_reference_pipeline(
                     session_id,
                     update_result.get("params", {}),
                     chip_prod_override=update_result.get("params", {}).get("chip_prod_id"),
+                    grid_overrides=stored_overrides,
                 )
                 sim_result = (
                     result.get("simulation_result", {}).get("result")
@@ -1969,6 +2033,22 @@ def _extract_grid_overrides(message: str) -> dict[str, float]:
                     continue
                 break
     return overrides
+
+
+def _extract_clear_simulation_keys(message: str) -> list[str]:
+    if not message:
+        return []
+    if not _contains_any(
+        message,
+        ("삭제", "제외", "빼", "지워", "없애", "remove", "delete", "exclude", "clear"),
+    ):
+        return []
+    keys: list[str] = []
+    for pattern, key in EDIT_INTENT_ALIAS_PATTERNS:
+        if re.search(pattern, message, re.IGNORECASE):
+            if key not in keys:
+                keys.append(key)
+    return keys
 
 
 def _should_rerun_grid(message: str) -> bool:

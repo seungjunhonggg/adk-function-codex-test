@@ -631,6 +631,22 @@ class RecommendationStore:
         self._data[session_id] = record
         return dict(record)
 
+    def remove_params(self, session_id: str, keys: list[str]) -> Dict[str, object]:
+        if not session_id:
+            return {}
+        record = dict(self._data.get(session_id, {}))
+        existing = record.get("params")
+        if not isinstance(existing, dict):
+            existing = {}
+        for key in keys:
+            if not isinstance(key, str) or not key.startswith("param"):
+                continue
+            existing.pop(key, None)
+        record["params"] = existing
+        record["awaiting_prediction"] = True
+        self._data[session_id] = record
+        return dict(record)
+
     def mark_prediction_done(self, session_id: str) -> None:
         if not session_id:
             return

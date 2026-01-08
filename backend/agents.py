@@ -80,6 +80,7 @@ class EditIntent(BaseModel):
         "new_simulation",
     ] = "none"
     updates: dict[str, float | str] = {}
+    clear_fields: list[str] = []
     grid_overrides: dict[str, float] = {}
     reference_lot_id: str | None = None
     stage: Literal["recommendation", "reference", "grid", "final", "any", "unknown"] = "unknown"
@@ -210,7 +211,7 @@ edit_intent_agent = _build_agent(
     name="Edit Intent Agent",
     instructions=(
         "Parse the user request into a structured edit intent for the simulation pipeline. "
-        "Return JSON with keys: intent, updates, grid_overrides, reference_lot_id, stage, "
+        "Return JSON with keys: intent, updates, clear_fields, grid_overrides, reference_lot_id, stage, "
         "rerun, needs_clarification, note, confidence. "
         "intent values: update_params (temperature/voltage/size/capacity/production_mode/chip_prod_id), "
         "update_recommendation_params (param1..param30), update_grid (sheet_t/laydown/active_layer), "
@@ -226,6 +227,8 @@ edit_intent_agent = _build_agent(
         "production_mode=양산/생산/MP/mass=양산, 개발/샘플/시제/proto/dev=개발; "
         "paramN=파라미터 5/파라미터5/param 5/p5. "
         "If capacity units are specified (uF/nF/pF/F), convert to pF. "
+        "If the user asks to remove/exclude/delete a parameter, list it in clear_fields "
+        "(e.g., temperature/voltage/size/capacity/production_mode/chip_prod_id or paramN). "
         "Bilingual alias hints: sheet_t=시트 두께/시트T/그린시트 두께/green sheet thickness; "
         "laydown=레이다운/적층/stacking/stack count; "
         "active_layer=활성층/유효층/active layer; "

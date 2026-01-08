@@ -49,6 +49,7 @@ flowchart TD
 1) 입력 파싱/보정  
    - `extract_simulation_params_hybrid` → `simulation_store` 업데이트  
    - `capacity`는 pF로 정규화됨 (`backend/simulation.py`)
+   - 삭제/제외 요청은 `clear_fields`로 전달되어 해당 파라미터를 제거
 
 2) 입력 패널 업데이트  
    - `emit_simulation_form` 이벤트로 UI 패널 갱신
@@ -61,6 +62,7 @@ flowchart TD
         x_fr_ispass/pass_halt/pass_8585/pass_burn_in/x_df_ispass/x_odb_pass_yn은 OK
       - 정렬 우선순위: cutting_defect+measure_defect 등급(S > A > B) → bdv_avg 내림차순
         → x_tr_short_defect_rate 오름차순 → 최신 input_date
+      - rerun 시 이전 grid_overrides가 있으면 재활용
     - LOT 불량률 히스토그램(1차) 이벤트 송신
     - grid_search 후보 생성
       - payload 형식: sim_type=ver4, data(ref/sim), targets(electrode_c_avg*1.05 등),
@@ -114,6 +116,8 @@ flowchart TD
 ### 2) 파이프라인 상태 메모리 (프로세스 메모리)
 - `pipeline_store`: 단계 상태/이벤트/워크플로우 ID/요약 보관
 - 이벤트 패널 재현에 필요한 payload를 저장
+- `PIPELINE_STATE_DB_PATH`(기본 `sessions.db`)의 `pipeline_state` 테이블에 스냅샷을 저장해
+  서버 재시작 시에도 세션별 이벤트 복원이 가능하도록 함
 
 ### 3) 시뮬레이션 파라미터 메모리
 - `simulation_store`: 온도/전압/사이즈/용량/양산 여부 + chip_prod_id
