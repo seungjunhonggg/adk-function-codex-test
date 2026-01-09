@@ -173,6 +173,21 @@ def _introspect_postgres(conn: Any) -> dict:
         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
         ORDER BY table_schema, table_name, ordinal_position;
     """
+    matview_columns_query = """
+        SELECT n.nspname AS table_schema,
+               c.relname AS table_name,
+               a.attname AS column_name,
+               pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+               CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+        WHERE c.relkind = 'm'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        ORDER BY n.nspname, c.relname, a.attnum;
+    """
     with conn.cursor() as cur:
         cur.execute(tables_query)
         for schema_name, table_name, _table_type in cur.fetchall():
@@ -189,6 +204,7 @@ def _introspect_postgres(conn: Any) -> dict:
             for schema_name, schema_entry in schemas.items()
             for table_name in schema_entry.get("tables", {})
         }
+        columns_seen: dict[tuple[str, str], set[str]] = {}
 
         cur.execute(columns_query)
         for row in cur.fetchall():
@@ -206,6 +222,37 @@ def _introspect_postgres(conn: Any) -> dict:
                     "nullable": is_nullable == "YES",
                 }
             )
+            columns_seen.setdefault(
+                (schema_name, table_name), set()
+            ).add(column_name)
+
+        cur.execute(matview_columns_query)
+        for row in cur.fetchall():
+            schema_name, table_name, column_name, data_type, is_nullable = row
+            if (schema_name, table_name) not in table_lookup:
+                continue
+            schema_entry = schemas.setdefault(schema_name, {"tables": {}})
+            table_entry = schema_entry["tables"].setdefault(
+                table_name, {"columns": []}
+            )
+            seen = columns_seen.get((schema_name, table_name))
+            if seen is None:
+                seen = {
+                    col.get("name")
+                    for col in table_entry.get("columns", [])
+                    if isinstance(col, dict)
+                }
+                columns_seen[(schema_name, table_name)] = seen
+            if column_name in seen:
+                continue
+            table_entry["columns"].append(
+                {
+                    "name": column_name,
+                    "type": data_type,
+                    "nullable": is_nullable == "YES",
+                }
+            )
+            seen.add(column_name)
     return {"schemas": schemas}
 
 
