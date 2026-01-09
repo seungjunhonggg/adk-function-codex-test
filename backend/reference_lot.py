@@ -489,6 +489,22 @@ def _build_param_filters(params: dict, rules: dict, table_key: str | None = None
     return filters
 
 
+def _get_grid_payload_columns(rules: dict) -> list[str]:
+    grid = rules.get("grid_search", {}) if isinstance(rules, dict) else {}
+    payload = grid.get("payload_columns")
+    columns: list[str] = []
+    if isinstance(payload, list):
+        columns = payload
+    elif isinstance(payload, dict):
+        for key in ("ref", "sim"):
+            subset = payload.get(key)
+            if isinstance(subset, list):
+                columns.extend(subset)
+    if not columns:
+        return []
+    return list(dict.fromkeys([str(column) for column in columns if column]))
+
+
 def _get_available_columns(
     connection_id: str, schema_name: str, table_name: str
 ) -> list[str] | None:
@@ -996,6 +1012,8 @@ def select_reference_from_params(
 ) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
     db = rules.get("db", {})
+    connection_id = db.get("connection_id") or ""
+    schema_name = db.get("schema") or "public"
     chip_prod_column = db.get("chip_prod_id_column") or "chip_prod_id"
     lot_id_column = db.get("lot_id_column") or "lot_id"
     input_date_column = db.get("input_date_column") or "input_date"
@@ -1142,8 +1160,27 @@ def select_reference_from_params(
         for factor in rules.get("grid_search", {}).get("factors", [])
         if factor.get("column")
     ]
+    payload_columns = _get_grid_payload_columns(rules)
+    payload_db_columns: list[str] = []
+    payload_missing_columns: list[str] = []
+    if payload_columns:
+        available = (
+            _get_available_columns(connection_id, schema_name, lot_search_table)
+            if connection_id and lot_search_table
+            else None
+        )
+        if available:
+            available_set = set(available)
+            payload_db_columns = [
+                column for column in payload_columns if column in available_set
+            ]
+            payload_missing_columns = [
+                column for column in payload_columns if column not in available_set
+            ]
+        else:
+            payload_db_columns = payload_columns
     detail_query_columns = list(
-        dict.fromkeys(base_columns + grid_columns + list(detail_columns))
+        dict.fromkeys(base_columns + grid_columns + list(detail_columns) + payload_db_columns)
     )
     detail_row = None
     if selected_lot_id:
@@ -1181,6 +1218,9 @@ def select_reference_from_params(
         "columns": detail_query_columns,
         "reference_columns": reference_columns,
         "reference_rows": reference_rows,
+        "grid_payload_columns": payload_columns,
+        "grid_payload_db_columns": payload_db_columns,
+        "grid_payload_missing_columns": payload_missing_columns,
     }
 
 

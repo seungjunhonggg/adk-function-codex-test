@@ -658,16 +658,72 @@ def _json_safe_rows(rows: list[object]) -> list[object]:
     return safe_rows
 
 
+def _resolve_grid_payload_columns_from_rules(rules: dict) -> list[str]:
+    grid = rules.get("grid_search", {}) if isinstance(rules, dict) else {}
+    payload = grid.get("payload_columns")
+    columns: list[str] = []
+    if isinstance(payload, list):
+        columns = payload
+    elif isinstance(payload, dict):
+        for key in ("ref", "sim"):
+            subset = payload.get(key)
+            if isinstance(subset, list):
+                columns.extend(subset)
+    if not columns:
+        return []
+    return list(dict.fromkeys([str(column) for column in columns if column]))
+
+
+def _resolve_grid_payload_options(rules: dict) -> tuple[object, bool]:
+    grid = rules.get("grid_search", {}) if isinstance(rules, dict) else {}
+    fill_value = grid.get("payload_fill_value", -1)
+    fallback = bool(grid.get("payload_fallback_to_ref", True))
+    return fill_value, fallback
+
+
 def _build_grid_search_payload(
     ref_row: dict,
     sim_params: dict,
     grid_overrides: dict | None = None,
+    payload_columns: list[str] | None = None,
+    payload_missing_columns: list[str] | None = None,
+    payload_fill_value: object = -1,
+    payload_fallback_to_ref: bool = True,
 ) -> dict:
     ref_payload = dict(ref_row) if isinstance(ref_row, dict) else {}
     sim_payload = dict(sim_params) if isinstance(sim_params, dict) else {}
     if grid_overrides:
         sim_payload.update(
             {key: value for key, value in grid_overrides.items() if value is not None}
+        )
+
+    if payload_columns:
+        missing_set = set(payload_missing_columns or [])
+
+        def _build_payload(
+            columns: list[str],
+            primary: dict,
+            fallback: dict | None,
+        ) -> dict:
+            payload: dict = {}
+            for column in columns:
+                if column in missing_set:
+                    payload[column] = payload_fill_value
+                    continue
+                if column in primary:
+                    payload[column] = primary.get(column)
+                    continue
+                if fallback is not None and column in fallback:
+                    payload[column] = fallback.get(column)
+                else:
+                    payload[column] = None
+            return payload
+
+        ref_payload = _build_payload(payload_columns, ref_payload, None)
+        sim_payload = _build_payload(
+            payload_columns,
+            sim_payload,
+            ref_payload if payload_fallback_to_ref else None,
         )
 
     electrode = _coerce_float(_row_value(ref_payload, "electrode_c_avg"))
@@ -3285,7 +3341,20 @@ async def _run_reference_pipeline(
             )
 
     grid_overrides = grid_overrides or {}
-    grid_payload = _build_grid_search_payload(selected_row, params, grid_overrides)
+    grid_payload_columns = reference_result.get("grid_payload_columns") or []
+    if not grid_payload_columns:
+        grid_payload_columns = _resolve_grid_payload_columns_from_rules(rules)
+    grid_payload_missing = reference_result.get("grid_payload_missing_columns") or []
+    payload_fill_value, payload_fallback = _resolve_grid_payload_options(rules)
+    grid_payload = _build_grid_search_payload(
+        selected_row,
+        params,
+        grid_overrides,
+        payload_columns=grid_payload_columns,
+        payload_missing_columns=grid_payload_missing,
+        payload_fill_value=payload_fill_value,
+        payload_fallback_to_ref=payload_fallback,
+    )
     await _emit_pipeline_status("grid", "그리드 탐색 중...")
     grid_results = await call_grid_search_api(grid_payload)
     await _maybe_demo_sleep()

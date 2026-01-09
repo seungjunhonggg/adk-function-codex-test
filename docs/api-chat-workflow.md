@@ -77,6 +77,10 @@ flowchart TD
       - payload 형식: sim_type=ver4, data(ref/sim), targets(electrode_c_avg*1.05 등),
         params(screen_* / active_layer / cover_sheet_thk / total_cover_layer_num /
         gap_sheet_thk / ldn_avg_value / cast_dsgn_thk)
+      - data.ref/data.sim은 `grid_search.payload_columns` 리스트를 기준으로 구성
+        - DB에 존재하는 컬럼만 ref_lot 조회 단계에서 함께 가져옴
+        - DB에 없는 컬럼은 `payload_fill_value`(기본 -1)로 채워 전송
+        - sim 값이 없으면 `payload_fallback_to_ref=true`일 때 ref 값을 우선 사용
       - 응답 형식: result.datas.sim 순서대로 TOP 후보 설계값 (0=1순위)
       - 후보 설계값에서 active_powder_base/active_powder_additives/ldn_avr_value/cast_dsgn_thk 추출
       - mdh_base_view_total에서 설계값 동일 + design_input_date 최근 6개월 조건으로 매칭 LOT 조회
