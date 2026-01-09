@@ -380,7 +380,6 @@ conditions:
   required_not_null:
     - "grinding_l_avg"
     - "grinding_t_avg"
-    - "grinding_w_avg"
     - "electrode_c_avg"
     - "cast_dsgn_thk"
     - "ldn_avr_value"

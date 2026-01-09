@@ -794,6 +794,155 @@ body::before {
   gap: 8px;
 }
 
+.message.status.pipeline-log {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px dashed rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  color: var(--text-soft);
+}
+
+.pipeline-log-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.pipeline-log-header .status-spinner.is-hidden {
+  display: none;
+}
+
+.pipeline-log-title {
+  font-weight: 600;
+  color: #2a2a2a;
+}
+
+.pipeline-log-hint {
+  font-size: 10px;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.pipeline-log-list {
+  display: grid;
+  gap: 6px;
+}
+
+.pipeline-log-entry {
+  display: grid;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #fbfaf7;
+}
+
+.pipeline-log-entry.is-error {
+  border-color: rgba(176, 58, 46, 0.35);
+  background: rgba(176, 58, 46, 0.06);
+}
+
+.pipeline-log-entry.is-done {
+  border-color: rgba(42, 157, 143, 0.35);
+  background: rgba(42, 157, 143, 0.05);
+}
+
+.pipeline-log-toggle {
+  all: unset;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #1f1f1f;
+}
+
+.pipeline-log-toggle:focus-visible {
+  outline: 2px solid rgba(47, 124, 255, 0.45);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.pipeline-log-stage {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+}
+
+.pipeline-log-text {
+  font-weight: 500;
+}
+
+.pipeline-log-state {
+  font-size: 10px;
+  color: rgba(42, 157, 143, 0.9);
+  font-family: var(--font-mono);
+}
+
+.pipeline-log-entry:not(.is-done) .pipeline-log-state {
+  color: rgba(127, 116, 99, 0.7);
+}
+
+.pipeline-log-entry.is-error .pipeline-log-state {
+  color: rgba(176, 58, 46, 0.9);
+}
+
+.pipeline-log-entry.is-running .pipeline-log-state::after {
+  content: "...";
+  display: inline-block;
+  margin-left: 4px;
+  overflow: hidden;
+  width: 0;
+  animation: logDots 1.2s steps(4, end) infinite;
+}
+
+.pipeline-log-entry.is-error .pipeline-log-state::after,
+.pipeline-log-entry.is-done .pipeline-log-state::after {
+  content: "";
+  animation: none;
+}
+
+.pipeline-log-detail {
+  display: block;
+  background: #f6f4ef;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12px;
+  color: #2b2b2b;
+  overflow-x: auto;
+}
+
+.pipeline-log-detail.hidden {
+  display: none;
+}
+
+.pipeline-log-table + .pipeline-log-table {
+  margin-top: 10px;
+}
+
+.pipeline-log-table-title {
+  font-size: 11px;
+  color: var(--text-soft);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.pipeline-log-note,
+.pipeline-log-empty {
+  font-size: 11px;
+  color: var(--text-soft);
+  margin-bottom: 6px;
+}
+
 .message p {
   margin: 0 0 8px;
 }
@@ -867,6 +1016,12 @@ body::before {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes logDots {
+  to {
+    width: 1.2em;
   }
 }
 

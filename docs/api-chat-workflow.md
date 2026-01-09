@@ -103,6 +103,10 @@ flowchart TD
    - `event_bus.broadcast`로 프론트 카드 업데이트  
    - 주요 이벤트: `simulation_form`, `lot_result`, `defect_rate_chart`,  
      `design_candidates`, `final_briefing`
+   - 진행 로그 이벤트:
+     - `pipeline_status`: 단계별 진행 메시지 (프론트에서 누적 로그로 표시)
+     - `pipeline_stage_tables`: 단계별 표(마크다운) 목록 전송,
+       진행 로그 클릭 시 해당 표를 펼쳐서 확인 가능
    - 브리핑 본문은 아래 이벤트로 스트리밍 가능
      - `chat_stream_start` → `chat_stream_block_start` → `chat_stream_delta` →
        `chat_stream_block_end` → `chat_stream_end`
@@ -144,6 +148,7 @@ flowchart TD
 ### 2) 파이프라인 상태 메모리 (프로세스 메모리)
 - `pipeline_store`: 단계 상태/이벤트/워크플로우 ID/요약 보관
 - 이벤트 패널 재현에 필요한 payload를 저장
+- 단계별 진행 로그용 `stage_tables`(reference/grid 표 목록)도 이벤트로 저장
 - `PIPELINE_STATE_DB_PATH`(기본 `sessions.db`)의 `pipeline_state` 테이블에 스냅샷을 저장해
   서버 재시작 시에도 세션별 이벤트 복원이 가능하도록 함
 - `reference` 페이로드에는 최종 브리핑 표 생성을 위한

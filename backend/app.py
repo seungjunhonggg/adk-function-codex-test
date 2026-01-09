@@ -888,6 +888,23 @@ async def _emit_pipeline_status(stage: str, message: str, done: bool = False) ->
     )
 
 
+async def _emit_pipeline_stage_tables(
+    stage: str, tables: list[dict], notes: list[str] | None = None, session_id: str | None = None
+) -> None:
+    payload = {
+        "stage": stage,
+        "tables": tables,
+        "notes": notes or [],
+    }
+    session = (session_id or "").strip() or current_session_id.get()
+    stored = pipeline_store.get_event(session, "stage_tables")
+    if not isinstance(stored, dict):
+        stored = {}
+    stored[stage] = payload
+    pipeline_store.set_event(session, "stage_tables", stored)
+    await event_bus.broadcast({"type": "pipeline_stage_tables", "payload": payload}, session_id=session)
+
+
 async def _generate_simulation_auto_message(
     params: dict, missing: list[str], result: dict | None
 ) -> str:
@@ -3433,6 +3450,46 @@ async def _run_reference_pipeline(
     ]
     grid_table = _build_markdown_table(
         grid_columns, _json_safe_rows(grid_rows)
+    )
+
+    reference_tables: list[dict] = []
+    reference_notes: list[str] = []
+    if reference_table:
+        reference_tables.append(
+            {
+                "title": reference_table_label or "레퍼런스 LOT 후보 표",
+                "markdown": reference_table,
+            }
+        )
+        if reference_table_note:
+            reference_notes.append(reference_table_note)
+    else:
+        if reference_table_label:
+            reference_notes.append(reference_table_label)
+    if detail_tables:
+        total_tables = len(detail_tables)
+        for idx, table in enumerate(detail_tables, start=1):
+            title = "레퍼런스 LOT 상세"
+            if total_tables > 1:
+                title = f"{title} ({idx}/{total_tables})"
+            reference_tables.append({"title": title, "markdown": table})
+        if detail_note:
+            reference_notes.append(detail_note)
+    elif detail_table_text:
+        reference_notes.append(detail_table_text)
+    if reference_tables or reference_notes:
+        await _emit_pipeline_stage_tables(
+            "reference", reference_tables, reference_notes, session_id=session_id
+        )
+
+    grid_tables: list[dict] = []
+    grid_notes: list[str] = []
+    if grid_table:
+        grid_tables.append({"title": "그리드 서치 결과", "markdown": grid_table})
+    else:
+        grid_notes.append("그리드 결과가 없습니다.")
+    await _emit_pipeline_stage_tables(
+        "grid", grid_tables, grid_notes, session_id=session_id
     )
 
     input_summary = _format_input_conditions(params)

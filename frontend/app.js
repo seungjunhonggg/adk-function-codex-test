@@ -150,6 +150,17 @@ let statusMessageEl = null;
 let statusMessageTextEl = null;
 let statusMessageDotsEl = null;
 let statusAnimationInterval = null;
+let pipelineLogMessageEl = null;
+let pipelineLogListEl = null;
+let pipelineLogSpinnerEl = null;
+let pipelineLogLabelEl = null;
+const pipelineStageTables = new Map();
+const pipelineStageLabels = {
+  recommendation: "추천",
+  reference: "레퍼런스",
+  grid: "그리드",
+  final: "브리핑",
+};
 
 let historyEntries = [];
 let lastDefectChartPayload = null;
@@ -224,6 +235,7 @@ function saveHistory(sessionId, entries) {
 function clearChatMessages() {
   messages.innerHTML = "";
   clearChatStatus();
+  clearPipelineLog();
 }
 
 function formatSessionTime(value) {
@@ -424,8 +436,14 @@ function buildHistoryEntry(role, text) {
 }
 
 function insertMessageElement(message) {
-  if (statusMessageEl && statusMessageEl.parentNode === messages) {
-    messages.insertBefore(message, statusMessageEl);
+  const anchor =
+    (statusMessageEl && statusMessageEl.parentNode === messages && statusMessageEl) ||
+    (pipelineLogMessageEl &&
+      pipelineLogMessageEl.parentNode === messages &&
+      pipelineLogMessageEl) ||
+    null;
+  if (anchor) {
+    messages.insertBefore(message, anchor);
   } else {
     messages.appendChild(message);
   }
@@ -594,9 +612,208 @@ function addEventLog(label, detail) {
   eventLogEl.prepend(row);
 }
 
+function ensurePipelineLogMessage() {
+  if (!messages) {
+    return null;
+  }
+  if (!pipelineLogMessageEl) {
+    pipelineLogMessageEl = document.createElement("div");
+    pipelineLogMessageEl.className = "message assistant status pipeline-log";
+    const header = document.createElement("div");
+    header.className = "pipeline-log-header";
+    pipelineLogSpinnerEl = document.createElement("span");
+    pipelineLogSpinnerEl.className = "status-spinner";
+    pipelineLogLabelEl = document.createElement("span");
+    pipelineLogLabelEl.className = "pipeline-log-title";
+    pipelineLogLabelEl.textContent = "응답 생성 중";
+    const hint = document.createElement("span");
+    hint.className = "pipeline-log-hint";
+    hint.textContent = "단계별 로그";
+    header.appendChild(pipelineLogSpinnerEl);
+    header.appendChild(pipelineLogLabelEl);
+    header.appendChild(hint);
+    pipelineLogListEl = document.createElement("div");
+    pipelineLogListEl.className = "pipeline-log-list";
+    pipelineLogMessageEl.appendChild(header);
+    pipelineLogMessageEl.appendChild(pipelineLogListEl);
+    messages.appendChild(pipelineLogMessageEl);
+  }
+  return pipelineLogMessageEl;
+}
+
+function clearPipelineLog() {
+  if (pipelineLogMessageEl && pipelineLogMessageEl.parentNode) {
+    pipelineLogMessageEl.parentNode.removeChild(pipelineLogMessageEl);
+  }
+  pipelineLogMessageEl = null;
+  pipelineLogListEl = null;
+  pipelineLogSpinnerEl = null;
+  pipelineLogLabelEl = null;
+  pipelineStageTables.clear();
+}
+
+function setPipelineLogComplete() {
+  if (pipelineLogLabelEl) {
+    pipelineLogLabelEl.textContent = "응답 완료";
+  }
+  if (pipelineLogSpinnerEl) {
+    pipelineLogSpinnerEl.classList.add("is-hidden");
+  }
+  if (pipelineLogMessageEl) {
+    pipelineLogMessageEl.classList.add("is-complete");
+  }
+}
+
+function isPipelineErrorMessage(message) {
+  if (!message) {
+    return false;
+  }
+  return /실패|오류|에러|없음|없습니다|부족|중단|불가/i.test(message);
+}
+
+function renderPipelineStageTables(stage, detailEl) {
+  if (!detailEl) {
+    return;
+  }
+  detailEl.innerHTML = "";
+  const payload = pipelineStageTables.get(stage);
+  if (!payload) {
+    const empty = document.createElement("div");
+    empty.className = "pipeline-log-empty";
+    empty.textContent = stage === "recommendation" ? "표 없음" : "표 준비 중";
+    detailEl.appendChild(empty);
+    return;
+  }
+  const tables = Array.isArray(payload?.tables) ? payload.tables : [];
+  const notes = Array.isArray(payload?.notes) ? payload.notes : [];
+  if (!tables.length && !notes.length) {
+    const empty = document.createElement("div");
+    empty.className = "pipeline-log-empty";
+    empty.textContent = "표 준비 중";
+    detailEl.appendChild(empty);
+    return;
+  }
+  notes.forEach((note) => {
+    if (!note) {
+      return;
+    }
+    const noteEl = document.createElement("div");
+    noteEl.className = "pipeline-log-note";
+    noteEl.textContent = note;
+    detailEl.appendChild(noteEl);
+  });
+  tables.forEach((table) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "pipeline-log-table";
+    const title = table?.title ? String(table.title) : "";
+    if (title) {
+      const titleEl = document.createElement("div");
+      titleEl.className = "pipeline-log-table-title";
+      titleEl.textContent = title;
+      wrapper.appendChild(titleEl);
+    }
+    const body = document.createElement("div");
+    body.className = "pipeline-log-table-body";
+    body.innerHTML = renderMarkdown(String(table?.markdown || ""));
+    wrapper.appendChild(body);
+    detailEl.appendChild(wrapper);
+  });
+}
+
+function updatePipelineStageTables(stage, payload) {
+  if (!stage) {
+    return;
+  }
+  pipelineStageTables.set(stage, payload);
+  if (!pipelineLogListEl) {
+    return;
+  }
+  pipelineLogListEl
+    .querySelectorAll(`.pipeline-log-entry[data-stage="${stage}"]`)
+    .forEach((entry) => {
+      const detail = entry.querySelector(".pipeline-log-detail");
+      if (detail) {
+        renderPipelineStageTables(stage, detail);
+      }
+    });
+}
+
+function appendPipelineStatus(stage, message, done = false) {
+  if (!message) {
+    return;
+  }
+  ensurePipelineLogMessage();
+  if (!pipelineLogListEl) {
+    return;
+  }
+  clearChatStatus("chat");
+  const isError = isPipelineErrorMessage(message);
+  const isRunning = !done && !isError;
+  const cleanedMessage = isRunning
+    ? message.replace(/\s*\.{1,3}\s*$/, "")
+    : message;
+  const entry = document.createElement("div");
+  entry.className = "pipeline-log-entry";
+  entry.dataset.stage = stage || "";
+  if (done && !isError) {
+    entry.classList.add("is-done");
+  }
+  if (isRunning) {
+    entry.classList.add("is-running");
+  }
+  if (isError) {
+    entry.classList.add("is-error");
+  }
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "pipeline-log-toggle";
+  const stageLabel = pipelineStageLabels[stage] || stage || "단계";
+  const stageEl = document.createElement("span");
+  stageEl.className = "pipeline-log-stage";
+  stageEl.textContent = stageLabel;
+  const textEl = document.createElement("span");
+  textEl.className = "pipeline-log-text";
+  textEl.textContent = cleanedMessage;
+  const stateEl = document.createElement("span");
+  stateEl.className = "pipeline-log-state";
+  stateEl.textContent = isError ? "오류" : done ? "완료" : "진행";
+
+  toggle.appendChild(stageEl);
+  toggle.appendChild(textEl);
+  toggle.appendChild(stateEl);
+
+  const detail = document.createElement("div");
+  detail.className = "pipeline-log-detail hidden";
+
+  toggle.addEventListener("click", () => {
+    const isOpen = entry.classList.toggle("is-open");
+    detail.classList.toggle("hidden", !isOpen);
+    if (isOpen) {
+      renderPipelineStageTables(stage, detail);
+    }
+  });
+
+  entry.appendChild(toggle);
+  entry.appendChild(detail);
+  pipelineLogListEl.appendChild(entry);
+  messages.scrollTop = messages.scrollHeight;
+
+  if (done && stage === "grid") {
+    setPipelineLogComplete();
+  }
+}
+
 function setChatStatus(message, source = "system") {
   if (!message) {
     clearChatStatus(source);
+    return;
+  }
+  if (
+    source === "chat" &&
+    pipelineLogMessageEl &&
+    !pipelineLogMessageEl.classList.contains("is-complete")
+  ) {
     return;
   }
   if (activeChatStatusSource === "pipeline" && source === "chat") {
@@ -698,6 +915,7 @@ function setCurrentLot(lotId) {
 
 function resetEventPanel() {
   hideAllStreamCards();
+  clearPipelineLog();
   lastDefectChartPayload = null;
   lastFinalDefectChartPayload = null;
   if (eventLogEl) {
@@ -2414,13 +2632,20 @@ function handleEvent(event) {
   }
 
   if (event.type === "pipeline_status") {
+    const stage = event.payload?.stage || "";
     const message = event.payload?.message || "";
     const done = Boolean(event.payload?.done);
     if (message) {
-      setChatStatus(message, "pipeline");
+      appendPipelineStatus(stage, message, done);
     }
-    if (done) {
-      setTimeout(() => clearChatStatus("pipeline"), 1200);
+  }
+
+  if (event.type === "pipeline_stage_tables") {
+    const stage = event.payload?.stage || "";
+    const tables = Array.isArray(event.payload?.tables) ? event.payload.tables : [];
+    const notes = Array.isArray(event.payload?.notes) ? event.payload.notes : [];
+    if (stage) {
+      updatePipelineStageTables(stage, { tables, notes });
     }
   }
 
