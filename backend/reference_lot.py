@@ -149,10 +149,15 @@ def normalize_reference_rules(rules: dict | None) -> dict:
 
 
 def _parse_datetime(value: Any) -> datetime | None:
+    def _to_local_naive(dt: datetime) -> datetime:
+        if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+            return dt
+        return dt.astimezone().replace(tzinfo=None)
+
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        return _to_local_naive(value)
     if isinstance(value, (int, float)):
         try:
             return datetime.fromtimestamp(float(value))
@@ -161,9 +166,9 @@ def _parse_datetime(value: Any) -> datetime | None:
     text = str(value).strip()
     if not text:
         return None
-    for candidate in (text, text.replace("Z", "")):
+    for candidate in (text, text.replace("Z", "+00:00")):
         try:
-            return datetime.fromisoformat(candidate)
+            return _to_local_naive(datetime.fromisoformat(candidate))
         except ValueError:
             continue
     return None
