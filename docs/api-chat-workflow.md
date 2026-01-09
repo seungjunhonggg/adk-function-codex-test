@@ -76,7 +76,7 @@ flowchart TD
     - grid_search 후보 생성
       - payload 형식: sim_type=ver4, data(ref/sim), targets(electrode_c_avg*1.05 등),
         params(screen_* / active_layer / cover_sheet_thk / total_cover_layer_num /
-        gap_sheet_thk / ldn_avg_value / cast_dsgn_thk)
+        gap_sheet_thk / ldn_avr_value / cast_dsgn_thk)
       - data.ref/data.sim은 `grid_search.payload_columns` 리스트를 기준으로 구성
         - DB에 존재하는 컬럼만 ref_lot 조회 단계에서 함께 가져옴
         - DB에 없는 컬럼은 `payload_fill_value`(기본 -1)로 채워 전송
