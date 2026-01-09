@@ -436,14 +436,8 @@ function buildHistoryEntry(role, text) {
 }
 
 function insertMessageElement(message) {
-  const anchor =
-    (statusMessageEl && statusMessageEl.parentNode === messages && statusMessageEl) ||
-    (pipelineLogMessageEl &&
-      pipelineLogMessageEl.parentNode === messages &&
-      pipelineLogMessageEl) ||
-    null;
-  if (anchor) {
-    messages.insertBefore(message, anchor);
+  if (statusMessageEl && statusMessageEl.parentNode === messages) {
+    messages.insertBefore(message, statusMessageEl);
   } else {
     messages.appendChild(message);
   }
@@ -636,7 +630,27 @@ function ensurePipelineLogMessage() {
     pipelineLogListEl.className = "pipeline-log-list";
     pipelineLogMessageEl.appendChild(header);
     pipelineLogMessageEl.appendChild(pipelineLogListEl);
-    messages.appendChild(pipelineLogMessageEl);
+    const statusAnchor =
+      statusMessageEl && statusMessageEl.parentNode === messages
+        ? statusMessageEl
+        : null;
+    const streamingAnchor = messages.querySelector(
+      ".message.assistant.streaming"
+    );
+    const lastMessage = messages.lastElementChild;
+    if (streamingAnchor) {
+      messages.insertBefore(pipelineLogMessageEl, streamingAnchor);
+    } else if (statusAnchor) {
+      messages.insertBefore(pipelineLogMessageEl, statusAnchor);
+    } else if (
+      lastMessage &&
+      lastMessage.classList.contains("message") &&
+      lastMessage.classList.contains("assistant")
+    ) {
+      messages.insertBefore(pipelineLogMessageEl, lastMessage);
+    } else {
+      messages.appendChild(pipelineLogMessageEl);
+    }
   }
   return pipelineLogMessageEl;
 }
@@ -668,7 +682,9 @@ function isPipelineErrorMessage(message) {
   if (!message) {
     return false;
   }
-  return /실패|오류|에러|없음|없습니다|부족|중단|불가/i.test(message);
+  return /실패|오류|에러|없음|없습니다|부족|중단|불가|찾지 못|못했습니다/i.test(
+    message
+  );
 }
 
 function renderPipelineStageTables(stage, detailEl) {
@@ -752,52 +768,76 @@ function appendPipelineStatus(stage, message, done = false) {
   const cleanedMessage = isRunning
     ? message.replace(/\s*\.{1,3}\s*$/, "")
     : message;
-  const entry = document.createElement("div");
-  entry.className = "pipeline-log-entry";
-  entry.dataset.stage = stage || "";
-  if (done && !isError) {
-    entry.classList.add("is-done");
-  }
-  if (isRunning) {
-    entry.classList.add("is-running");
-  }
-  if (isError) {
-    entry.classList.add("is-error");
-  }
-
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  toggle.className = "pipeline-log-toggle";
-  const stageLabel = pipelineStageLabels[stage] || stage || "단계";
-  const stageEl = document.createElement("span");
-  stageEl.className = "pipeline-log-stage";
-  stageEl.textContent = stageLabel;
-  const textEl = document.createElement("span");
-  textEl.className = "pipeline-log-text";
-  textEl.textContent = cleanedMessage;
-  const stateEl = document.createElement("span");
-  stateEl.className = "pipeline-log-state";
-  stateEl.textContent = isError ? "오류" : done ? "완료" : "진행";
-
-  toggle.appendChild(stageEl);
-  toggle.appendChild(textEl);
-  toggle.appendChild(stateEl);
-
-  const detail = document.createElement("div");
-  detail.className = "pipeline-log-detail hidden";
-
-  toggle.addEventListener("click", () => {
-    const isOpen = entry.classList.toggle("is-open");
-    detail.classList.toggle("hidden", !isOpen);
-    if (isOpen) {
-      renderPipelineStageTables(stage, detail);
+  const stageKey = stage || "";
+  const existingEntries = stageKey
+    ? pipelineLogListEl.querySelectorAll(
+        `.pipeline-log-entry[data-stage="${stageKey}"]`
+      )
+    : [];
+  const lastEntry =
+    existingEntries.length > 0
+      ? existingEntries[existingEntries.length - 1]
+      : null;
+  if (lastEntry) {
+    lastEntry.classList.toggle("is-done", done && !isError);
+    lastEntry.classList.toggle("is-running", isRunning);
+    lastEntry.classList.toggle("is-error", isError);
+    const textEl = lastEntry.querySelector(".pipeline-log-text");
+    if (textEl) {
+      textEl.textContent = cleanedMessage;
     }
-  });
+    const stateEl = lastEntry.querySelector(".pipeline-log-state");
+    if (stateEl) {
+      stateEl.textContent = isError ? "오류" : done ? "완료" : "진행";
+    }
+  } else {
+    const entry = document.createElement("div");
+    entry.className = "pipeline-log-entry";
+    entry.dataset.stage = stageKey;
+    if (done && !isError) {
+      entry.classList.add("is-done");
+    }
+    if (isRunning) {
+      entry.classList.add("is-running");
+    }
+    if (isError) {
+      entry.classList.add("is-error");
+    }
 
-  entry.appendChild(toggle);
-  entry.appendChild(detail);
-  pipelineLogListEl.appendChild(entry);
-  messages.scrollTop = messages.scrollHeight;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "pipeline-log-toggle";
+    const stageLabel = pipelineStageLabels[stage] || stage || "단계";
+    const stageEl = document.createElement("span");
+    stageEl.className = "pipeline-log-stage";
+    stageEl.textContent = stageLabel;
+    const textEl = document.createElement("span");
+    textEl.className = "pipeline-log-text";
+    textEl.textContent = cleanedMessage;
+    const stateEl = document.createElement("span");
+    stateEl.className = "pipeline-log-state";
+    stateEl.textContent = isError ? "오류" : done ? "완료" : "진행";
+
+    toggle.appendChild(stageEl);
+    toggle.appendChild(textEl);
+    toggle.appendChild(stateEl);
+
+    const detail = document.createElement("div");
+    detail.className = "pipeline-log-detail hidden";
+
+    toggle.addEventListener("click", () => {
+      const isOpen = entry.classList.toggle("is-open");
+      detail.classList.toggle("hidden", !isOpen);
+      if (isOpen) {
+        renderPipelineStageTables(stage, detail);
+      }
+    });
+
+    entry.appendChild(toggle);
+    entry.appendChild(detail);
+    pipelineLogListEl.appendChild(entry);
+    messages.scrollTop = messages.scrollHeight;
+  }
 
   if (done && stage === "grid") {
     setPipelineLogComplete();

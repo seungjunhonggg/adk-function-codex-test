@@ -1425,6 +1425,64 @@ def _demo_base_value(seed: int, step: float, precision: int = 4) -> float:
     return round(seed * step, precision)
 
 
+def _demo_fallback_value(column: str, row_index: int, col_index: int) -> object:
+    name = column.lower()
+    if "date" in name or "time" in name:
+        return (datetime.utcnow() - timedelta(days=row_index)).isoformat() + "Z"
+    if "flag" in name or name.endswith("_yn") or "pass" in name or "ispass" in name:
+        return "OK"
+    if "id" in name:
+        return f"DEMO-{column.upper()[:12]}"
+    if any(
+        key in name
+        for key in (
+            "name",
+            "type",
+            "mode",
+            "div",
+            "powder",
+            "binder",
+            "dispersant",
+            "paste",
+        )
+    ):
+        return "DEMO"
+    if any(
+        key in name
+        for key in ("rate", "ratio", "percent", "percentage", "cv", "sigma")
+    ):
+        return _demo_base_value(row_index + col_index, 0.01)
+    if any(
+        key in name
+        for key in (
+            "avg",
+            "thk",
+            "size",
+            "length",
+            "width",
+            "voltage",
+            "temp",
+            "pressure",
+            "shrinkage",
+            "overlap",
+            "layer",
+            "area",
+            "optical",
+            "electrode",
+            "dielectric",
+            "firing",
+            "casting",
+            "corr",
+            "amount",
+            "value",
+            "cap",
+            "capa",
+        )
+    ):
+        return _demo_base_value(row_index + col_index, 0.1)
+    return _demo_base_value(row_index + col_index, 0.1)
+
+
 def _build_demo_rows(
     rules: dict, columns: list[str], filter_column: str, filter_value: str
 ) -> list[dict]:
@@ -1499,6 +1557,10 @@ def _build_demo_rows(
             else:
                 base = 2.0
             row[col] = round(base + idx * 0.1, 4)
+
+        for idx_col, col in enumerate(columns, start=1):
+            if row.get(col) is None:
+                row[col] = _demo_fallback_value(col, idx, idx_col)
 
         if filter_column:
             row[filter_column] = filter_value

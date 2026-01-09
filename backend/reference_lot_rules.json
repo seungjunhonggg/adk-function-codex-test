@@ -21,16 +21,16 @@
   "param_columns": {
     "temperature": "temperature",
     "voltage": "voltage",
-    "size": "size",
-    "capacity": "capacity",
+    "size": "size_detail",
+    "capacity": "base_volume",
     "production_mode": "lot_type"
   },
   "param_columns_by_table": {
     "chip_prod": {
       "temperature": "temperature",
       "voltage": "voltage",
-      "size": "size",
-      "capacity": "capacity",
+      "size": "size_detail",
+      "capacity": "base_volume",
       "production_mode": "lot_type"
     },
     "lot_search": {
