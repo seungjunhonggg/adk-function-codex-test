@@ -1,5 +1,6 @@
 ﻿import json
 import uuid
+from decimal import Decimal
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -635,6 +636,8 @@ def _coerce_float(value: object) -> float | None:
 def _json_safe_value(value: object) -> object:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, Decimal):
+        return float(value)
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, dict):
@@ -771,6 +774,7 @@ def _build_grid_search_payload(
         "ldn_avg_value": _list_value(ldn_avg_value),
         "cast_dsgn_thk": _list_value(_row_value(ref_payload, "cast_dsgn_thk")),
     }
+    params_payload = _json_safe_dict(params_payload)
 
     targets = {
         "target_electrode_c_avg": electrode * 1.05 if electrode is not None else None,
@@ -779,6 +783,7 @@ def _build_grid_search_payload(
         "target_grinding_t_avg": grinding_t,
         "target_dc_cap": -1,
     }
+    targets = _json_safe_dict(targets)
 
     return {
         "sim_type": "ver4",
