@@ -2924,29 +2924,69 @@ def _resolve_design_value(
 
 
 def _build_defect_condition_table_payload(
-    defect_rates: list[dict] | None,
+    defect_items: list[dict] | None,
     chip_prod_id: str,
     value_unit: str = "ratio",
 ) -> dict | None:
-    if not defect_rates:
+    if not defect_items:
         return None
     rows = []
-    for entry in defect_rates:
+    has_counts = any(
+        isinstance(item, dict)
+        and (
+            "value1_count" in item
+            or "value2_count" in item
+            or "defect_rate" in item
+        )
+        for item in defect_items
+    )
+    if has_counts:
+        for entry in defect_items:
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("label") or entry.get("key") or entry.get("column") or "-"
+            total = entry.get("value1_count")
+            passed = entry.get("value2_count")
+            fail_count = None
+            if isinstance(total, (int, float)) and isinstance(passed, (int, float)):
+                fail_count = int(total) - int(passed)
+            rows.append(
+                {
+                    "조건": label,
+                    "전체 LOT": total,
+                    "조건통과 LOT": passed,
+                    "미달 LOT": fail_count,
+                    "불량률": _format_defect_rate_display(entry.get("defect_rate"), value_unit),
+                }
+            )
+        if not rows:
+            return None
+        return {
+            "chart_type": "table",
+            "metric_label": "불량 조건 요약",
+            "value_unit": value_unit,
+            "table_columns": ["조건", "전체 LOT", "조건통과 LOT", "미달 LOT", "불량률"],
+            "table_rows": rows,
+            "filters": {"chip_prod_id": chip_prod_id},
+        }
+
+    for entry in defect_items:
         if not isinstance(entry, dict):
             continue
         label = entry.get("label") or entry.get("key") or entry.get("column") or "-"
-        total = entry.get("value1_count")
-        passed = entry.get("value2_count")
-        fail_count = None
-        if isinstance(total, (int, float)) and isinstance(passed, (int, float)):
-            fail_count = int(total) - int(passed)
+        operator = entry.get("operator") or "="
+        value = entry.get("value")
+        if isinstance(value, (list, tuple)):
+            value_text = ", ".join(str(item) for item in value)
+        elif value is None:
+            value_text = "-"
+        else:
+            value_text = str(value)
         rows.append(
             {
                 "조건": label,
-                "전체 LOT": total,
-                "조건통과 LOT": passed,
-                "미달 LOT": fail_count,
-                "불량률": _format_defect_rate_display(entry.get("defect_rate"), value_unit),
+                "연산": operator,
+                "값": value_text,
             }
         )
     if not rows:
@@ -2954,8 +2994,8 @@ def _build_defect_condition_table_payload(
     return {
         "chart_type": "table",
         "metric_label": "불량 조건 요약",
-        "value_unit": value_unit,
-        "table_columns": ["조건", "전체 LOT", "조건통과 LOT", "미달 LOT", "불량률"],
+        "value_unit": "",
+        "table_columns": ["조건", "연산", "값"],
         "table_rows": rows,
         "filters": {"chip_prod_id": chip_prod_id},
     }
@@ -3154,11 +3194,11 @@ async def _run_reference_pipeline(
         if selected_lot_id
         else {"status": "missing", "defect_rates": [], "source": "none"}
     )
-    condition_defect_rates = reference_result.get("defect_rates") or []
+    condition_filters = rules.get("defect_conditions") or []
     condition_table = _build_defect_condition_table_payload(
-        condition_defect_rates, chip_prod_id, "ratio"
+        condition_filters, chip_prod_id, "ratio"
     )
-    defect_rates = condition_defect_rates
+    defect_rates: list[dict] = []
     defect_stats = {}
     defect_rate_overall = None
     if condition_table:

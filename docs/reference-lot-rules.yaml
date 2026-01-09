@@ -320,26 +320,6 @@ selection:
     - column: "x_tr_short_defect_rate"
       order: "asc"
 
-# 레퍼런스 LOT 필터링에 사용하는 필수 not-null 컬럼
-value1_not_null_columns:
-  - "grinding_l_avg"
-  - "grinding_t_avg"
-  - "grinding_w_avg"
-  - "electrode_c_avg"
-  - "cast_dsgn_thk"
-  - "ldn_avr_value"
-  - "screen_chip_size_leng"
-  - "screen_mrgn_leng"
-  - "screen_chip_size_widh"
-  - "screen_mrgn_widh"
-  - "cover_sheet_thk"
-  - "top_cover_layer_num"
-  - "bot_cover_layer_num"
-  - "gap_sheet_thk"
-  - "active_layer"
-  - "upper_equal_dirtn_value"
-  - "lower_equal_dirtn_vaue"
-
 # 레퍼런스 LOT 선택에 사용하는 불량 조건 필터
 defect_conditions:
   - key: "cutting_defect"
@@ -351,11 +331,11 @@ defect_conditions:
       - "MCS_GRADE_B"
   - key: "x_fr_ispass"
     column: "x_fr_ispass"
-    operator: "="
-    value: "OK"
+    operator: "is_distinct_from"
+    value: "NG"
   - key: "contact_defect"
     column: "contact_defect"
-    operator: "="
+    operator: "eq_or_null"
     value: 0
   - key: "measure_defect"
     column: "measure_defect"
@@ -366,24 +346,24 @@ defect_conditions:
       - "MCS_GRADE_B"
   - key: "pass_halt"
     column: "pass_halt"
-    operator: "="
-    value: "OK"
+    operator: "is_distinct_from"
+    value: "NG"
   - key: "pass_8585"
     column: "pass_8585"
-    operator: "="
-    value: "OK"
+    operator: "is_distinct_from"
+    value: "NG"
   - key: "pass_burn_in"
     column: "pass_burn_in"
-    operator: "="
-    value: "OK"
+    operator: "is_distinct_from"
+    value: "NG"
   - key: "x_df_ispass"
     column: "x_df_ispass"
-    operator: "="
-    value: "OK"
+    operator: "is_distinct_from"
+    value: "NG"
   - key: "x_odb_pass_yn"
     column: "x_odb_pass_yn"
-    operator: "="
-    value: "OK"
+    operator: "is_distinct_from"
+    value: "NG"
 
 # LOT 상세 조회 시 추가로 포함할 컬럼(옵션)
 detail_columns: []
@@ -396,6 +376,7 @@ conditions:
       - "Normal"
       - "MF"
     min_length: null
+  # ref_lot_search_filter에서 필수 not-null 조건으로 사용하는 컬럼
   required_not_null:
     - "grinding_l_avg"
     - "grinding_t_avg"
@@ -410,7 +391,6 @@ conditions:
     - "cover_sheet_thk"
     - "top_cover_layer_num"
     - "bot_cover_layer_num"
-    - "gap_sheet_thk"
     - "active_layer"
     - "upper_equal_dirtn_value"
     - "lower_equal_dirtn_vaue"

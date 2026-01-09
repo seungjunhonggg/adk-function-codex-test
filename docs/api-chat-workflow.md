@@ -61,14 +61,18 @@ flowchart TD
    - `backend/app.py::_run_reference_pipeline`  
    - 내부 주요 단계:
     - 레퍼런스 LOT 선택 (`reference_lot.py`)
-      - lot_search 불량 필터: cutting_defect/measure_defect는 MCS_GRADE_S/A/B, contact_defect=0,
-        x_fr_ispass/pass_halt/pass_8585/pass_burn_in/x_df_ispass/x_odb_pass_yn은 OK
+      - ref_lot_search_filter: 파라미터 필터 + conditions.required_not_null +
+        defect_conditions + (파라미터 기반으로 찾은 chip_prod_id IN 조건)을 단일 조회로 적용
+      - lot_search 불량 필터: cutting_defect/measure_defect는 MCS_GRADE_S/A/B,
+        contact_defect=0 또는 NULL,
+        x_fr_ispass/pass_halt/pass_8585/pass_burn_in/x_df_ispass/x_odb_pass_yn은
+        IS DISTINCT FROM 'NG'
       - 정렬 우선순위: cutting_defect+measure_defect 등급(S > A > B) → bdv_avg 내림차순
         → x_tr_short_defect_rate 오름차순 → 최신 input_date
       - 필터링 결과(LOT_ID + defect_conditions 컬럼)는 최종 브리핑 메시지에
         마크다운 표로 포함
       - rerun 시 이전 grid_overrides가 있으면 재활용
-    - LOT 불량 조건 요약 표 이벤트 송신(차트 대신 table 렌더링)
+    - LOT 불량 조건 요약 표 이벤트 송신(조건/연산/값 표시용 table)
     - grid_search 후보 생성
       - payload 형식: sim_type=ver4, data(ref/sim), targets(electrode_c_avg*1.05 등),
         params(screen_* / active_layer / cover_sheet_thk / total_cover_layer_num /

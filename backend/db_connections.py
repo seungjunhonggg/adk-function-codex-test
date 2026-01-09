@@ -379,6 +379,8 @@ def _normalize_operator(value: str | None) -> str:
         "between",
         "is_null",
         "is_not_null",
+        "is_distinct_from",
+        "eq_or_null",
     }
     if operator not in allowed:
         return "ilike"
@@ -437,6 +439,18 @@ def execute_table_query(
                     query += f" WHERE `{filter_column}` IS NOT NULL"
                 elif operator == "is_null":
                     query += f" WHERE `{filter_column}` IS NULL"
+                elif operator == "is_distinct_from":
+                    if filter_value is None:
+                        query += f" WHERE `{filter_column}` IS NOT NULL"
+                    else:
+                        query += f" WHERE NOT (`{filter_column}` <=> %s)"
+                        params.append(filter_value)
+                elif operator == "eq_or_null":
+                    if filter_value is None:
+                        query += f" WHERE `{filter_column}` IS NULL"
+                    else:
+                        query += f" WHERE (`{filter_column}` = %s OR `{filter_column}` IS NULL)"
+                        params.append(filter_value)
                 elif filter_value is not None and filter_value != "":
                     if operator in {"ilike", "like"}:
                         query += f" WHERE `{filter_column}` LIKE %s"
@@ -480,6 +494,21 @@ def execute_table_query(
                     query += sql.SQL(" WHERE {col} IS NULL").format(
                         col=sql.Identifier(filter_column)
                     )
+                elif operator == "is_distinct_from":
+                    query += sql.SQL(" WHERE {col} IS DISTINCT FROM %s").format(
+                        col=sql.Identifier(filter_column)
+                    )
+                    params.append(filter_value)
+                elif operator == "eq_or_null":
+                    if filter_value is None:
+                        query += sql.SQL(" WHERE {col} IS NULL").format(
+                            col=sql.Identifier(filter_column)
+                        )
+                    else:
+                        query += sql.SQL(" WHERE ({col} = %s OR {col} IS NULL)").format(
+                            col=sql.Identifier(filter_column)
+                        )
+                        params.append(filter_value)
                 elif filter_value is not None and filter_value != "":
                     if operator in {"ilike", "like"}:
                         query += sql.SQL(" WHERE {col} {op} %s").format(
@@ -581,6 +610,18 @@ def execute_table_query_multi(
                         clauses.append(f"`{column}` IS NOT NULL")
                     elif operator == "is_null":
                         clauses.append(f"`{column}` IS NULL")
+                    elif operator == "is_distinct_from":
+                        if value is None:
+                            clauses.append(f"`{column}` IS NOT NULL")
+                        else:
+                            clauses.append(f"NOT (`{column}` <=> %s)")
+                            params.append(value)
+                    elif operator == "eq_or_null":
+                        if value is None:
+                            clauses.append(f"`{column}` IS NULL")
+                        else:
+                            clauses.append(f"(`{column}` = %s OR `{column}` IS NULL)")
+                            params.append(value)
                     elif operator in {"ilike", "like"}:
                         clauses.append(f"`{column}` LIKE %s")
                         params.append(f"%{value}%")
@@ -633,6 +674,27 @@ def execute_table_query_multi(
                                 col=sql.Identifier(column)
                             )
                         )
+                    elif operator == "is_distinct_from":
+                        clauses.append(
+                            sql.SQL("{col} IS DISTINCT FROM %s").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                        params.append(value)
+                    elif operator == "eq_or_null":
+                        if value is None:
+                            clauses.append(
+                                sql.SQL("{col} IS NULL").format(
+                                    col=sql.Identifier(column)
+                                )
+                            )
+                        else:
+                            clauses.append(
+                                sql.SQL("({col} = %s OR {col} IS NULL)").format(
+                                    col=sql.Identifier(column)
+                                )
+                            )
+                            params.append(value)
                     elif operator in {"ilike", "like"}:
                         clauses.append(
                             sql.SQL("{col} {op} %s").format(
@@ -834,6 +896,18 @@ def execute_table_query_aggregate(
                         clauses.append(f"`{column}` IS NOT NULL")
                     elif operator == "is_null":
                         clauses.append(f"`{column}` IS NULL")
+                    elif operator == "is_distinct_from":
+                        if value is None:
+                            clauses.append(f"`{column}` IS NOT NULL")
+                        else:
+                            clauses.append(f"NOT (`{column}` <=> %s)")
+                            params.append(value)
+                    elif operator == "eq_or_null":
+                        if value is None:
+                            clauses.append(f"`{column}` IS NULL")
+                        else:
+                            clauses.append(f"(`{column}` = %s OR `{column}` IS NULL)")
+                            params.append(value)
                     elif operator in {"ilike", "like"}:
                         clauses.append(f"`{column}` LIKE %s")
                         params.append(f"%{value}%")
@@ -927,6 +1001,27 @@ def execute_table_query_aggregate(
                                 col=sql.Identifier(column)
                             )
                         )
+                    elif operator == "is_distinct_from":
+                        clauses.append(
+                            sql.SQL("{col} IS DISTINCT FROM %s").format(
+                                col=sql.Identifier(column)
+                            )
+                        )
+                        params.append(value)
+                    elif operator == "eq_or_null":
+                        if value is None:
+                            clauses.append(
+                                sql.SQL("{col} IS NULL").format(
+                                    col=sql.Identifier(column)
+                                )
+                            )
+                        else:
+                            clauses.append(
+                                sql.SQL("({col} = %s OR {col} IS NULL)").format(
+                                    col=sql.Identifier(column)
+                                )
+                            )
+                            params.append(value)
                     elif operator in {"ilike", "like"}:
                         clauses.append(
                             sql.SQL("{col} {op} %s").format(

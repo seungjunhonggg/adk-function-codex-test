@@ -321,25 +321,6 @@
       { "column": "x_tr_short_defect_rate", "order": "asc" }
     ]
   },
-  "value1_not_null_columns": [
-    "grinding_l_avg",
-    "grinding_t_avg",
-    "grinding_w_avg",
-    "electrode_c_avg",
-    "cast_dsgn_thk",
-    "ldn_avr_value",
-    "screen_chip_size_leng",
-    "screen_mrgn_leng",
-    "screen_chip_size_widh",
-    "screen_mrgn_widh",
-    "cover_sheet_thk",
-    "top_cover_layer_num",
-    "bot_cover_layer_num",
-    "gap_sheet_thk",
-    "active_layer",
-    "upper_equal_dirtn_value",
-    "lower_equal_dirtn_vaue"
-  ],
   "defect_conditions": [
     {
       "key": "cutting_defect",
@@ -347,19 +328,54 @@
       "operator": "in",
       "value": ["MCS_GRADE_S", "MCS_GRADE_A", "MCS_GRADE_B"]
     },
-    { "key": "x_fr_ispass", "column": "x_fr_ispass", "operator": "=", "value": "OK" },
-    { "key": "contact_defect", "column": "contact_defect", "operator": "=", "value": 0 },
+    {
+      "key": "x_fr_ispass",
+      "column": "x_fr_ispass",
+      "operator": "is_distinct_from",
+      "value": "NG"
+    },
+    {
+      "key": "contact_defect",
+      "column": "contact_defect",
+      "operator": "eq_or_null",
+      "value": 0
+    },
     {
       "key": "measure_defect",
       "column": "measure_defect",
       "operator": "in",
       "value": ["MCS_GRADE_S", "MCS_GRADE_A", "MCS_GRADE_B"]
     },
-    { "key": "pass_halt", "column": "pass_halt", "operator": "=", "value": "OK" },
-    { "key": "pass_8585", "column": "pass_8585", "operator": "=", "value": "OK" },
-    { "key": "pass_burn_in", "column": "pass_burn_in", "operator": "=", "value": "OK" },
-    { "key": "x_df_ispass", "column": "x_df_ispass", "operator": "=", "value": "OK" },
-    { "key": "x_odb_pass_yn", "column": "x_odb_pass_yn", "operator": "=", "value": "OK" }
+    {
+      "key": "pass_halt",
+      "column": "pass_halt",
+      "operator": "is_distinct_from",
+      "value": "NG"
+    },
+    {
+      "key": "pass_8585",
+      "column": "pass_8585",
+      "operator": "is_distinct_from",
+      "value": "NG"
+    },
+    {
+      "key": "pass_burn_in",
+      "column": "pass_burn_in",
+      "operator": "is_distinct_from",
+      "value": "NG"
+    },
+    {
+      "key": "x_df_ispass",
+      "column": "x_df_ispass",
+      "operator": "is_distinct_from",
+      "value": "NG"
+    },
+    {
+      "key": "x_odb_pass_yn",
+      "column": "x_odb_pass_yn",
+      "operator": "is_distinct_from",
+      "value": "NG"
+    }
   ],
   "detail_columns": [],
   "conditions": {
@@ -382,7 +398,6 @@
       "cover_sheet_thk",
       "top_cover_layer_num",
       "bot_cover_layer_num",
-      "gap_sheet_thk",
       "active_layer",
       "upper_equal_dirtn_value",
       "lower_equal_dirtn_vaue"
