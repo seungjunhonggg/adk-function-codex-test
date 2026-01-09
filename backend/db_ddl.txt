@@ -1,0 +1,92 @@
+-- PostgreSQL DDL for column metadata catalog
+-- This schema stores display labels, descriptions, units, and grouping rules
+-- so agents can map natural language requests to DB columns consistently.
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Table registry (which physical table a column belongs to)
+CREATE TABLE table_catalog (
+  table_key      TEXT PRIMARY KEY,           -- Internal key, e.g. mdh_base_view_total
+  schema_name    TEXT NOT NULL,              -- DB schema name
+  table_name     TEXT NOT NULL,              -- Physical table/view name
+  date_column    TEXT,                       -- Column used for recent N-month filters
+  join_keys      TEXT[] DEFAULT '{}',        -- Join keys, e.g. lot_id, chip_prod_id
+  description_ko TEXT,                       -- Human-readable table description
+  is_active      BOOLEAN DEFAULT TRUE,       -- Soft enable/disable
+  created_at     TIMESTAMPTZ DEFAULT now(),
+  updated_at     TIMESTAMPTZ DEFAULT now()
+);
+
+-- Column master catalog (the single source of truth for column metadata)
+CREATE TABLE column_catalog (
+  column_id          BIGSERIAL PRIMARY KEY,
+  table_key          TEXT NOT NULL REFERENCES table_catalog(table_key), -- Parent table
+  column_name        TEXT NOT NULL,          -- Physical column name
+  display_ko         TEXT NOT NULL,          -- Korean label shown to users
+  description_ko     TEXT,                   -- Korean description for briefing
+  data_type          TEXT,                   -- number/text/date/etc
+  unit               TEXT,                   -- V, uF, ppm, %
+  value_unit         TEXT CHECK (value_unit IN ('percent','ppm','ratio','count','none') OR value_unit IS NULL),
+  process_stage      TEXT,                   -- firing/measurement/grinding/etc
+  metric_type        TEXT,                   -- defect/param/result/etc
+  is_chartable       BOOLEAN DEFAULT FALSE,  -- Whether to render as chart by default
+  default_agg        TEXT,                   -- avg/max/min/sum/etc
+  default_chart_type TEXT,                   -- bar/line/table/etc
+  is_active          BOOLEAN DEFAULT TRUE,   -- Soft enable/disable
+  created_at         TIMESTAMPTZ DEFAULT now(),
+  updated_at         TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (table_key, column_name)
+);
+
+-- Alias table for natural language mapping (synonyms/abbrev/typos)
+CREATE TABLE column_alias (
+  alias_id   BIGSERIAL PRIMARY KEY,
+  column_id  BIGINT NOT NULL REFERENCES column_catalog(column_id) ON DELETE CASCADE,
+  alias      TEXT NOT NULL,                  -- User phrase or shorthand
+  lang       TEXT DEFAULT 'ko',
+  match_type TEXT DEFAULT 'synonym',         -- synonym/abbr/typo
+  score      NUMERIC(4,3) DEFAULT 1.0,       -- Relative priority
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (alias, lang)
+);
+
+-- Chart/briefing group definitions
+CREATE TABLE column_group (
+  group_key      TEXT PRIMARY KEY,           -- e.g. inspection_defect_rate_ppm
+  label_ko       TEXT NOT NULL,              -- Group display name
+  group_type     TEXT,                       -- process/inspection/defect/etc
+  unit           TEXT,                       -- ppm/percent/ratio
+  description_ko TEXT,                       -- When to use this group
+  is_active      BOOLEAN DEFAULT TRUE,
+  created_at     TIMESTAMPTZ DEFAULT now()
+);
+
+-- Group members (which columns are included in each group)
+CREATE TABLE column_group_member (
+  group_key  TEXT NOT NULL REFERENCES column_group(group_key) ON DELETE CASCADE,
+  column_id  BIGINT NOT NULL REFERENCES column_catalog(column_id) ON DELETE CASCADE,
+  sort_order INT DEFAULT 0,                  -- Display order in charts/tables
+  role       TEXT DEFAULT 'main',            -- main/sub
+  PRIMARY KEY (group_key, column_id)
+);
+
+-- Parameter normalization (user value -> DB value)
+CREATE TABLE param_value_map (
+  map_id     BIGSERIAL PRIMARY KEY,
+  param_key  TEXT NOT NULL,                  -- temperature/size/capacity/etc
+  user_value TEXT NOT NULL,                  -- User input
+  db_value   TEXT NOT NULL,                  -- Actual DB value
+  unit       TEXT,                           -- Optional unit
+  note       TEXT,                           -- Freeform note
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (param_key, user_value)
+);
+
+-- Indexes for fast lookup
+CREATE INDEX idx_column_catalog_name ON column_catalog(table_key, column_name);
+CREATE INDEX idx_column_catalog_stage ON column_catalog(process_stage, metric_type);
+CREATE INDEX idx_column_catalog_chartable ON column_catalog(is_chartable);
+
+CREATE INDEX idx_alias_trgm ON column_alias USING gin (alias gin_trgm_ops);
+CREATE INDEX idx_display_ko_trgm ON column_catalog USING gin (display_ko gin_trgm_ops);
+CREATE INDEX idx_desc_ko_trgm ON column_catalog USING gin (description_ko gin_trgm_ops);
