@@ -90,3 +90,58 @@ CREATE INDEX idx_column_catalog_chartable ON column_catalog(is_chartable);
 CREATE INDEX idx_alias_trgm ON column_alias USING gin (alias gin_trgm_ops);
 CREATE INDEX idx_display_ko_trgm ON column_catalog USING gin (display_ko gin_trgm_ops);
 CREATE INDEX idx_desc_ko_trgm ON column_catalog USING gin (description_ko gin_trgm_ops);
+
+-- Suggested indexes for mdh_base_view_total (lot_search + grid match)
+-- Review with EXPLAIN ANALYZE before production use.
+CREATE INDEX idx_mdh_base_lot_id ON mdh_base_view_total (lot_id);
+CREATE INDEX idx_mdh_base_chip_prod_id ON mdh_base_view_total (chip_prod_id);
+CREATE INDEX idx_mdh_base_chip_prod_id_trgm
+  ON mdh_base_view_total USING gin (chip_prod_id gin_trgm_ops);
+
+-- Param filters used for chip_prod selection
+CREATE INDEX idx_mdh_base_param_filters
+  ON mdh_base_view_total (temperature, voltage, size, capacity, lot_type);
+
+-- Recent-date filter in lot_search/grid matching
+CREATE INDEX idx_mdh_base_design_input_date_brin
+  ON mdh_base_view_total USING brin (design_input_date);
+
+-- Grid match filters (ref lot -> post-grid search)
+CREATE INDEX idx_mdh_base_grid_match
+  ON mdh_base_view_total (
+    active_powder_base,
+    active_powder_additives,
+    ldn_avr_value,
+    cast_dsgn_thk,
+    design_input_date
+  );
+
+-- Optional: pre-filter for "OK/0" defect conditions
+CREATE INDEX idx_mdh_base_defect_ok
+  ON mdh_base_view_total (
+    cutting_defect,
+    measure_defect,
+    x_fr_ispass,
+    contact_defect,
+    pass_halt,
+    pass_8585,
+    pass_burn_in,
+    x_df_ispass,
+    x_odb_pass_yn
+  )
+  WHERE x_fr_ispass = 'OK'
+    AND contact_defect = 0
+    AND pass_halt = 'OK'
+    AND pass_8585 = 'OK'
+    AND pass_burn_in = 'OK'
+    AND x_df_ispass = 'OK'
+    AND x_odb_pass_yn = 'OK';
+
+-- Optional: if NULLs are very frequent, consider partial indexes on required columns
+-- Example:
+-- CREATE INDEX idx_mdh_base_required_not_null
+--   ON mdh_base_view_total (grinding_l_avg, grinding_t_avg, grinding_w_avg, electrode_c_avg)
+--   WHERE grinding_l_avg IS NOT NULL
+--     AND grinding_t_avg IS NOT NULL
+--     AND grinding_w_avg IS NOT NULL
+--     AND electrode_c_avg IS NOT NULL;

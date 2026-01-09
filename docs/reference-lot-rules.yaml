@@ -63,7 +63,7 @@ defect_rate_source:
   value_unit: "percent"
 
 # post-grid 불량 통계 컬럼 (TOP3 불량 요약에 사용)
-# 비어있으면 defect_rate_aggregate + defect_conditions로 fallback
+# 비어있으면 defect_metric_catalog + defect_conditions로 fallback
 post_grid_defect_columns:
   - "ci_def_rate"
   - "ci_def_01"
@@ -489,20 +489,3 @@ grid_search:
   max_results: 100
   # UI에 표시할 TOP 후보 수
   top_k: 10
-
-# post-grid 불량 컬럼이 비어있을 때 사용하는 집계 컬럼
-defect_rate_aggregate:
-  columns:
-    - "defect_metric_1"
-    - "defect_metric_2"
-    - "defect_metric_3"
-    - "defect_metric_4"
-    - "defect_metric_5"
-    - "defect_metric_6"
-    - "defect_metric_7"
-    - "defect_metric_8"
-    - "defect_metric_9"
-    - "defect_metric_10"
-    - "defect_metric_11"
-  # avg 또는 sum
-  mode: "avg"

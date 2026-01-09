@@ -473,21 +473,5 @@
     ],
     "max_results": 100,
     "top_k": 10
-  },
-  "defect_rate_aggregate": {
-    "columns": [
-      "defect_metric_1",
-      "defect_metric_2",
-      "defect_metric_3",
-      "defect_metric_4",
-      "defect_metric_5",
-      "defect_metric_6",
-      "defect_metric_7",
-      "defect_metric_8",
-      "defect_metric_9",
-      "defect_metric_10",
-      "defect_metric_11"
-    ],
-    "mode": "avg"
   }
 }

@@ -34,7 +34,7 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     normalized.setdefault("detail_columns", [])
     normalized.setdefault("conditions", {})
     normalized.setdefault("grid_search", {})
-    normalized.setdefault("defect_rate_aggregate", {})
+    normalized.setdefault("defect_metric_catalog", {})
     normalized.setdefault("defect_rate_source", {})
     normalized.setdefault("final_briefing", {})
     normalized.setdefault(
@@ -69,6 +69,9 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     param_value_map = normalized.get("param_value_map")
     if not isinstance(param_value_map, dict):
         normalized["param_value_map"] = {}
+    defect_metric_catalog = normalized.get("defect_metric_catalog")
+    if not isinstance(defect_metric_catalog, dict):
+        normalized["defect_metric_catalog"] = {}
     value1_not_null = normalized.get("value1_not_null_columns")
     if not isinstance(value1_not_null, list):
         value1_not_null = []
@@ -82,8 +85,6 @@ def normalize_reference_rules(rules: dict | None) -> dict:
     normalized["grid_search"].setdefault("factors", [])
     normalized["grid_search"].setdefault("max_results", 100)
     normalized["grid_search"].setdefault("top_k", 10)
-    normalized["defect_rate_aggregate"].setdefault("columns", [])
-    normalized["defect_rate_aggregate"].setdefault("mode", "avg")
     defect_rate_source = normalized.get("defect_rate_source")
     if not isinstance(defect_rate_source, dict):
         defect_rate_source = {}
@@ -357,6 +358,42 @@ def _resolve_grid_match_aliases(rules: dict) -> dict[str, list[str]]:
         if items:
             normalized[str(key)] = items
     return normalized
+
+
+def _resolve_defect_metric_groups(rules: dict) -> list[dict]:
+    catalog = rules.get("defect_metric_catalog")
+    if not isinstance(catalog, dict):
+        return []
+    groups = catalog.get("groups")
+    if not isinstance(groups, list):
+        return []
+    return [group for group in groups if isinstance(group, dict)]
+
+
+def _resolve_defect_metric_columns(
+    rules: dict, include_children: bool = True
+) -> list[str]:
+    columns: list[str] = []
+    for group in _resolve_defect_metric_groups(rules):
+        metric = group.get("metric")
+        if metric:
+            columns.append(str(metric))
+        if include_children:
+            children = group.get("children") or []
+            if isinstance(children, list):
+                for child in children:
+                    if child:
+                        columns.append(str(child))
+    return [column for column in dict.fromkeys(columns) if column]
+
+
+def _resolve_defect_metric_main_columns(rules: dict) -> list[str]:
+    columns: list[str] = []
+    for group in _resolve_defect_metric_groups(rules):
+        metric = group.get("metric")
+        if metric:
+            columns.append(str(metric))
+    return [column for column in dict.fromkeys(columns) if column]
 
 
 def _resolve_grid_defect_columns(
@@ -1299,7 +1336,9 @@ def get_defect_rates_by_lot_id(lot_id: str) -> dict:
 
     if not rate_columns:
         conditions = rules.get("conditions", {})
-        aggregate_columns = rules.get("defect_rate_aggregate", {}).get("columns", []) or []
+        aggregate_columns = _resolve_defect_metric_columns(
+            rules, include_children=True
+        )
         defect_condition_columns = [
             item.get("column") or item.get("name")
             for item in (rules.get("defect_conditions") or [])
@@ -1501,7 +1540,7 @@ def _build_reference_payload(rows: list[dict], meta: dict) -> dict:
     db = rules.get("db", {})
     lot_id_column = db.get("lot_id_column") or "lot_id"
     input_date_column = db.get("input_date_column") or "input_date"
-    aggregate_columns = rules.get("defect_rate_aggregate", {}).get("columns", [])
+    aggregate_columns = _resolve_defect_metric_main_columns(rules)
 
     scored_rows = []
     for row in rows:
@@ -1660,7 +1699,7 @@ def _resolve_post_grid_defect_columns(rules: dict) -> list[str]:
     columns = [column for column in (rules.get("post_grid_defect_columns") or []) if column]
     if columns:
         return columns
-    aggregate_columns = rules.get("defect_rate_aggregate", {}).get("columns", []) or []
+    aggregate_columns = _resolve_defect_metric_columns(rules, include_children=True)
     conditions = rules.get("conditions", {})
     defect_condition_columns = [
         item.get("column") or item.get("name")

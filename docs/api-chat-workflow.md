@@ -91,7 +91,7 @@ flowchart TD
       - WebSocket이 연결된 경우 브리핑 텍스트를 `chat_stream_*`로 델타 스트리밍하고,
         표는 `briefing_table`로 분리 전송
         (응답에는 `streamed=true`가 포함되어 HTTP 응답의 중복 출력 방지)
-      - 섹션 간 딜레이는 `BRIEFING_STREAM_DELAY_SECONDS`로 조정 가능 (기본 0)
+      - 섹션 간 딜레이는 `BRIEFING_STREAM_DELAY_SECONDS`로 조정 가능 (기본 0.03s)
       - 가짜 스트리밍 모드: 텍스트는 `chat_stream_*` 델타로 흘리고,
         표는 `briefing_table` 이벤트로 분리 전송해 애니메이션 표시
 
