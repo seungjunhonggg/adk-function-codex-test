@@ -10,6 +10,10 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from agents import Runner, SQLiteSession
+from agents.exceptions import (
+    InputGuardrailTripwireTriggered,
+    OutputGuardrailTripwireTriggered,
+)
 from agents.tracing import set_tracing_disabled
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -18,10 +22,12 @@ from pydantic import BaseModel
 
 from .agents import (
     auto_message_agent,
+    briefing_agent,
     chart_agent,
     conversation_agent,
     db_agent,
     edit_intent_agent,
+    planner_agent,
     route_agent,
     stage_resolver_agent,
 )
@@ -36,6 +42,7 @@ from .context import current_session_id
 from .db_connections import connect_and_save, get_schema, list_connections, preload_schema
 from .db import init_db
 from .events import event_bus
+from .guardrails import guardrail_fallback_message
 from .observability import WorkflowRunHooks, emit_workflow_log
 from .pipeline_store import pipeline_store
 from .reference_lot import (
@@ -178,6 +185,14 @@ async def chat(request: ChatRequest) -> dict:
     session = SQLiteSession(request.session_id, SESSION_DB_PATH)
     token = current_session_id.set(request.session_id)
     try:
+        planner_result = await _maybe_handle_planner_message(
+            request.message, request.session_id, session
+        )
+        if planner_result is not None:
+            workflow_id, outcome = planner_result
+            return await _record_workflow_outcome(
+                request.session_id, request.message, workflow_id, outcome
+            )
         route_command = await _route_message(request.message, request.session_id)
         if route_command.get("needs_clarification") and route_command.get("clarifying_question"):
             clarifying = route_command.get("clarifying_question")
@@ -568,12 +583,20 @@ async def _handle_chat_workflow(
     message: str, session: SQLiteSession
 ) -> WorkflowOutcome:
     await emit_workflow_log("FLOW", "chat -> conversation_agent")
-    convo = await Runner.run(
-        conversation_agent,
-        input=message,
-        session=session,
-        hooks=WorkflowRunHooks(),
-    )
+    try:
+        convo = await Runner.run(
+            conversation_agent,
+            input=message,
+            session=session,
+            hooks=WorkflowRunHooks(),
+        )
+    except InputGuardrailTripwireTriggered:
+        response = guardrail_fallback_message(["simulation_result", "db_result"])
+        return WorkflowOutcome(response)
+    except OutputGuardrailTripwireTriggered as exc:
+        info = exc.guardrail_result.output.output_info or {}
+        response = guardrail_fallback_message(info.get("missing_events"))
+        return WorkflowOutcome(response)
     response = (convo.final_output or "").strip()
     return WorkflowOutcome(response)
 
@@ -582,12 +605,22 @@ async def _handle_fallback_workflow(
     message: str, session_id: str, session: SQLiteSession
 ) -> WorkflowOutcome:
     await emit_workflow_log("FLOW", "fallback -> conversation_agent")
-    fallback = await Runner.run(
-        conversation_agent,
-        input=message,
-        session=session,
-        hooks=WorkflowRunHooks(),
-    )
+    try:
+        fallback = await Runner.run(
+            conversation_agent,
+            input=message,
+            session=session,
+            hooks=WorkflowRunHooks(),
+        )
+    except InputGuardrailTripwireTriggered:
+        response = guardrail_fallback_message(["simulation_result", "db_result"])
+        await _maybe_update_simulation_from_message(message, session_id)
+        return WorkflowOutcome(response)
+    except OutputGuardrailTripwireTriggered as exc:
+        info = exc.guardrail_result.output.output_info or {}
+        response = guardrail_fallback_message(info.get("missing_events"))
+        await _maybe_update_simulation_from_message(message, session_id)
+        return WorkflowOutcome(response)
     await _maybe_update_simulation_from_message(message, session_id)
     response = (fallback.final_output or "").strip()
     return WorkflowOutcome(response)
@@ -1041,6 +1074,9 @@ async def _generate_edit_auto_message(
             hooks=WorkflowRunHooks(),
         )
         message = (run.final_output or "").strip()
+    except OutputGuardrailTripwireTriggered as exc:
+        info = exc.guardrail_result.output.output_info or {}
+        message = guardrail_fallback_message(info.get("missing_events"))
     except Exception:
         message = ""
     if not message:
@@ -1546,6 +1582,545 @@ def _build_route_summary(session_id: str) -> dict:
     summary["missing_count"] = len(missing) if isinstance(missing, list) else 0
     summary.pop("missing", None)
     return summary
+
+
+PLANNER_WORKFLOW_CONFIG: dict[str, dict[str, list[str]]] = {
+    "simulation_run": {
+        "required_memory": [
+            "sim.temperature",
+            "sim.voltage",
+            "sim.size",
+            "sim.capacity",
+            "sim.production_mode",
+        ],
+        "optional_memory": ["sim.chip_prod_id"],
+        "success_criteria": ["events.simulation_result"],
+    },
+    "simulation_edit": {
+        "required_memory": [],
+        "optional_memory": [
+            "sim.temperature",
+            "sim.voltage",
+            "sim.size",
+            "sim.capacity",
+            "sim.production_mode",
+            "sim.chip_prod_id",
+            "events.simulation_form",
+            "events.simulation_result",
+        ],
+        "success_criteria": ["events.simulation_result", "last_stage_request"],
+    },
+    "db_query": {
+        "required_memory": [],
+        "optional_memory": [
+            "sim.chip_prod_id",
+            "events.simulation_result",
+            "events.lot_result",
+        ],
+        "success_criteria": [
+            "events.db_result",
+            "events.lot_result",
+            "events.defect_rate_chart",
+        ],
+    },
+    "chart_edit": {
+        "required_memory": ["events.defect_rate_chart"],
+        "optional_memory": [],
+        "success_criteria": ["events.defect_rate_chart", "chart_config"],
+    },
+    "stage_view": {
+        "required_memory": [],
+        "optional_memory": [
+            "events.simulation_result",
+            "events.lot_result",
+            "events.defect_rate_chart",
+            "events.design_candidates",
+            "events.final_briefing",
+        ],
+        "success_criteria": ["last_stage_request"],
+    },
+    "briefing": {
+        "required_memory": ["events.final_briefing"],
+        "optional_memory": [
+            "briefing_text",
+            "briefing_summary",
+            "events.simulation_result",
+            "events.defect_rate_chart",
+            "events.design_candidates",
+        ],
+        "success_criteria": ["events.final_briefing", "briefing_text", "briefing_summary"],
+    },
+    "chat": {"required_memory": [], "optional_memory": [], "success_criteria": []},
+}
+
+PLANNER_SELF_SUFFICIENT = {
+    "simulation_run",
+    "simulation_edit",
+    "db_query",
+    "stage_view",
+    "chat",
+}
+PLANNER_MAX_STEPS = 6
+
+PLANNER_KNOWN_MEMORY_KEYS = {
+    "reference",
+    "grid",
+    "overrides",
+    "chart_config",
+    "last_stage_request",
+    "briefing_text",
+    "briefing_summary",
+    "recommendation",
+    "recommendation.params",
+    "recommendation.awaiting_prediction",
+    "workflow_id",
+}
+for _config in PLANNER_WORKFLOW_CONFIG.values():
+    PLANNER_KNOWN_MEMORY_KEYS.update(_config.get("required_memory", []))
+    PLANNER_KNOWN_MEMORY_KEYS.update(_config.get("optional_memory", []))
+    PLANNER_KNOWN_MEMORY_KEYS.update(_config.get("success_criteria", []))
+
+
+def _collect_planner_memory_keys(session_id: str) -> set[str]:
+    keys: set[str] = set()
+    state = pipeline_store.get(session_id)
+    events = pipeline_store.get_events(session_id)
+    for event_type in events.keys():
+        keys.add(f"events.{event_type}")
+    for key in (
+        "reference",
+        "grid",
+        "overrides",
+        "chart_config",
+        "last_stage_request",
+        "briefing_text",
+        "briefing_summary",
+        "workflow_id",
+    ):
+        value = state.get(key)
+        if value not in (None, "", {}, []):
+            keys.add(key)
+    sim_params = simulation_store.get(session_id)
+    for key in sim_params.keys():
+        keys.add(f"sim.{key}")
+    recommendation = recommendation_store.get(session_id)
+    if isinstance(recommendation, dict) and recommendation:
+        keys.add("recommendation")
+        params = recommendation.get("params")
+        if isinstance(params, dict) and params:
+            keys.add("recommendation.params")
+        if recommendation.get("awaiting_prediction") is True:
+            keys.add("recommendation.awaiting_prediction")
+    return keys
+
+
+def _planner_context_payload(session_id: str) -> dict:
+    memory_keys = sorted(_collect_planner_memory_keys(session_id))
+    sim_params = simulation_store.get(session_id)
+    sim_missing = simulation_store.missing(session_id)
+    events = pipeline_store.get_events(session_id)
+    return {
+        "memory_keys": memory_keys,
+        "missing_sim_fields": sim_missing,
+        "has_chip_prod_id": bool(sim_params.get("chip_prod_id")),
+        "events": sorted(events.keys()),
+    }
+
+
+def _normalize_planner_decision(raw: object) -> dict:
+    data = _as_dict(raw)
+    goal = str(data.get("goal") or "")
+    steps_raw = data.get("steps") if isinstance(data.get("steps"), list) else []
+    steps: list[dict] = []
+    allowed_workflows = set(PLANNER_WORKFLOW_CONFIG.keys())
+    for index, item in enumerate(steps_raw, start=1):
+        step_data = _as_dict(item)
+        workflow = str(step_data.get("workflow") or "chat").lower()
+        if workflow not in allowed_workflows:
+            workflow = "chat"
+        step_id = str(step_data.get("step_id") or f"step-{index}")
+        status = str(step_data.get("status") or "pending").lower()
+        if status not in {"pending", "running", "done", "blocked", "failed"}:
+            status = "pending"
+        steps.append(
+            {
+                "step_id": step_id,
+                "workflow": workflow,
+                "required_memory": step_data.get("required_memory") or [],
+                "optional_memory": step_data.get("optional_memory") or [],
+                "success_criteria": step_data.get("success_criteria") or [],
+                "status": status,
+                "notes": str(step_data.get("notes") or ""),
+            }
+        )
+    missing_inputs = data.get("missing_inputs")
+    if not isinstance(missing_inputs, list):
+        missing_inputs = []
+    next_action = str(data.get("next_action") or "run_step").lower()
+    if next_action not in {"ask_user", "run_step", "finalize"}:
+        next_action = "run_step"
+    return {
+        "goal": goal,
+        "steps": steps,
+        "missing_inputs": missing_inputs,
+        "next_action": next_action,
+    }
+
+
+def _ensure_briefing_step(decision: dict) -> dict:
+    steps = decision.get("steps") if isinstance(decision.get("steps"), list) else []
+    if not steps:
+        return decision
+    if all(step.get("workflow") == "chat" for step in steps):
+        return decision
+    if any(step.get("workflow") == "briefing" for step in steps):
+        return decision
+    step_id = f"step-{len(steps) + 1}"
+    steps.append(
+        {
+            "step_id": step_id,
+            "workflow": "briefing",
+            "required_memory": [],
+            "optional_memory": [],
+            "success_criteria": [],
+            "status": "pending",
+            "notes": "final briefing",
+        }
+    )
+    decision["steps"] = steps
+    return decision
+
+
+def _normalize_memory_list(values: object) -> list[str]:
+    if not values:
+        return []
+    if isinstance(values, str):
+        raw = [chunk.strip() for chunk in values.split(",")]
+    elif isinstance(values, list):
+        raw = [str(item).strip() for item in values]
+    else:
+        return []
+    return [item for item in raw if item]
+
+
+def _apply_planner_defaults(decision: dict, memory_keys: set[str]) -> dict:
+    allowed_keys = PLANNER_KNOWN_MEMORY_KEYS | set(memory_keys)
+    normalized_steps: list[dict] = []
+    for step in decision.get("steps", []):
+        workflow = str(step.get("workflow") or "chat")
+        config = PLANNER_WORKFLOW_CONFIG.get(workflow, {})
+        required = _normalize_memory_list(step.get("required_memory"))
+        optional = _normalize_memory_list(step.get("optional_memory"))
+        success = _normalize_memory_list(step.get("success_criteria"))
+        if not required:
+            required = list(config.get("required_memory", []))
+        if not optional:
+            optional = list(config.get("optional_memory", []))
+        if not success:
+            success = list(config.get("success_criteria", []))
+        required = [key for key in required if key in allowed_keys]
+        optional = [key for key in optional if key in allowed_keys]
+        success = [key for key in success if key in allowed_keys]
+        step["required_memory"] = required
+        step["optional_memory"] = optional
+        step["success_criteria"] = success
+        normalized_steps.append(step)
+    decision["steps"] = normalized_steps
+    return decision
+
+
+def _planner_missing_required(step: dict, memory_keys: set[str]) -> list[str]:
+    required = step.get("required_memory") if isinstance(step, dict) else []
+    required_list = required if isinstance(required, list) else []
+    missing = [key for key in required_list if key not in memory_keys]
+    if step.get("workflow") in {"simulation_run", "simulation_edit"}:
+        if "sim.chip_prod_id" in memory_keys:
+            missing = [key for key in missing if not key.startswith("sim.")]
+    return missing
+
+
+def _planner_step_done(step: dict, memory_keys: set[str]) -> bool:
+    if step.get("workflow") == "briefing":
+        return False
+    success = step.get("success_criteria") if isinstance(step, dict) else []
+    success_list = success if isinstance(success, list) else []
+    if not success_list:
+        return False
+    return any(key in memory_keys for key in success_list)
+
+
+def _evaluate_planner_decision(decision: dict, memory_keys: set[str]) -> tuple[dict, dict | None]:
+    steps = decision.get("steps") if isinstance(decision.get("steps"), list) else []
+    missing_inputs: list[str] = []
+    next_step: dict | None = None
+    next_missing: list[str] = []
+    for step in steps:
+        missing = _planner_missing_required(step, memory_keys)
+        if _planner_step_done(step, memory_keys):
+            step["status"] = "done"
+        elif missing:
+            step["status"] = "blocked"
+        else:
+            step["status"] = "pending"
+        if next_step is None and step["status"] != "done":
+            next_step = step
+            next_missing = missing
+
+    if next_step is None:
+        decision["missing_inputs"] = []
+        decision["next_action"] = "finalize"
+        return decision, None
+
+    if next_missing and next_step.get("workflow") not in PLANNER_SELF_SUFFICIENT:
+        decision["next_action"] = "ask_user"
+        missing_inputs = next_missing
+    else:
+        decision["next_action"] = "run_step"
+        missing_inputs = next_missing
+
+    decision["missing_inputs"] = missing_inputs
+    return decision, next_step
+
+
+def _missing_sim_fields_from_keys(keys: list[str]) -> list[str]:
+    fields: list[str] = []
+    for key in keys:
+        if key.startswith("sim."):
+            fields.append(key.split(".", 1)[1])
+    return fields
+
+
+async def _planner_missing_message(
+    session_id: str, step: dict | None, missing_inputs: list[str]
+) -> WorkflowOutcome:
+    sim_fields = _missing_sim_fields_from_keys(missing_inputs)
+    if sim_fields:
+        missing_text = _format_missing_fields(sim_fields)
+        params = simulation_store.get(session_id)
+        form_payload = await emit_simulation_form(params, sim_fields)
+        message = f"추천을 실행하려면 {missing_text} 값을 알려주세요."
+        return WorkflowOutcome(
+            message,
+            ui_event={"type": "simulation_form", "payload": form_payload},
+        )
+    if "events.defect_rate_chart" in missing_inputs:
+        return WorkflowOutcome(
+            "차트를 변경하려면 먼저 불량률 데이터가 필요합니다. 추천이나 DB 조회를 먼저 진행할까요?"
+        )
+    if "events.final_briefing" in missing_inputs:
+        return WorkflowOutcome(
+            "브리핑할 데이터가 없습니다. 먼저 추천이나 DB 조회를 진행해 주세요."
+        )
+    if missing_inputs:
+        missing_text = ", ".join(missing_inputs)
+        return WorkflowOutcome(f"추가 정보가 필요합니다: {missing_text}")
+    return WorkflowOutcome("추가 정보를 알려주세요.")
+
+
+async def _emit_planner_status(
+    step_index: int,
+    total_steps: int,
+    workflow: str,
+    status: str,
+    done: bool = False,
+) -> None:
+    message = f"Planner {step_index}/{total_steps} {workflow} {status}"
+    await _emit_pipeline_status("planner", message, done=done)
+
+
+async def _handle_planner_briefing(session_id: str) -> WorkflowOutcome:
+    state = pipeline_store.get(session_id)
+    briefing_text = state.get("briefing_text") if isinstance(state, dict) else ""
+    if isinstance(briefing_text, str) and briefing_text.strip():
+        return WorkflowOutcome(briefing_text)
+
+    payload = pipeline_store.get_event(session_id, "final_briefing")
+    if not isinstance(payload, dict) or not payload:
+        return WorkflowOutcome("브리핑할 데이터가 아직 없습니다.")
+
+    if not OPENAI_API_KEY:
+        chip_prod_id = payload.get("chip_prod_id")
+        reference_lot = payload.get("reference_lot")
+        candidate_total = payload.get("candidate_total")
+        defect_rate = payload.get("defect_rate_overall")
+        parts = ["요청하신 브리핑 요약입니다."]
+        if chip_prod_id:
+            parts.append(f"추천 기종={chip_prod_id}")
+        if reference_lot:
+            parts.append(f"레퍼런스 LOT={reference_lot}")
+        if candidate_total is not None:
+            parts.append(f"후보군={candidate_total}건")
+        if defect_rate is not None:
+            try:
+                defect_value = float(defect_rate)
+            except (TypeError, ValueError):
+                defect_value = None
+            if defect_value is not None:
+                parts.append(f"평균 불량률={defect_value:.4f}")
+        return WorkflowOutcome(" ".join(str(part) for part in parts))
+
+    context_payload = {
+        "final_briefing": payload,
+        "simulation_result": pipeline_store.get_event(session_id, "simulation_result"),
+        "db_result": pipeline_store.get_event(session_id, "db_result"),
+        "defect_rate_chart": pipeline_store.get_event(session_id, "defect_rate_chart"),
+        "lot_result": pipeline_store.get_event(session_id, "lot_result"),
+        "design_candidates": pipeline_store.get_event(session_id, "design_candidates"),
+        "reference": state.get("reference") if isinstance(state, dict) else None,
+        "grid": state.get("grid") if isinstance(state, dict) else None,
+    }
+    prompt = (
+        "다음 JSON을 근거로만 MLCC 브리핑을 작성하세요. "
+        "근거 없는 수치/LOT/공정 값은 말하지 마세요. "
+        "3~6문장으로 간결하게 요약하세요. "
+        "JSON: "
+        f"{json.dumps(context_payload, ensure_ascii=False)}"
+    )
+    try:
+        run = await Runner.run(
+            briefing_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+    except OutputGuardrailTripwireTriggered as exc:
+        info = exc.guardrail_result.output.output_info or {}
+        response = guardrail_fallback_message(info.get("missing_events"))
+        return WorkflowOutcome(response)
+    except Exception:
+        return WorkflowOutcome("브리핑 생성 중 오류가 발생했습니다.")
+
+    response = (run.final_output or "").strip()
+    if response:
+        memory_summary = _build_memory_summary(payload)
+        pipeline_store.update(
+            session_id,
+            briefing_text=response,
+            briefing_summary=memory_summary,
+        )
+        pipeline_store.set_pending_memory_summary(
+            session_id, memory_summary, label="final_briefing"
+        )
+        return WorkflowOutcome(response, memory_summary=memory_summary)
+
+    return WorkflowOutcome("브리핑을 생성하지 못했습니다.")
+
+
+async def _run_planner_step(
+    step: dict, message: str, session_id: str, session: SQLiteSession
+) -> WorkflowOutcome:
+    workflow = str(step.get("workflow") or "chat")
+    route_command = {
+        "primary_intent": workflow,
+        "secondary_intents": [],
+        "stage": "unknown",
+        "needs_clarification": False,
+        "clarifying_question": "",
+        "confidence": 0.0,
+        "reason": "planner",
+    }
+    handler = WORKFLOW_HANDLERS.get(workflow)
+    if handler:
+        outcome = await handler(message, session_id, route_command)
+        if outcome is not None:
+            return outcome
+        if workflow == "chat":
+            return await _handle_chat_workflow(message, session)
+        return await _handle_fallback_workflow(message, session_id, session)
+    if workflow == "chat":
+        return await _handle_chat_workflow(message, session)
+    if workflow == "briefing":
+        return await _handle_planner_briefing(session_id)
+    return await _handle_fallback_workflow(message, session_id, session)
+
+
+async def _maybe_handle_planner_message(
+    message: str, session_id: str, session: SQLiteSession
+) -> tuple[str, WorkflowOutcome] | None:
+    if not OPENAI_API_KEY:
+        return None
+    context_payload = _planner_context_payload(session_id)
+    prompt = (
+        "Return JSON only. Create a concise execution plan. "
+        "Keys: goal, steps, missing_inputs, next_action. "
+        "Each step: step_id, workflow, required_memory, optional_memory, success_criteria, status, notes. "
+        "Notes must be short. "
+        f"Context JSON: {json.dumps(context_payload, ensure_ascii=False)}\n"
+        f"User message: {message}"
+    )
+    try:
+        run = await Runner.run(
+            planner_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+    except Exception:
+        return None
+    decision = _normalize_planner_decision(run.final_output)
+    if not decision.get("steps"):
+        return None
+
+    decision = _ensure_briefing_step(decision)
+    pipeline_store.update(
+        session_id,
+        planner_state=_json_safe_dict(decision),
+        planner_goal=decision.get("goal") or "",
+        planner_batch=True,
+    )
+    last_outcome: WorkflowOutcome | None = None
+    last_workflow = "planner"
+    steps = decision.get("steps", [])
+    total_steps = min(len(steps), PLANNER_MAX_STEPS)
+    try:
+        for index, step in enumerate(steps[:total_steps], start=1):
+            memory_keys = _collect_planner_memory_keys(session_id)
+            decision = _apply_planner_defaults(decision, memory_keys)
+            workflow = str(step.get("workflow") or "planner")
+            pipeline_store.update(session_id, workflow_id=workflow)
+
+            if _planner_step_done(step, memory_keys):
+                await _emit_planner_status(index, total_steps, workflow, "skip")
+                continue
+
+            missing = _planner_missing_required(step, memory_keys)
+            if missing and workflow not in PLANNER_SELF_SUFFICIENT:
+                await _emit_planner_status(index, total_steps, workflow, "blocked")
+                last_outcome = await _planner_missing_message(session_id, step, missing)
+                last_workflow = workflow
+                break
+
+            await _emit_planner_status(index, total_steps, workflow, "start")
+            outcome = await _run_planner_step(step, message, session_id, session)
+            last_outcome = outcome
+            last_workflow = workflow
+
+            memory_keys = _collect_planner_memory_keys(session_id)
+            if _planner_step_done(step, memory_keys):
+                await _emit_planner_status(
+                    index, total_steps, workflow, "done", done=index == total_steps
+                )
+                continue
+
+            missing_after = _planner_missing_required(step, memory_keys)
+            if missing_after:
+                await _emit_planner_status(index, total_steps, workflow, "blocked")
+                if outcome and outcome.message:
+                    last_outcome = outcome
+                else:
+                    last_outcome = await _planner_missing_message(
+                        session_id, step, missing_after
+                    )
+            break
+    finally:
+        pipeline_store.update(session_id, planner_batch=False)
+
+    decision, _ = _evaluate_planner_decision(
+        decision, _collect_planner_memory_keys(session_id)
+    )
+    pipeline_store.update(session_id, planner_state=_json_safe_dict(decision))
+
+    if last_outcome is None:
+        return None
+    return last_workflow, last_outcome
 
 
 async def _route_message(message: str, session_id: str) -> dict:
@@ -3155,6 +3730,7 @@ async def _run_reference_pipeline(
     chip_prod_override: str | None = None,
     reference_override: str | None = None,
     grid_overrides: dict | None = None,
+    emit_briefing: bool | None = None,
 ) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
     db_config = rules.get("db", {})
@@ -3443,6 +4019,16 @@ async def _run_reference_pipeline(
     await event_bus.broadcast({"type": "final_briefing", "payload": summary_payload})
     pipeline_store.set_event(session_id, "final_briefing", summary_payload)
     await _emit_pipeline_status("grid", "그리드 탐색 완료", done=True)
+
+    if emit_briefing is None:
+        emit_briefing = not bool(
+            pipeline_store.get(session_id).get("planner_batch")
+        )
+    if not emit_briefing:
+        return {
+            "message": "추천 결과를 저장했습니다. 브리핑 단계에서 요약을 제공합니다.",
+            "simulation_result": simulation_result,
+        }
 
     briefing_config = _resolve_final_briefing_config(rules)
     reference_table_limit = briefing_config.get("reference_table_max_rows", 10)

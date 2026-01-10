@@ -16,6 +16,8 @@
 *** 1) 생각하는 규칙
 - 사용자가 현재 코드에서 엣지케이스를 말하며 개선을 요청하면 딱 그 예시만 해결하려고 하지 말고, 그 예시가 왜 어떤 엣지케이스에서 비롯됐는지 파악하고, 그 근간을 해결할수 있는 해결책을 고민해
  - 코드를 수정하거나 추가 기능을 개발할 시 늘 사용자가 해당 과정에 대해서 변경요ㅓㅇ을 할때에 잘 대응할 수 있을지 고려하여 메모리 구조를 짜야한다.
+ - 워크플로우 작성시 모델이 structured output format 을 만들어야 하는 상황이라면, openai 의 adk에 있는 structured output 기능을 이용한다.
+ Reference: https://openai.github.io/openai-agents-python/
 <!-- ## 1) Always consider OpenAI Agents SDK first
 - When implementing anything "agentic" (multi-agent orchestration, handoffs, tool calling, guardrails, tracing),
   always check whether the OpenAI Agents SDK already provides a supported primitive/pattern.
@@ -41,3 +43,8 @@ Default skill preferences (edit these to your actual skill names):
 Notes:
 - If a preferred skill exists but is not invoked automatically, explicitly invoke it (CLI: type `$skill-name`).
 - If a rule in this file conflicts with a skill, follow the more specific instruction for the current directory/module.
+
+## Maintenance notes
+- Planner changes: keep `backend/app.py` `PLANNER_WORKFLOW_CONFIG` aligned with actual memory keys/events.
+- Planner outputs or `/api/chat` flow changes: update `docs/api-chat-workflow.md` (planner_agent, planner_state).
+- DB query event payload changes: update `docs/db-agent-workflow.md` and planner success criteria (`events.db_result`).

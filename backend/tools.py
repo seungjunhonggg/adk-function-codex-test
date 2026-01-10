@@ -1322,7 +1322,7 @@ async def query_view_metrics(
         "query_view_metrics",
         f"rows={len(rows)} chart={bool(chart_type and chart_lots)}",
     )
-    return {
+    response = {
         "status": "ok",
         "table": f"{schema_name}.{table_name}",
         "rows": rows,
@@ -1333,6 +1333,8 @@ async def query_view_metrics(
         "stats": stats,
         "chart_type": chart_type or None,
     }
+    pipeline_store.set_event(current_session_id.get(), "db_result", response)
+    return response
 
 
 @function_tool(strict_mode=False)
@@ -1484,6 +1486,7 @@ async def query_view_table(
         "limit": row_limit,
     }
     await event_bus.broadcast({"type": "db_result", "payload": payload})
+    pipeline_store.set_event(current_session_id.get(), "db_result", payload)
     await _log_tool_result(
         "query_view_table",
         f"rows={len(payload.get('rows', []))} limit={row_limit}",

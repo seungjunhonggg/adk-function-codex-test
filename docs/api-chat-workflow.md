@@ -8,7 +8,9 @@ MLCC 개발자용 플랫폼에서 `/api/chat`이 처리하는 전체 흐름을 �
 ```mermaid
 flowchart TD
   U[User] -->|POST /api/chat| API[FastAPI /api/chat]
-  API --> Route[route_agent]
+  API --> Planner[planner_agent]
+  Planner -->|run_step| Handler{workflow handler}
+  Planner -->|no plan| Route[route_agent]
   Route -->|primary_intent| Handler{workflow handler}
 
   Handler -->|simulation_run/edit| Sim[_maybe_handle_simulation_message]
@@ -28,9 +30,11 @@ flowchart TD
 ```
 
 ## 라우팅 로직 요약
-1) `/api/chat`는 `route_agent`를 통해 intent를 결정합니다.  
-2) intent에 따라 `WORKFLOW_HANDLERS`가 분기됩니다.  
-3) LLM 비활성화 시(`OPENAI_API_KEY` 없음)에는 휴리스틱 라우팅으로 fallback됩니다.
+1) `/api/chat`는 `planner_agent`로 요청을 단계화합니다.  
+2) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
+3) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
+4) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  
+5) planner가 비활성/실패 시 `route_agent`로 fallback합니다.
 
 주요 intent:
 - `simulation_run` / `simulation_edit`
@@ -44,7 +48,8 @@ flowchart TD
 
 핵심 파일:
 - `backend/app.py`: `/api/chat`, 라우팅, 핸들러
-- `backend/agents.py`: `route_agent`, `chart_agent`, `db_agent`, `conversation_agent`
+- `backend/agents.py`: `planner_agent`, `route_agent`, `chart_agent`, `db_agent`, `conversation_agent`, `briefing_agent`
+- `backend/guardrails.py`: MLCC 입력/출력 가드레일
 
 ## 시뮬레이션 플로우 (simulation_run/edit)
 핸들러: `backend/app.py::_maybe_handle_simulation_message`
@@ -109,6 +114,7 @@ flowchart TD
      `design_candidates`, `final_briefing`
    - 진행 로그 이벤트:
      - `pipeline_status`: 단계별 진행 메시지 (프론트에서 누적 로그로 표시)
+       - planner 루프는 `stage=planner`로 step 진행 로그를 남김
      - `pipeline_stage_tables`: 단계별 표(마크다운) 목록 전송,
        진행 로그 클릭 시 해당 표를 펼쳐서 확인 가능
    - 브리핑 본문은 아래 이벤트로 스트리밍 가능
@@ -127,7 +133,8 @@ flowchart TD
 1) `db_agent`가 사용자의 요청을 DB 조회로 변환  
 2) 필요 시 `resolve_view_columns`로 컬럼 후보를 정규화  
 3) 조회/집계는 `query_view_table` 또는 `query_view_metrics` 실행  
-4) 결과는 `db_result` 또는 `defect_rate_chart` 이벤트로 전달
+4) 결과는 `db_result` 또는 `defect_rate_chart` 이벤트로 전달  
+   (`db_result`는 `pipeline_store.events`에도 저장)
 
 관련 문서:
 - `docs/db-agent-workflow.md`
@@ -151,6 +158,9 @@ flowchart TD
 
 ### 2) 파이프라인 상태 메모리 (프로세스 메모리)
 - `pipeline_store`: 단계 상태/이벤트/워크플로우 ID/요약 보관
+- `planner_batch`: planner 루프 동안 true로 표시해 브리핑 스트리밍을 억제
+- `planner_state`/`planner_goal`: planner 단계/의존성/다음 액션 스냅샷 저장
+- `briefing_text`/`briefing_summary`: 최종 브리핑 출력과 요약 캐시
 - 이벤트 패널 재현에 필요한 payload를 저장
 - 단계별 진행 로그용 `stage_tables`(reference/grid 표 목록)도 이벤트로 저장
 - `PIPELINE_STATE_DB_PATH`(기본 `sessions.db`)의 `pipeline_state` 테이블에 스냅샷을 저장해
@@ -175,6 +185,11 @@ flowchart TD
 - `pipeline_store`에 `pending_memory_summary`로 저장  
 - 다음 `_append_assistant_message`에서 요약본을 `sessions.db`에 기록  
   → 컨텍스트 용량을 절약하면서 핵심만 유지
+
+## 가드레일
+- `conversation_agent`: 입력/출력 가드레일로 MLCC 요청을 일반 대화로 처리하지 않도록 차단
+- `briefing_agent`: 출력 가드레일로 근거 없는 LOT/불량률/파라미터 언급을 방지
+- 출력 가드레일은 `pipeline_store` 이벤트 유무를 근거로 검사하고, 부족 시 fallback 메시지를 반환
 
 ## 이벤트 패널 업데이트 규칙
 UI는 `event_bus` 이벤트만 보고 갱신합니다.
@@ -207,3 +222,4 @@ UI는 `event_bus` 이벤트만 보고 갱신합니다.
 - 레퍼런스 LOT/불량: `backend/reference_lot.py`, `backend/reference_lot_rules.json`
 - 이벤트/스트림: `backend/events.py`
 - 상태 저장: `backend/pipeline_store.py`, `backend/lot_store.py`
+- 가드레일: `backend/guardrails.py`

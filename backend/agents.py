@@ -4,6 +4,7 @@ from agents import Agent, AgentOutputSchema
 from pydantic import BaseModel
 
 from .config import MODEL_NAME
+from .guardrails import mlcc_input_guardrail, mlcc_output_guardrail
 from .observability import WorkflowRunHooks
 from .db_view_profile import build_db_agent_prompt, load_view_profile, normalize_view_profile
 from .tools import (
@@ -64,6 +65,31 @@ class ChartDecision(BaseModel):
     value_unit: Literal["auto", "raw", "percent"] = "auto"
     reset: bool = False
     note: str = ""
+
+
+class PlannerStep(BaseModel):
+    step_id: str
+    workflow: Literal[
+        "simulation_run",
+        "simulation_edit",
+        "db_query",
+        "chart_edit",
+        "stage_view",
+        "chat",
+        "briefing",
+    ]
+    required_memory: list[str] = []
+    optional_memory: list[str] = []
+    success_criteria: list[str] = []
+    status: Literal["pending", "running", "done", "blocked", "failed"] = "pending"
+    notes: str = ""
+
+
+class PlannerDecision(BaseModel):
+    goal: str = ""
+    steps: list[PlannerStep] = []
+    missing_inputs: list[str] = []
+    next_action: Literal["ask_user", "run_step", "finalize"] = "run_step"
 
 
 class EditIntent(BaseModel):
@@ -207,6 +233,28 @@ chart_agent = _build_agent(
     **MODEL_KWARGS,
 )
 
+planner_agent = _build_agent(
+    name="Planner Agent",
+    instructions=(
+        "You are a planning agent. Produce a step-by-step execution plan as JSON only. "
+        "Do NOT include chain-of-thought. Notes must be short (<= 20 words). "
+        "Allowed workflows: simulation_run, simulation_edit, db_query, chart_edit, stage_view, chat, briefing. "
+        "MLCC workflow hints: simulation_run=인접기종 추천/신규 조건 입력, "
+        "simulation_edit=기존 조건 수정/재실행/리셋/진행조회, "
+        "db_query=LOT/공정 DB 조회(평균/트렌드 포함), "
+        "chart_edit=불량률 차트 형식/범위/빈 변경, "
+        "stage_view=추천/레퍼런스/그리드/최종 화면 재표시, "
+        "briefing=최종 브리핑 요약, chat=일반 대화. "
+        "Use required_memory for hard prerequisites, optional_memory for helpful context, "
+        "success_criteria for completion keys. "
+        "If the user asks for multiple tasks, split them into ordered steps. "
+        "If only casual chat, return a single chat step and next_action=finalize. "
+        "Use the provided context JSON for available memory keys and session state."
+    ),
+    output_type=AgentOutputSchema(PlannerDecision, strict_json_schema=False),
+    **MODEL_KWARGS,
+)
+
 edit_intent_agent = _build_agent(
     name="Edit Intent Agent",
     instructions=(
@@ -259,6 +307,23 @@ conversation_agent = _build_agent(
         "If the user asks for help, suggest that you can assist with simulation or LOT lookup. "
         "If the user mentions MLCC/LOT/기종/품번, keep the response aligned with MLCC support."
     ),
+    input_guardrails=[mlcc_input_guardrail],
+    output_guardrails=[mlcc_output_guardrail],
+    **MODEL_KWARGS,
+)
+
+briefing_agent = _build_agent(
+    name="Briefing Agent",
+    instructions=(
+        "You summarize MLCC analysis using ONLY the provided JSON data. "
+        "Do not invent LOTs, defect rates, or parameters. "
+        "If required data is missing, ask a short Korean question about what is missing. "
+        "Keep the response concise (3-6 sentences). "
+        "Include chip_prod_id, reference_lot, and defect_rate_overall if present. "
+        "If design candidates exist, mention the top-ranked design briefly. "
+        "Never mention internal tool names or routing."
+    ),
+    output_guardrails=[mlcc_output_guardrail],
     **MODEL_KWARGS,
 )
 

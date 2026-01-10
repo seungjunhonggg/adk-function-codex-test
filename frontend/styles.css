@@ -45,25 +45,26 @@ body::before {
 
 .app {
   display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 18px;
-  padding: 20px 24px 28px;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
   min-height: 100vh;
 }
 
 .sidebar {
   background: var(--sidebar-bg);
-  border: 1px solid var(--sidebar-border);
-  border-radius: var(--radius-lg);
+  border: 0;
+  border-right: 1px solid var(--sidebar-border);
+  border-radius: 0;
   padding: 16px 14px;
-  box-shadow: 0 12px 24px rgba(15, 15, 15, 0.08);
+  box-shadow: none;
   position: sticky;
-  top: 24px;
+  top: 0;
   align-self: start;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-height: calc(100vh - 48px);
+  max-height: 100vh;
   overflow: hidden;
   font-family: var(--font-sidebar);
 }
@@ -675,25 +676,51 @@ body::before {
 }
 
 .main {
+  position: relative;
   display: grid;
-  grid-template-columns: 1.3fr 0.7fr;
-  gap: 20px;
-  height: calc(100vh - 48px);
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--event-panel-size));
+  gap: 0;
+  height: 100vh;
   min-height: 0;
   padding: 0;
+  overflow: hidden;
+  --event-panel-size: 0px;
+  transition: grid-template-columns 0.35s ease;
+}
+
+.main.event-open {
+  --event-panel-size: clamp(320px, 32vw, 480px);
 }
 
 .chat-panel,
 .event-panel {
   background: #fdfbf8;
-  border-radius: var(--radius-lg);
+  border-radius: 0;
   border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 12px 24px rgba(15, 15, 15, 0.08);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   overflow: hidden;
+}
+
+.chat-panel {
+  border-left: 0;
+}
+
+.event-panel {
+  border-left: 0;
+  transform: translateX(0);
+  transition: transform 0.35s ease, opacity 0.2s ease;
+  will-change: transform, opacity;
+}
+
+.main.event-collapsed .event-panel {
+  opacity: 0;
+  transform: translateX(12%);
+  pointer-events: none;
+  border-right: 0;
 }
 
 .panel-header {
@@ -730,6 +757,66 @@ body::before {
   cursor: pointer;
 }
 
+.panel-toggle {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #f5f2ee;
+  color: var(--text-strong);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.panel-toggle:hover {
+  background: #efeae2;
+}
+
+.panel-toggle svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.panel-peek {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 72px;
+  border-radius: 999px 0 0 999px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #f5f2ee;
+  color: var(--text-strong);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.2s ease;
+}
+
+.panel-peek:hover {
+  background: #efeae2;
+}
+
+.panel-peek svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+}
+
+.main.event-open .panel-peek {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(8px);
+}
+
 .event-panel .panel-header-actions {
   display: flex;
 }
@@ -756,29 +843,35 @@ body::before {
 }
 
 .message {
-  padding: 12px 14px;
-  border-radius: 14px;
-  max-width: 80%;
+  max-width: 100%;
   line-height: 1.4;
   font-size: 14px;
   animation: rise 0.35s ease;
 }
 
 .message.user {
+  padding: 12px 14px;
+  border-radius: 14px;
+  max-width: 80%;
   background: #e7eefc;
   color: #1f2937;
   align-self: flex-end;
 }
 
-.message.assistant {
-  background: #f3f2ee;
-  align-self: flex-start;
+.message.assistant:not(.status) {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  align-self: stretch;
+  width: 100%;
   color: #1f1f1f;
 }
 
 .message.system {
-  background: #fff2df;
-  color: #5f3e1b;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-soft);
   align-self: center;
   font-size: 12px;
 }
@@ -1708,11 +1801,17 @@ body::before {
     position: static;
     max-height: none;
     overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--sidebar-border);
   }
 
   .main {
     grid-template-columns: 1fr;
     height: auto;
+  }
+
+  .main.event-collapsed .event-panel {
+    display: none;
   }
 
   .chat-panel,
@@ -1724,7 +1823,7 @@ body::before {
 
 @media (max-width: 640px) {
   .app {
-    padding: 18px;
+    padding: 0;
   }
 
   .panel-header {

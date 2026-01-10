@@ -44,7 +44,7 @@
         </div>
       </aside>
 
-      <main class="main">
+      <main id="main-panels" class="main event-collapsed">
         <section class="chat-panel">
           <div class="panel-header">
             <div>
@@ -64,7 +64,7 @@
           </form>
         </section>
 
-        <section class="event-panel">
+        <section id="event-panel" class="event-panel">
           <div class="panel-header">
             <div>
               <h2>이벤트 스트림</h2>
@@ -72,6 +72,21 @@
             <div class="panel-header-actions">
               <button id="toggle-log" type="button" class="ghost">
                 이벤트 로그
+              </button>
+              <button
+                id="event-panel-hide"
+                type="button"
+                class="panel-toggle"
+                aria-label="Hide event panel"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path
+                    d="M8 4l6 6-6 6"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
               </button>
             </div>
           </div>
@@ -196,6 +211,21 @@
             </div>
           </div>
         </section>
+        <button
+          id="event-panel-show"
+          type="button"
+          class="panel-peek"
+          aria-label="Show event panel"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M12 4l-6 6 6 6"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
       </main>
     </div>
 

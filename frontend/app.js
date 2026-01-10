@@ -59,6 +59,10 @@ const predictionCard = document.getElementById("prediction-card");
 const frontendCard = document.getElementById("frontend-card");
 const eventLogCard = document.getElementById("event-log-card");
 const eventEmptyEl = document.getElementById("event-empty");
+const mainPanelEl = document.getElementById("main-panels");
+const eventPanelEl = document.getElementById("event-panel");
+const eventPanelShowButton = document.getElementById("event-panel-show");
+const eventPanelHideButton = document.getElementById("event-panel-hide");
 const simModelInput = document.getElementById("sim-model");
 const simTemperatureInput = document.getElementById("sim-temperature");
 const simVoltageInput = document.getElementById("sim-voltage");
@@ -143,6 +147,7 @@ let lastSimulationParams = {};
 let lastMatchSummary = null;
 let lastLatestLot = null;
 let isComposing = false;
+let isEventPanelOpen = false;
 let recommendationDirty = false;
 let hasFinalBriefing = false;
 let activeChatStatusSource = "";
@@ -1033,6 +1038,10 @@ function resetEventPanel() {
   lastLatestLot = null;
   recommendationDirty = false;
   hasFinalBriefing = false;
+  if (isLogOpen) {
+    toggleEventLog();
+  }
+  closeEventPanel();
   updateEventEmpty();
 }
 const streamCards = [
@@ -1049,9 +1058,9 @@ const streamCards = [
 ].filter(Boolean);
 let isLogOpen = false;
 if (eventLogCard) {
-  isLogOpen = true;
-  eventLogCard.classList.remove("hidden");
-  if (toggleLogButton) {
+  isLogOpen = false;
+  eventLogCard.classList.add("hidden");
+  if (toggleLogButton && isLogOpen) {
     toggleLogButton.textContent = "로그 닫기";
   }
 }
@@ -1067,6 +1076,46 @@ function updateEventEmpty() {
   eventEmptyEl.classList.toggle("hidden", hasVisible || isLogOpen || hasLogs);
 }
 
+function setEventPanelOpen(shouldOpen) {
+  if (!mainPanelEl || !eventPanelEl) {
+    return;
+  }
+  isEventPanelOpen = Boolean(shouldOpen);
+  mainPanelEl.classList.toggle("event-open", isEventPanelOpen);
+  mainPanelEl.classList.toggle("event-collapsed", !isEventPanelOpen);
+  eventPanelEl.setAttribute("aria-hidden", String(!isEventPanelOpen));
+  if (eventPanelShowButton) {
+    eventPanelShowButton.setAttribute("aria-hidden", String(isEventPanelOpen));
+  }
+  if (eventPanelHideButton) {
+    eventPanelHideButton.setAttribute("aria-hidden", String(!isEventPanelOpen));
+  }
+  if (isEventPanelOpen) {
+    maybeOpenEventLog();
+  }
+}
+
+function maybeOpenEventLog() {
+  if (!eventLogCard || !eventLogEl) {
+    return;
+  }
+  const hasVisibleCards = streamCards.some(
+    (card) => card && !card.classList.contains("hidden")
+  );
+  const hasLogs = eventLogEl.children.length > 0;
+  if (!hasVisibleCards && hasLogs && !isLogOpen) {
+    toggleEventLog();
+  }
+}
+
+function openEventPanel() {
+  setEventPanelOpen(true);
+}
+
+function closeEventPanel() {
+  setEventPanelOpen(false);
+}
+
 function hideAllStreamCards() {
   streamCards.forEach((card) => {
     if (card) {
@@ -1080,16 +1129,19 @@ function showStreamCard(card) {
     return;
   }
   card.classList.remove("hidden");
+  openEventPanel();
   updateEventEmpty();
 }
 
 function showOnlyStreamCards(cards = []) {
   hideAllStreamCards();
-  cards.forEach((card) => {
-    if (card) {
-      card.classList.remove("hidden");
-    }
+  const visibleCards = cards.filter(Boolean);
+  visibleCards.forEach((card) => {
+    card.classList.remove("hidden");
   });
+  if (visibleCards.length) {
+    openEventPanel();
+  }
   updateEventEmpty();
 }
 
@@ -1113,6 +1165,9 @@ function toggleEventLog() {
   }
   isLogOpen = !isLogOpen;
   eventLogCard.classList.toggle("hidden", !isLogOpen);
+  if (isLogOpen) {
+    openEventPanel();
+  }
   toggleLogButton.textContent = isLogOpen ? "로그 닫기" : "이벤트 로그";
   updateEventEmpty();
 }
@@ -3176,3 +3231,14 @@ if (loadWorkflowJsonButton) {
 if (toggleLogButton) {
   toggleLogButton.addEventListener("click", toggleEventLog);
 }
+if (eventPanelShowButton) {
+  eventPanelShowButton.addEventListener("click", () => {
+    setEventPanelOpen(true);
+  });
+}
+if (eventPanelHideButton) {
+  eventPanelHideButton.addEventListener("click", () => {
+    setEventPanelOpen(false);
+  });
+}
+setEventPanelOpen(false);
