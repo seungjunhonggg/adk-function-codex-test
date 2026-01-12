@@ -2098,7 +2098,7 @@ def _normalize_pending_action(session_id: str) -> dict | None:
     required = _normalize_memory_list(pending.get("required_memory"))
     optional = _normalize_memory_list(pending.get("optional_memory"))
     success = _normalize_memory_list(pending.get("success_criteria"))
-    return {
+    normalized = {
         "id": str(pending.get("id") or "pending"),
         "workflow": workflow,
         "input": str(pending.get("input") or pending.get("message") or ""),
@@ -2106,6 +2106,8 @@ def _normalize_pending_action(session_id: str) -> dict | None:
         "optional_memory": optional,
         "success_criteria": success,
     }
+    memory_keys = _collect_planner_memory_keys(session_id)
+    return _apply_pending_action_defaults(normalized, memory_keys)
 
 
 def _clear_pending_action(session_id: str) -> None:
@@ -2143,6 +2145,28 @@ def _build_pending_action_from_step(step: dict | None, message: str) -> dict | N
         "optional_memory": _normalize_memory_list(step.get("optional_memory")),
         "success_criteria": _normalize_memory_list(step.get("success_criteria")),
     }
+
+
+def _apply_pending_action_defaults(pending: dict, memory_keys: set[str]) -> dict:
+    workflow = str(pending.get("workflow") or "").lower()
+    config = PLANNER_WORKFLOW_CONFIG.get(workflow, {})
+    required = _normalize_memory_list(pending.get("required_memory"))
+    optional = _normalize_memory_list(pending.get("optional_memory"))
+    success = _normalize_memory_list(pending.get("success_criteria"))
+    if not required:
+        required = list(config.get("required_memory", []))
+    if not optional:
+        optional = list(config.get("optional_memory", []))
+    if not success:
+        success = list(config.get("success_criteria", []))
+    allowed_keys = PLANNER_KNOWN_MEMORY_KEYS | set(memory_keys)
+    required = [key for key in required if key in allowed_keys]
+    optional = [key for key in optional if key in allowed_keys]
+    success = [key for key in success if key in allowed_keys]
+    pending["required_memory"] = required
+    pending["optional_memory"] = optional
+    pending["success_criteria"] = success
+    return pending
 
 
 def _store_pending_action(
@@ -2263,6 +2287,7 @@ async def _maybe_handle_planner_message(
             _, next_step = _evaluate_planner_decision(decision, memory_keys)
             pending = _build_pending_action_from_step(next_step, message)
         if pending:
+            pending = _apply_pending_action_defaults(pending, memory_keys)
             confirmation_prompt = decision.get("confirmation_prompt") or ""
             if not confirmation_prompt:
                 confirmation_prompt = _default_confirmation_prompt(pending.get("workflow", ""))
