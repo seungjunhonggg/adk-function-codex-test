@@ -89,7 +89,9 @@ class PlannerDecision(BaseModel):
     goal: str = ""
     steps: list[PlannerStep] = []
     missing_inputs: list[str] = []
-    next_action: Literal["ask_user", "run_step", "finalize"] = "run_step"
+    next_action: Literal["ask_user", "run_step", "finalize", "confirm"] = "run_step"
+    confirmation_prompt: str = ""
+    pending_action: dict | None = None
 
 
 class EditIntent(BaseModel):
@@ -249,6 +251,8 @@ planner_agent = _build_agent(
         "success_criteria for completion keys. "
         "If the user asks for multiple tasks, split them into ordered steps. "
         "If only casual chat, return a single chat step and next_action=finalize. "
+        "If the user explicitly asks for confirmation before execution, set next_action=confirm, "
+        "provide confirmation_prompt, and include pending_action with workflow + memory criteria. "
         "Use the provided context JSON for available memory keys and session state."
     ),
     output_type=AgentOutputSchema(PlannerDecision, strict_json_schema=False),

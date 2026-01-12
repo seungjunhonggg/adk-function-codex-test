@@ -8,7 +8,9 @@ MLCC 개발자용 플랫폼에서 `/api/chat`이 처리하는 전체 흐름을 �
 ```mermaid
 flowchart TD
   U[User] -->|POST /api/chat| API[FastAPI /api/chat]
-  API --> Planner[planner_agent]
+  API --> Policy[pending_action policy]
+  Policy -->|confirmed| Handler{workflow handler}
+  Policy --> Planner[planner_agent]
   Planner -->|run_step| Handler{workflow handler}
   Planner -->|no plan| Route[route_agent]
   Route -->|primary_intent| Handler{workflow handler}
@@ -30,11 +32,14 @@ flowchart TD
 ```
 
 ## 라우팅 로직 요약
-1) `/api/chat`는 `planner_agent`로 요청을 단계화합니다.  
-2) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
-3) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
-4) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  
-5) planner가 비활성/실패 시 `route_agent`로 fallback합니다.
+1) `/api/chat`는 먼저 `pending_action` 정책 레이어를 확인합니다.  
+2) pending_action이 확인되면 해당 워크플로우를 즉시 실행하고 응답합니다.  
+3) pending_action이 없으면 `planner_agent`로 요청을 단계화합니다.  
+4) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
+5) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
+6) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  
+7) planner가 비활성/실패 시 `route_agent`로 fallback합니다.
+추가: planner가 `next_action=confirm`을 반환하면 `pending_action`에 저장하고 확인 질문을 출력합니다.
 
 주요 intent:
 - `simulation_run` / `simulation_edit`
@@ -161,6 +166,7 @@ flowchart TD
 - `planner_batch`: planner 루프 동안 true로 표시해 브리핑 스트리밍을 억제
 - `planner_state`/`planner_goal`: planner 단계/의존성/다음 액션 스냅샷 저장
 - `briefing_text`/`briefing_summary`: 최종 브리핑 출력과 요약 캐시
+- `pending_action`/`pending_plan`/`pending_inputs`/`dialogue_state`: 제안→확인→실행 상태 관리
 - 이벤트 패널 재현에 필요한 payload를 저장
 - 단계별 진행 로그용 `stage_tables`(reference/grid 표 목록)도 이벤트로 저장
 - `PIPELINE_STATE_DB_PATH`(기본 `sessions.db`)의 `pipeline_state` 테이블에 스냅샷을 저장해

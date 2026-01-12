@@ -2,7 +2,7 @@
 import uuid
 from decimal import Decimal
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import re
 import asyncio
@@ -185,6 +185,14 @@ async def chat(request: ChatRequest) -> dict:
     session = SQLiteSession(request.session_id, SESSION_DB_PATH)
     token = current_session_id.set(request.session_id)
     try:
+        pending_result = await _maybe_handle_pending_action(
+            request.message, request.session_id, session
+        )
+        if pending_result is not None:
+            workflow_id, outcome = pending_result
+            return await _record_workflow_outcome(
+                request.session_id, request.message, workflow_id, outcome
+            )
         planner_result = await _maybe_handle_planner_message(
             request.message, request.session_id, session
         )
@@ -1659,6 +1667,7 @@ PLANNER_SELF_SUFFICIENT = {
     "chat",
 }
 PLANNER_MAX_STEPS = 6
+PENDING_ACTION_TTL_SECONDS = 600
 
 PLANNER_KNOWN_MEMORY_KEYS = {
     "reference",
@@ -1725,6 +1734,22 @@ def _planner_context_payload(session_id: str) -> dict:
     }
 
 
+def _normalize_pending_action_definition(value: object) -> dict | None:
+    data = _as_dict(value)
+    if not data:
+        return None
+    workflow = str(data.get("workflow") or "").lower()
+    if workflow not in PLANNER_WORKFLOW_CONFIG:
+        return None
+    return {
+        "workflow": workflow,
+        "input": str(data.get("input") or data.get("message") or ""),
+        "required_memory": _normalize_memory_list(data.get("required_memory")),
+        "optional_memory": _normalize_memory_list(data.get("optional_memory")),
+        "success_criteria": _normalize_memory_list(data.get("success_criteria")),
+    }
+
+
 def _normalize_planner_decision(raw: object) -> dict:
     data = _as_dict(raw)
     goal = str(data.get("goal") or "")
@@ -1755,13 +1780,17 @@ def _normalize_planner_decision(raw: object) -> dict:
     if not isinstance(missing_inputs, list):
         missing_inputs = []
     next_action = str(data.get("next_action") or "run_step").lower()
-    if next_action not in {"ask_user", "run_step", "finalize"}:
+    if next_action not in {"ask_user", "run_step", "finalize", "confirm"}:
         next_action = "run_step"
+    confirmation_prompt = str(data.get("confirmation_prompt") or "")
+    pending_action = _normalize_pending_action_definition(data.get("pending_action"))
     return {
         "goal": goal,
         "steps": steps,
         "missing_inputs": missing_inputs,
         "next_action": next_action,
+        "confirmation_prompt": confirmation_prompt,
+        "pending_action": pending_action,
     }
 
 
@@ -2031,6 +2060,173 @@ async def _run_planner_step(
     return await _handle_fallback_workflow(message, session_id, session)
 
 
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1]
+    try:
+        return datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+
+
+def _pending_action_expired(pending: dict) -> bool:
+    now = datetime.utcnow()
+    expires_at = _parse_iso_timestamp(str(pending.get("expires_at") or ""))
+    if expires_at:
+        return expires_at <= now
+    created_at = _parse_iso_timestamp(str(pending.get("created_at") or ""))
+    if created_at:
+        return created_at <= (now - timedelta(seconds=PENDING_ACTION_TTL_SECONDS))
+    return False
+
+
+def _normalize_pending_action(session_id: str) -> dict | None:
+    state = pipeline_store.get(session_id)
+    pending = state.get("pending_action")
+    if not isinstance(pending, dict):
+        return None
+    if _pending_action_expired(pending):
+        _clear_pending_action(session_id)
+        return None
+    workflow = str(pending.get("workflow") or "").strip().lower()
+    if not workflow or workflow not in PLANNER_WORKFLOW_CONFIG:
+        _clear_pending_action(session_id)
+        return None
+    required = _normalize_memory_list(pending.get("required_memory"))
+    optional = _normalize_memory_list(pending.get("optional_memory"))
+    success = _normalize_memory_list(pending.get("success_criteria"))
+    return {
+        "id": str(pending.get("id") or "pending"),
+        "workflow": workflow,
+        "input": str(pending.get("input") or pending.get("message") or ""),
+        "required_memory": required,
+        "optional_memory": optional,
+        "success_criteria": success,
+    }
+
+
+def _clear_pending_action(session_id: str) -> None:
+    pipeline_store.update(
+        session_id,
+        pending_action=None,
+        pending_plan=None,
+        pending_inputs=[],
+        dialogue_state="idle",
+    )
+
+
+def _default_confirmation_prompt(workflow: str) -> str:
+    prompts = {
+        "simulation_run": "추천 시뮬레이션을 진행할까요?",
+        "simulation_edit": "수정된 조건으로 다시 진행할까요?",
+        "db_query": "DB 조회를 진행할까요?",
+        "chart_edit": "차트를 변경해도 될까요?",
+        "stage_view": "요청하신 화면을 보여드릴까요?",
+        "briefing": "브리핑을 진행할까요?",
+    }
+    return prompts.get(workflow, "이 작업을 진행할까요?")
+
+
+def _build_pending_action_from_step(step: dict | None, message: str) -> dict | None:
+    if not isinstance(step, dict):
+        return None
+    workflow = str(step.get("workflow") or "").lower()
+    if workflow not in PLANNER_WORKFLOW_CONFIG:
+        return None
+    return {
+        "workflow": workflow,
+        "input": message,
+        "required_memory": _normalize_memory_list(step.get("required_memory")),
+        "optional_memory": _normalize_memory_list(step.get("optional_memory")),
+        "success_criteria": _normalize_memory_list(step.get("success_criteria")),
+    }
+
+
+def _store_pending_action(
+    session_id: str,
+    pending: dict,
+    confirmation_prompt: str,
+    plan: dict | None,
+) -> None:
+    created_at = datetime.utcnow()
+    expires_at = created_at + timedelta(seconds=PENDING_ACTION_TTL_SECONDS)
+    pending_payload = {
+        "id": str(pending.get("id") or f"pending-{uuid.uuid4().hex[:8]}"),
+        "workflow": pending.get("workflow"),
+        "input": pending.get("input"),
+        "required_memory": pending.get("required_memory") or [],
+        "optional_memory": pending.get("optional_memory") or [],
+        "success_criteria": pending.get("success_criteria") or [],
+        "confirmation_prompt": confirmation_prompt,
+        "created_at": created_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+    }
+    pipeline_store.update(
+        session_id,
+        pending_action=_json_safe_dict(pending_payload),
+        pending_plan=_json_safe_dict(plan or {}),
+        pending_inputs=[],
+        dialogue_state="awaiting_confirmation",
+        planner_state=_json_safe_dict(plan or {}),
+        planner_goal=str((plan or {}).get("goal") or ""),
+    )
+
+
+def _is_rejection(message: str) -> bool:
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return False
+    tokens = {
+        "no",
+        "nope",
+        "nah",
+        "아니",
+        "아니요",
+        "싫어",
+        "안해",
+        "취소",
+        "그만",
+        "다음에",
+        "보류",
+        "패스",
+    }
+    if lowered in tokens:
+        return True
+    return any(token in lowered for token in tokens)
+
+
+async def _maybe_handle_pending_action(
+    message: str, session_id: str, session: SQLiteSession
+) -> tuple[str, WorkflowOutcome] | None:
+    pending = _normalize_pending_action(session_id)
+    if not pending:
+        return None
+    if _is_affirmative(message):
+        pipeline_store.update(session_id, dialogue_state="executing")
+        workflow = pending["workflow"]
+        step = {
+            "step_id": pending.get("id") or "pending",
+            "workflow": workflow,
+            "required_memory": pending.get("required_memory") or [],
+            "optional_memory": pending.get("optional_memory") or [],
+            "success_criteria": pending.get("success_criteria") or [],
+            "status": "running",
+            "notes": "pending_action",
+        }
+        input_message = pending.get("input") or message
+        outcome = await _run_planner_step(step, input_message, session_id, session)
+        _clear_pending_action(session_id)
+        return workflow, outcome
+    if _is_rejection(message):
+        _clear_pending_action(session_id)
+        return "chat", WorkflowOutcome("알겠습니다. 다른 요청이 있으면 알려주세요.")
+    _clear_pending_action(session_id)
+    return None
+
+
 async def _maybe_handle_planner_message(
     message: str, session_id: str, session: SQLiteSession
 ) -> tuple[str, WorkflowOutcome] | None:
@@ -2039,9 +2235,10 @@ async def _maybe_handle_planner_message(
     context_payload = _planner_context_payload(session_id)
     prompt = (
         "Return JSON only. Create a concise execution plan. "
-        "Keys: goal, steps, missing_inputs, next_action. "
+        "Keys: goal, steps, missing_inputs, next_action, confirmation_prompt, pending_action. "
         "Each step: step_id, workflow, required_memory, optional_memory, success_criteria, status, notes. "
         "Notes must be short. "
+        "If next_action=confirm, include confirmation_prompt and pending_action (workflow + memory criteria). "
         f"Context JSON: {json.dumps(context_payload, ensure_ascii=False)}\n"
         f"User message: {message}"
     )
@@ -2058,6 +2255,19 @@ async def _maybe_handle_planner_message(
         return None
 
     decision = _ensure_briefing_step(decision)
+    memory_keys = _collect_planner_memory_keys(session_id)
+    decision = _apply_planner_defaults(decision, memory_keys)
+    if decision.get("next_action") == "confirm" or decision.get("pending_action"):
+        pending = decision.get("pending_action")
+        if not pending:
+            _, next_step = _evaluate_planner_decision(decision, memory_keys)
+            pending = _build_pending_action_from_step(next_step, message)
+        if pending:
+            confirmation_prompt = decision.get("confirmation_prompt") or ""
+            if not confirmation_prompt:
+                confirmation_prompt = _default_confirmation_prompt(pending.get("workflow", ""))
+            _store_pending_action(session_id, pending, confirmation_prompt, decision)
+            return "planner", WorkflowOutcome(confirmation_prompt)
     pipeline_store.update(
         session_id,
         planner_state=_json_safe_dict(decision),
