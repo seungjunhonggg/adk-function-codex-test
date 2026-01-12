@@ -115,9 +115,7 @@ grid_match_fields:
   - "active_powder_additives"
   - "ldn_avr_value"
   - "cast_dsgn_thk"
-grid_match_field_aliases:
-  ldn_avr_value:
-    - "ldn_avg_value"
+grid_match_field_aliases: {}
 grid_match_recent_months: 6
 grid_match_row_limit: 50
 

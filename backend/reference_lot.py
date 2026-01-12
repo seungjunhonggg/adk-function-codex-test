@@ -45,7 +45,7 @@ def normalize_reference_rules(rules: dict | None) -> dict:
             "cast_dsgn_thk",
         ],
     )
-    normalized.setdefault("grid_match_field_aliases", {"ldn_avr_value": ["ldn_avg_value"]})
+    normalized.setdefault("grid_match_field_aliases", {})
     normalized.setdefault("grid_match_recent_months", 6)
     normalized.setdefault("grid_match_row_limit", 50)
     normalized.setdefault("grid_defect_columns", [])
