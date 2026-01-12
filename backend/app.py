@@ -784,7 +784,7 @@ def _build_grid_search_payload(
     targets = _json_safe_dict(targets)
 
     return {
-        "sim_type": "ver4",
+        "sim_type": "ver1",
         "data": {
             "ref": _json_safe_dict(ref_payload),
             "sim": _json_safe_dict(sim_payload),
