@@ -743,9 +743,7 @@ def _build_grid_search_payload(
         if top_cover is not None and bot_cover is not None:
             total_cover = top_cover + bot_cover
 
-    ldn_avg_value = _row_value(ref_payload, "ldn_avg_value")
-    if ldn_avg_value is None:
-        ldn_avg_value = _row_value(ref_payload, "ldn_avr_value")
+    ldn_avr_value = _row_value(ref_payload, "ldn_avr_value")
 
     active_layer = (
         grid_overrides.get("active_layer")
@@ -771,7 +769,7 @@ def _build_grid_search_payload(
         "cover_sheet_thk": _list_value(_row_value(ref_payload, "cover_sheet_thk")),
         "total_cover_layer_num": _list_value(total_cover),
         "gap_sheet_thk": _list_value(_row_value(ref_payload, "gap_sheet_thk")),
-        "ldn_avr_value": _list_value(ldn_avg_value),
+        "ldn_avr_value": _list_value(ldn_avr_value),
         "cast_dsgn_thk": _list_value(_row_value(ref_payload, "cast_dsgn_thk")),
     }
     params_payload = _json_safe_dict(params_payload)
@@ -3510,7 +3508,7 @@ async def _run_reference_pipeline(
                     design, selected_row, ("cast_dsgn_thk",)
                 ),
                 "ldn_avr_value": _resolve_design_value(
-                    design, selected_row, ("ldn_avr_value", "ldn_avg_value")
+                    design, selected_row, ("ldn_avr_value",)
                 ),
             }
         )
