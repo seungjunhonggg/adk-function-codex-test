@@ -636,8 +636,8 @@
     "payload_fill_value": -1,
     "payload_fallback_to_ref": true,
     "factors": [
-      { "name": "sheet_t", "column": "sheet_t", "range_percent": 10, "points": 5 },
-      { "name": "laydown", "column": "laydown", "range_percent": 10, "points": 5 },
+      { "name": "sheet_t", "column": "cast_dsgn_thk", "range_percent": 10, "points": 5 },
+      { "name": "laydown", "column": "ldn_avr_value", "range_percent": 10, "points": 5 },
       { "name": "active_layer", "column": "active_layer", "range_percent": 10, "points": 5 },
       {
         "name": "design_factor_04",

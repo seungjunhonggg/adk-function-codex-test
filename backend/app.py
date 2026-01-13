@@ -48,6 +48,7 @@ from .pipeline_store import pipeline_store
 from .reference_lot import (
     collect_post_grid_defects,
     collect_grid_candidate_matches,
+    build_grid_values,
     load_reference_rules,
     normalize_reference_rules,
     select_reference_from_params,
@@ -733,6 +734,7 @@ def _build_grid_search_payload(
     payload_missing_columns: list[str] | None = None,
     payload_fill_value: object = -1,
     payload_fallback_to_ref: bool = True,
+    rules: dict | None = None,
 ) -> dict:
     ref_payload = dict(ref_row) if isinstance(ref_row, dict) else {}
     sim_payload = dict(sim_params) if isinstance(sim_params, dict) else {}
@@ -813,6 +815,30 @@ def _build_grid_search_payload(
         "ldn_avr_value": _list_value(ldn_avr_value),
         "cast_dsgn_thk": _list_value(_row_value(ref_payload, "cast_dsgn_thk")),
     }
+    normalized_rules = rules or {}
+    if normalized_rules:
+        factor_map: dict[str, str] = {}
+        grid = normalized_rules.get("grid_search", {})
+        if isinstance(grid, dict):
+            for factor in grid.get("factors", []):
+                if not isinstance(factor, dict):
+                    continue
+                name = factor.get("name")
+                column = factor.get("column") or name
+                if name and column:
+                    factor_map[str(name)] = str(column)
+        base_row = ref_row if isinstance(ref_row, dict) else ref_payload
+        factor_values = build_grid_values(base_row, normalized_rules, grid_overrides)
+        factor_columns = {}
+        for name, values in factor_values.items():
+            column = factor_map.get(name) or name
+            if not column:
+                continue
+            if not isinstance(values, list):
+                values = [values]
+            factor_columns[column] = values
+        if factor_columns:
+            params_payload.update(factor_columns)
     params_payload = _json_safe_dict(params_payload)
 
     targets = {
@@ -4168,6 +4194,7 @@ async def _run_reference_pipeline(
         payload_missing_columns=grid_payload_missing,
         payload_fill_value=payload_fill_value,
         payload_fallback_to_ref=payload_fallback,
+        rules=rules,
     )
     await _emit_pipeline_status("grid", "그리드 탐색 중...")
     grid_results = await call_grid_search_api(grid_payload)
