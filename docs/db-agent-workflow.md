@@ -73,6 +73,11 @@ DB 에이전트는 **1개의 PostgreSQL DB의 1개 view 테이블**을 대상으
 - 조회 결과는 `db_result` 이벤트로 이벤트 패널에 표시됩니다.
 - 오케스트레이터는 결과 요약을 자연스러운 한국어로 브리핑합니다.
 
+#### db_result 이벤트 payload
+- `columns`: 결과 컬럼 리스트
+- `rows`: 결과 row 배열
+- `column_labels`: 컬럼명 → 한글 라벨 매핑
+
 ## 실패/예외 처리
 1) 프로파일 미설정  
 → “DB view profile is not configured.”  

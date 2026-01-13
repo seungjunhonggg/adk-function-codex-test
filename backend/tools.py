@@ -44,6 +44,7 @@ STAGE_ALIASES = {
 }
 
 from .context import current_session_id
+from .column_labels import build_column_label_map, get_column_label_map
 from .config import (
     LOT_DB_COLUMNS,
     LOT_DB_CONNECTION_ID,
@@ -572,10 +573,14 @@ def _query_lot_rows(lot_id: str, limit: int) -> dict:
             filter_value=lot_id,
             limit=limit,
         )
+        result_columns = result.get("columns", [])
+        column_label_map = get_column_label_map(connection_id, schema_name)
+        column_labels = build_column_label_map(result_columns, column_label_map)
         return {
             "lot_id": lot_id,
-            "columns": result.get("columns", []),
+            "columns": result_columns,
             "rows": result.get("rows", []),
+            "column_labels": column_labels,
             "source": "postgresql",
         }
     if LOT_DB_CONNECTION_ID or LOT_DB_TABLE or profile.get("connection_id") or profile.get("table"):
@@ -1080,6 +1085,7 @@ async def query_view_metrics(
         await _log_tool_result("query_view_metrics", "status=error missing=filters")
         return {"status": "error", "error": message, "missing": ["filters"]}
 
+    column_label_map = get_column_label_map(connection_id, schema_name)
     metric_specs = _normalize_metrics_param(metrics)
     if not metric_specs:
         message = "집계할 컬럼이 필요합니다."
@@ -1121,7 +1127,10 @@ async def query_view_metrics(
             if available_columns and column not in available_columns:
                 invalid_metrics.append(column)
             meta = meta_map.get(column, {})
-            if not metric.get("label") and meta.get("description"):
+            mapped_label = column_label_map.get(column) if column_label_map else None
+            if mapped_label:
+                metric["label"] = mapped_label
+            elif not metric.get("label") and meta.get("description"):
                 metric["label"] = meta["description"]
             if not metric.get("unit") and meta.get("unit"):
                 metric["unit"] = meta["unit"]
@@ -1273,6 +1282,12 @@ async def query_view_metrics(
     metric_alias = primary_metric.get("alias") or "metric"
     metric_label = primary_metric.get("label") or primary_metric.get("column") or metric_alias
     metric_unit = primary_metric.get("unit") or ""
+    metric_columns = [
+        metric.get("column") for metric in metric_specs if metric.get("column")
+    ]
+    column_labels = build_column_label_map(
+        metric_columns + list(group_columns), column_label_map
+    )
 
     chart_type = (chart_type or "").strip().lower()
     if not chart_type and (bucket_payload or group_columns):
@@ -1314,6 +1329,7 @@ async def query_view_metrics(
             "metric_label": metric_label,
             "value_unit": metric_unit,
             "filters": normalized_filters,
+            "column_labels": column_labels,
         }
         await event_bus.broadcast({"type": "defect_rate_chart", "payload": payload})
         pipeline_store.set_event(current_session_id.get(), "defect_rate_chart", payload)
@@ -1332,6 +1348,7 @@ async def query_view_metrics(
         "group_by": group_columns,
         "stats": stats,
         "chart_type": chart_type or None,
+        "column_labels": column_labels,
     }
     pipeline_store.set_event(current_session_id.get(), "db_result", response)
     return response
@@ -1478,12 +1495,16 @@ async def query_view_table(
         await emit_frontend_trigger(message)
         await _log_tool_result("query_view_table", "status=error query=failed")
         return {"status": "error", "error": message}
+    result_columns = result.get("columns", [])
+    column_label_map = get_column_label_map(connection_id, schema_name)
+    column_labels = build_column_label_map(result_columns, column_label_map)
     payload = {
         "query": _format_filters(normalized_filters),
-        "columns": result.get("columns", []),
+        "columns": result_columns,
         "rows": result.get("rows", []),
         "source": "postgresql",
         "limit": row_limit,
+        "column_labels": column_labels,
     }
     await event_bus.broadcast({"type": "db_result", "payload": payload})
     pipeline_store.set_event(current_session_id.get(), "db_result", payload)

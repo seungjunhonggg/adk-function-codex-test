@@ -38,6 +38,7 @@ from .config import (
     DEMO_LATENCY_SECONDS,
     BRIEFING_STREAM_DELAY_SECONDS,
 )
+from .column_labels import build_column_label_map, get_column_label_map
 from .context import current_session_id
 from .db_connections import connect_and_save, get_schema, list_connections, preload_schema
 from .db import init_db
@@ -3149,6 +3150,7 @@ def _build_final_briefing_payload(
     defect_rate_overall: float | None = None,
     chip_prod_id_count: int | None = None,
     chip_prod_id_samples: list[str] | None = None,
+    column_labels: dict | None = None,
 ) -> dict:
     rules = rules or {}
     config = _resolve_final_briefing_config(rules)
@@ -3181,7 +3183,9 @@ def _build_final_briefing_payload(
         payload["chip_prod_id_samples"] = chip_prod_id_samples
     if post_grid_defects is not None:
         payload["post_grid_defects"] = post_grid_defects
-        payload["design_blocks"] = _build_design_blocks(post_grid_defects, rules)
+        payload["design_blocks"] = _build_design_blocks(
+            post_grid_defects, rules, column_labels
+        )
     if design_blocks_override:
         payload["design_blocks"] = design_blocks_override
     return payload
@@ -3300,7 +3304,10 @@ def _resolve_final_briefing_config(rules: dict) -> dict:
 
 
 def _build_design_display(
-    design: dict, design_fields: list[str], design_labels: dict
+    design: dict,
+    design_fields: list[str],
+    design_labels: dict,
+    column_labels: dict | None = None,
 ) -> list[dict]:
     if not isinstance(design, dict) or not design:
         return []
@@ -3312,12 +3319,16 @@ def _build_design_display(
         value = design.get(key)
         if value is None or value == "":
             continue
-        label = design_labels.get(key) or key
+        label = design_labels.get(key) or (column_labels or {}).get(key) or key
         display.append({"key": key, "label": label, "value": value})
     return display
 
 
-def _build_design_blocks(post_grid_defects: dict | None, rules: dict) -> list[dict]:
+def _build_design_blocks(
+    post_grid_defects: dict | None,
+    rules: dict,
+    column_labels: dict | None = None,
+) -> list[dict]:
     if not isinstance(post_grid_defects, dict):
         return []
     items = post_grid_defects.get("items")
@@ -3336,6 +3347,7 @@ def _build_design_blocks(post_grid_defects: dict | None, rules: dict) -> list[di
             design,
             config.get("design_fields", []),
             config.get("design_labels", {}),
+            column_labels,
         )
         lot_rates = item.get("lot_defect_rates")
         if not isinstance(lot_rates, list):
@@ -3390,7 +3402,11 @@ def _build_design_blocks(post_grid_defects: dict | None, rules: dict) -> list[di
     return blocks
 
 
-def _build_design_blocks_from_matches(match_payload: dict | None, rules: dict) -> list[dict]:
+def _build_design_blocks_from_matches(
+    match_payload: dict | None,
+    rules: dict,
+    column_labels: dict | None = None,
+) -> list[dict]:
     if not isinstance(match_payload, dict):
         return []
     items = match_payload.get("items")
@@ -3410,6 +3426,7 @@ def _build_design_blocks_from_matches(match_payload: dict | None, rules: dict) -
             design,
             config.get("design_fields", []),
             config.get("design_labels", {}),
+            column_labels,
         )
         row_count = item.get("row_count")
         metrics = []
@@ -3438,7 +3455,8 @@ def _build_design_blocks_from_matches(match_payload: dict | None, rules: dict) -
                 values.append(avg_num)
                 lots.append(
                     {
-                        "label": entry.get("column"),
+                        "label": _resolve_column_label(entry.get("column"), column_labels)
+                        or entry.get("column"),
                         "defect_rate": avg_num,
                     }
                 )
@@ -3468,6 +3486,9 @@ def _build_design_blocks_from_matches(match_payload: dict | None, rules: dict) -
                 "chart": chart,
                 "match_rows": _json_safe_rows(item.get("rows") or []),
                 "match_columns": item.get("columns") or [],
+                "match_column_labels": build_column_label_map(
+                    item.get("columns") or [], column_labels or {}
+                ),
                 "match_row_count": row_count,
                 "match_row_limit": row_limit,
                 "match_recent_months": match_payload.get("recent_months"),
@@ -3536,7 +3557,9 @@ def _build_post_grid_chart_payload(post_grid_defects: dict | None) -> dict | Non
     }
 
 
-def _build_candidate_defect_chart_payload(match_payload: dict | None) -> dict | None:
+def _build_candidate_defect_chart_payload(
+    match_payload: dict | None, column_labels: dict | None = None
+) -> dict | None:
     if not isinstance(match_payload, dict):
         return None
     items = match_payload.get("items")
@@ -3567,9 +3590,11 @@ def _build_candidate_defect_chart_payload(match_payload: dict | None) -> dict | 
         except (TypeError, ValueError):
             continue
         values.append(avg_num)
+        label = entry.get("column")
+        label = _resolve_column_label(label, column_labels) or label
         lots.append(
             {
-                "label": entry.get("column"),
+                "label": label,
                 "defect_rate": avg_num,
             }
         )
@@ -3617,13 +3642,29 @@ def _escape_markdown_cell(value: object) -> str:
     )
 
 
+def _resolve_column_label(column: object, column_labels: dict | None) -> str:
+    if column is None:
+        return ""
+    text = str(column)
+    if not column_labels:
+        return text
+    return str(column_labels.get(text, text))
+
+
 def _build_markdown_table(
-    columns: list[str], rows: list[object], row_limit: int | None = None
+    columns: list[str],
+    rows: list[object],
+    row_limit: int | None = None,
+    column_labels: dict | None = None,
 ) -> str | None:
     if not columns or not rows:
         return None
     safe_columns = [str(column) for column in columns]
-    header = "| " + " | ".join(safe_columns) + " |"
+    header_labels = [
+        _escape_markdown_cell(_resolve_column_label(column, column_labels))
+        for column in safe_columns
+    ]
+    header = "| " + " | ".join(header_labels) + " |"
     separator = "| " + " | ".join(["---"] * len(safe_columns)) + " |"
     lines = [header, separator]
     if isinstance(row_limit, int) and row_limit > 0:
@@ -3706,7 +3747,9 @@ def _format_condition_value(value: object) -> str:
     return _format_brief_value(value)
 
 
-def _format_defect_condition_summary(rules: dict) -> str:
+def _format_defect_condition_summary(
+    rules: dict, column_labels: dict | None = None
+) -> str:
     conditions = rules.get("defect_conditions") or []
     if not isinstance(conditions, list):
         return ""
@@ -3717,6 +3760,7 @@ def _format_defect_condition_summary(rules: dict) -> str:
         column = item.get("column") or item.get("key") or item.get("name")
         if not column:
             continue
+        column = _resolve_column_label(column, column_labels)
         operator = str(item.get("operator") or "=").lower()
         value = item.get("value")
         if operator in {"=", "=="}:
@@ -3734,7 +3778,7 @@ def _format_defect_condition_summary(rules: dict) -> str:
     return ", ".join(parts)
 
 
-def _format_sort_summary(rules: dict) -> str:
+def _format_sort_summary(rules: dict, column_labels: dict | None = None) -> str:
     selection = rules.get("selection") or {}
     sort_specs = selection.get("lot_search_sort") or []
     if not isinstance(sort_specs, list):
@@ -3752,7 +3796,9 @@ def _format_sort_summary(rules: dict) -> str:
                 columns = [column]
         if not columns:
             continue
-        column_text = "+".join(str(column) for column in columns if column)
+        column_text = "+".join(
+            _resolve_column_label(column, column_labels) for column in columns if column
+        )
         if not column_text:
             continue
         priority = item.get("value_priority")
@@ -3850,7 +3896,10 @@ async def _maybe_rewrite_briefing_sections(
 
 
 def _build_markdown_table_chunks(
-    columns: list[str], row: dict, chunk_size: int
+    columns: list[str],
+    row: dict,
+    chunk_size: int,
+    column_labels: dict | None = None,
 ) -> list[str]:
     if not columns or not isinstance(row, dict):
         return []
@@ -3862,7 +3911,7 @@ def _build_markdown_table_chunks(
     tables = []
     for start in range(0, len(columns), size):
         chunk = columns[start : start + size]
-        table = _build_markdown_table(chunk, [row])
+        table = _build_markdown_table(chunk, [row], column_labels=column_labels)
         if table:
             tables.append(table)
     return tables
@@ -3887,6 +3936,7 @@ def _build_defect_condition_table_payload(
     defect_items: list[dict] | None,
     chip_prod_id: str,
     value_unit: str = "ratio",
+    column_labels: dict | None = None,
 ) -> dict | None:
     if not defect_items:
         return None
@@ -3905,6 +3955,7 @@ def _build_defect_condition_table_payload(
             if not isinstance(entry, dict):
                 continue
             label = entry.get("label") or entry.get("key") or entry.get("column") or "-"
+            label = _resolve_column_label(label, column_labels) or label
             total = entry.get("value1_count")
             passed = entry.get("value2_count")
             fail_count = None
@@ -3934,6 +3985,7 @@ def _build_defect_condition_table_payload(
         if not isinstance(entry, dict):
             continue
         label = entry.get("label") or entry.get("key") or entry.get("column") or "-"
+        label = _resolve_column_label(label, column_labels) or label
         operator = entry.get("operator") or "="
         value = entry.get("value")
         if isinstance(value, (list, tuple)):
@@ -3980,7 +4032,9 @@ def _format_design_summary(design: dict, limit: int = 14) -> str:
 
 
 def _build_post_grid_step(
-    post_grid_defects: dict | None, include_prefix: bool = True
+    post_grid_defects: dict | None,
+    include_prefix: bool = True,
+    column_labels: dict | None = None,
 ) -> str:
     prefix = "3) " if include_prefix else ""
     if not isinstance(post_grid_defects, dict):
@@ -4001,6 +4055,11 @@ def _build_post_grid_step(
             f"{prefix}TOP3 설계조건으로 동일 조건 LOT 불량실적을 조회했지만 "
             "매칭 LOT가 없습니다."
         )
+    display_columns = [
+        _resolve_column_label(column, column_labels) for column in columns if column
+    ]
+    if not display_columns:
+        display_columns = columns
     period = (
         f"최근 {recent_months}개월"
         if isinstance(recent_months, int) and recent_months > 0
@@ -4020,7 +4079,7 @@ def _build_post_grid_step(
         details.append(f"TOP{rank} 설계안[{design_text}] → LOT {lot_detail}")
     summary = " / ".join(details) if details else "매칭 LOT 없음"
     return (
-        f"{prefix}TOP3 설계조건으로 {period} LOT 불량실적({', '.join(columns)})을 조회했습니다. "
+        f"{prefix}TOP3 설계조건으로 {period} LOT 불량실적({', '.join(display_columns)})을 조회했습니다. "
         f"{summary}"
     )
 
@@ -4043,6 +4102,17 @@ async def _run_reference_pipeline(
     db_config = rules.get("db", {})
     chip_prod_column = db_config.get("chip_prod_id_column") or "chip_prod_id"
     lot_id_column = db_config.get("lot_id_column") or "lot_id"
+    label_connection_id = db_config.get("connection_id") or ""
+    label_schema = db_config.get("schema") or "public"
+    column_label_map = get_column_label_map(label_connection_id, label_schema)
+    defect_source = rules.get("defect_rate_source") or {}
+    defect_connection_id = defect_source.get("connection_id") or label_connection_id
+    defect_schema = defect_source.get("schema") or label_schema
+    defect_label_map = (
+        get_column_label_map(defect_connection_id, defect_schema)
+        if defect_connection_id and defect_connection_id != label_connection_id
+        else column_label_map
+    )
 
     await _emit_pipeline_status("recommendation", "조건 매칭 중...")
     await _emit_pipeline_status("reference", "조건에 맞는 LOT 조회 중...")
@@ -4111,22 +4181,32 @@ async def _run_reference_pipeline(
         reference_columns = []
     if not isinstance(reference_rows, list):
         reference_rows = []
+    selected_columns = reference_result.get("columns", [])
+    if not isinstance(selected_columns, list):
+        selected_columns = []
+    selected_column_labels = build_column_label_map(selected_columns, column_label_map)
+    reference_column_labels = build_column_label_map(
+        reference_columns, column_label_map
+    )
 
     reference_payload = {
         "status": "ok",
         "lot_id": selected_lot_id,
         "chip_prod_id": chip_prod_id,
         "row": selected_row,
-        "columns": reference_result.get("columns", []),
+        "columns": selected_columns,
+        "column_labels": selected_column_labels,
         "source": reference_result.get("source") or "postgresql",
         "reference_columns": reference_columns,
         "reference_rows": _json_safe_rows(reference_rows),
+        "reference_column_labels": reference_column_labels,
     }
     pipeline_store.set_reference(session_id, reference_payload)
     lot_payload = {
         "lot_id": selected_lot_id,
         "columns": reference_payload.get("columns", []),
         "rows": [selected_row],
+        "column_labels": reference_payload.get("column_labels", {}),
         "source": reference_payload.get("source") or "postgresql",
     }
     await event_bus.broadcast({"type": "lot_result", "payload": lot_payload})
@@ -4157,7 +4237,7 @@ async def _run_reference_pipeline(
     )
     condition_filters = rules.get("defect_conditions") or []
     condition_table = _build_defect_condition_table_payload(
-        condition_filters, chip_prod_id, "ratio"
+        condition_filters, chip_prod_id, "ratio", column_labels=defect_label_map
     )
     defect_rates: list[dict] = []
     defect_stats = {}
@@ -4202,14 +4282,15 @@ async def _run_reference_pipeline(
                 defect_rate_overall = (
                     rate_values[0] if len(rate_values) == 1 else defect_stats.get("avg")
                 )
-            chart_lots = [
-                {
-                    "label": item.get("label") or item.get("key") or item.get("column"),
-                    "defect_rate": item.get("defect_rate"),
-                }
-                for item in defect_rates
-                if item.get("defect_rate") is not None
-            ]
+            chart_lots = []
+            for item in defect_rates:
+                if item.get("defect_rate") is None:
+                    continue
+                label = item.get("label") or item.get("key") or item.get("column")
+                label = _resolve_column_label(label, defect_label_map) or label
+                chart_lots.append(
+                    {"label": label, "defect_rate": item.get("defect_rate")}
+                )
             defect_source = defect_payload.get("source") or "postgresql"
             chart_payload = {
                 "lots": chart_lots,
@@ -4255,8 +4336,22 @@ async def _run_reference_pipeline(
     for idx, item in enumerate(top_candidates, start=1):
         item["rank"] = idx
 
+    design_label_map: dict[str, str] = {}
+    if column_label_map:
+        design_keys: list[str] = []
+        for candidate in top_candidates:
+            design = candidate.get("design")
+            if isinstance(design, dict):
+                design_keys.extend(str(key) for key in design.keys() if key)
+        if design_keys:
+            design_label_map = build_column_label_map(
+                list(dict.fromkeys(design_keys)), column_label_map
+            )
+
     candidate_matches = collect_grid_candidate_matches(top_candidates, rules)
-    design_blocks_override = _build_design_blocks_from_matches(candidate_matches, rules)
+    design_blocks_override = _build_design_blocks_from_matches(
+        candidate_matches, rules, column_label_map
+    )
 
     post_grid_defects = collect_post_grid_defects(
         top_candidates,
@@ -4275,7 +4370,9 @@ async def _run_reference_pipeline(
     )
     pipeline_store.set_event(session_id, "final_defect_chart", None)
 
-    candidate_chart = _build_candidate_defect_chart_payload(candidate_matches)
+    candidate_chart = _build_candidate_defect_chart_payload(
+        candidate_matches, defect_label_map
+    )
     if candidate_chart:
         await event_bus.broadcast(
             {"type": "defect_rate_chart", "payload": candidate_chart}
@@ -4295,6 +4392,7 @@ async def _run_reference_pipeline(
                 "offset": 0,
                 "limit": len(top_candidates),
                 "target": chip_prod_id,
+                "design_labels": design_label_map,
             },
         }
     )
@@ -4307,6 +4405,7 @@ async def _run_reference_pipeline(
             "offset": 0,
             "limit": len(top_candidates),
             "target": chip_prod_id,
+            "design_labels": design_label_map,
         },
     )
     summary_payload = _build_final_briefing_payload(
@@ -4322,6 +4421,7 @@ async def _run_reference_pipeline(
         defect_rate_overall=defect_rate_overall,
         chip_prod_id_count=chip_prod_id_count,
         chip_prod_id_samples=chip_prod_id_samples,
+        column_labels=column_label_map,
     )
     memory_summary = _build_memory_summary(summary_payload)
     await event_bus.broadcast({"type": "final_briefing", "payload": summary_payload})
@@ -4344,7 +4444,10 @@ async def _run_reference_pipeline(
 
     safe_reference_rows = _json_safe_rows(reference_rows)
     reference_table = _build_markdown_table(
-        reference_columns, safe_reference_rows, row_limit=reference_table_limit
+        reference_columns,
+        safe_reference_rows,
+        row_limit=reference_table_limit,
+        column_labels=reference_column_labels,
     )
     reference_table_label = ""
     reference_table_note = ""
@@ -4370,9 +4473,13 @@ async def _run_reference_pipeline(
     detail_columns = [str(column) for column in detail_columns if column]
     if not detail_columns and isinstance(detail_row, dict):
         detail_columns = [str(column) for column in detail_row.keys() if column]
+    detail_column_labels = build_column_label_map(detail_columns, column_label_map)
     detail_row_safe = _json_safe_dict(detail_row) if isinstance(detail_row, dict) else {}
     detail_tables = _build_markdown_table_chunks(
-        detail_columns, detail_row_safe, detail_chunk_size
+        detail_columns,
+        detail_row_safe,
+        detail_chunk_size,
+        column_labels=detail_column_labels,
     )
     detail_table_text = (
         "\n\n".join(detail_tables) if detail_tables else "상세 정보를 찾지 못했습니다."
@@ -4416,8 +4523,11 @@ async def _run_reference_pipeline(
         "cast_dsgn_thk",
         "ldn_avr_value",
     ]
+    grid_column_labels = build_column_label_map(grid_columns, column_label_map)
     grid_table = _build_markdown_table(
-        grid_columns, _json_safe_rows(grid_rows)
+        grid_columns,
+        _json_safe_rows(grid_rows),
+        column_labels=grid_column_labels,
     )
 
     reference_tables: list[dict] = []
@@ -4461,8 +4571,8 @@ async def _run_reference_pipeline(
     )
 
     input_summary = _format_input_conditions(params)
-    condition_summary = _format_defect_condition_summary(rules)
-    sort_summary = _format_sort_summary(rules)
+    condition_summary = _format_defect_condition_summary(rules, defect_label_map)
+    sort_summary = _format_sort_summary(rules, column_label_map)
     intro_parts = [input_summary]
     if condition_summary:
         intro_parts.append(f"해당 조건으로 {condition_summary} 조건을 필터링하였으며")
@@ -4487,7 +4597,9 @@ async def _run_reference_pipeline(
             "5% 증가시켜 설계를 진행하였습니다."
         )
     grid_intro += " Sheet T, LayDown, 층수를 가변하여 최적설계를 진행한 결과는 하기와 같습니다."
-    post_grid_body = _build_post_grid_step(post_grid_defects, include_prefix=False)
+    post_grid_body = _build_post_grid_step(
+        post_grid_defects, include_prefix=False, column_labels=defect_label_map
+    )
     summary_body = (
         f"최종 요약: {_format_simulation_result(simulation_result.get('result'))}. "
         "상위 후보를 확인해 주세요."

@@ -1671,6 +1671,7 @@ function renderLotResult(payload) {
   const lotId = payload.lot_id || payload.query || "";
   setCurrentLot(lotId);
   const row = payload.rows[0] || {};
+  const columnLabels = payload.column_labels || {};
   const kpiRow = document.createElement("div");
   kpiRow.className = "kpi-row";
   if (lotId) {
@@ -1696,7 +1697,7 @@ function renderLotResult(payload) {
 
   Object.entries(row).forEach(([key, value]) => {
     const dt = document.createElement("dt");
-    dt.textContent = key;
+    dt.textContent = columnLabels[key] || key;
     const dd = document.createElement("dd");
     dd.textContent = renderValue(value);
     list.appendChild(dt);
@@ -1941,6 +1942,7 @@ function renderDefectRateChartInto(targetEl, payload, options = {}) {
     const table = buildResultTable({
       rows: tableRows,
       columns: tableColumns,
+      column_labels: payload.column_labels || payload.table_column_labels,
     });
     if (table) {
       const wrapper = document.createElement("div");
@@ -2255,6 +2257,7 @@ function renderDesignCandidates(payload = {}) {
     return;
   }
   const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  const designLabels = payload.design_labels || payload.column_labels || {};
   if (!candidates.length) {
     designCandidatesEl.textContent = "설계 후보가 없습니다.";
     return;
@@ -2296,7 +2299,10 @@ function renderDesignCandidates(payload = {}) {
     const design =
       item.design && typeof item.design === "object"
         ? Object.entries(item.design)
-            .map(([key, value]) => `${key}=${renderValue(value)}`)
+            .map(([key, value]) => {
+              const label = designLabels[key] || key;
+              return `${label}=${renderValue(value)}`;
+            })
             .join(", ")
         : "-";
     row.innerHTML = `
@@ -2475,6 +2481,7 @@ function renderFinalBriefing(payload = {}) {
       const matchTable = buildResultTable({
         rows: matchRows,
         columns: matchColumns,
+        column_labels: block.match_column_labels || payload.column_labels,
       });
       if (matchTable) {
         blockEl.appendChild(wrapTable(matchTable));
@@ -2512,13 +2519,14 @@ function buildResultTable(result) {
     return null;
   }
 
+  const columnLabels = result.column_labels || result.columnLabels || {};
   const table = document.createElement("table");
   table.className = "result-table";
   const thead = document.createElement("thead");
   const headerRow = document.createElement("tr");
   columns.forEach((column) => {
     const th = document.createElement("th");
-    th.textContent = column;
+    th.textContent = columnLabels[column] || column;
     headerRow.appendChild(th);
   });
   thead.appendChild(headerRow);
