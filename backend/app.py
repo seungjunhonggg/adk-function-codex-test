@@ -2363,7 +2363,9 @@ async def _maybe_handle_planner_message(
                 },
                 memory_keys,
             )
-            if pending_missing:
+            workflow = str(pending.get("workflow") or "")
+            skip_confirm = workflow in {"simulation_run"}
+            if skip_confirm or pending_missing:
                 decision["next_action"] = "run_step"
                 decision["pending_action"] = None
             else:
