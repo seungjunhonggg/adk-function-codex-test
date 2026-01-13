@@ -505,14 +505,17 @@
         "ni_paste_metal_xrf",
         "cutting_w_avg",
         "gap_sheet_batch_powder_amount_used",
-        "gapsheet_\u3141\u3134\u3147dispersant",
+        "gapsheet_dispersant",
         "gap_sheet_casting_w",
         "firing_t_corr_coeff",
         "cover_casting_w",
         "pre_elctrode_thk",
         "cover_dispersant",
         "firing_w_corr_coeff",
-        "cover_batch_powder_amount_used"
+        "cover_batch_powder_amount_used",
+        "lot_id", 
+        "active_powder_additives", 
+        "active_powder_base"
       ],
       "sim": [
         "app_type",
@@ -617,14 +620,17 @@
         "ni_paste_metal_xrf",
         "cutting_w_avg",
         "gap_sheet_batch_powder_amount_used",
-        "gapsheet_\u3141\u3134\u3147dispersant",
+        "gapsheet_dispersant",
         "gap_sheet_casting_w",
         "firing_t_corr_coeff",
         "cover_casting_w",
         "pre_elctrode_thk",
         "cover_dispersant",
         "firing_w_corr_coeff",
-        "cover_batch_powder_amount_used"
+        "cover_batch_powder_amount_used",
+        "lot_id", 
+        "active_powder_base", 
+        "active_powder_additives"
       ]
     },
     "payload_fill_value": -1,

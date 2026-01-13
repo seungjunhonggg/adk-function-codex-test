@@ -45,7 +45,7 @@ body::before {
 
 .app {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 0;
   padding: 0;
   min-height: 100vh;
@@ -97,7 +97,7 @@ body::before {
 
 .section-title {
   padding: 0 8px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -151,7 +151,7 @@ body::before {
   padding: 2px 6px;
   border-radius: 999px;
   border: 1px solid rgba(148, 163, 184, 0.35);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   color: rgba(226, 232, 240, 0.7);
 }
@@ -326,7 +326,7 @@ body::before {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   color: #111827;
 }
@@ -344,7 +344,7 @@ body::before {
 }
 
 .profile-plan {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--sidebar-muted);
 }
 
@@ -464,7 +464,7 @@ body::before {
 }
 
 .lot-field label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -509,7 +509,7 @@ body::before {
 }
 
 .lot-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -556,7 +556,7 @@ body::before {
 
 .workflow-card #workflow-updated {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .workflow-actions {
@@ -569,7 +569,7 @@ body::before {
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 10px;
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   background: #f5f2ee;
   color: var(--text-strong);
@@ -583,7 +583,7 @@ body::before {
   border: 1px solid rgba(0, 0, 0, 0.12);
   background: #f8f6f2;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   max-height: 200px;
   overflow: auto;
   white-space: pre-wrap;
@@ -597,7 +597,7 @@ body::before {
 
 .workflow-list h4 {
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.3px;
   color: var(--text-soft);
 }
@@ -644,7 +644,7 @@ body::before {
 }
 
 .workflow-date {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -666,7 +666,7 @@ body::before {
 }
 
 .workflow-empty {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
   padding: 8px;
   border-radius: 12px;
@@ -751,7 +751,7 @@ body::before {
   border: 1px solid rgba(0, 0, 0, 0.12);
   background: #f5f2ee;
   color: var(--text-strong);
-  font-size: 11px;
+  font-size: 12px;
   padding: 6px 10px;
   border-radius: 999px;
   cursor: pointer;
@@ -826,7 +826,7 @@ body::before {
   align-items: center;
   padding: 6px 10px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-strong);
   background: #f5f2ee;
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -878,7 +878,7 @@ body::before {
 
 .message.status {
   background: transparent;
-  color: #b0b0b0;
+  color: #4a4a4a;
   align-self: flex-start;
   font-size: 12px;
   padding: 0;
@@ -888,22 +888,23 @@ body::before {
 }
 
 .message.status.pipeline-log {
-  background: rgba(0, 0, 0, 0.03);
-  border: 1px dashed rgba(0, 0, 0, 0.12);
-  border-radius: 12px;
-  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
-  color: var(--text-soft);
+  gap: 6px;
+  color: #4a4a4a;
 }
 
 .pipeline-log-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-size: 12px;
   font-family: var(--font-mono);
+  color: inherit;
 }
 
 .pipeline-log-header .status-spinner.is-hidden {
@@ -912,38 +913,38 @@ body::before {
 
 .pipeline-log-title {
   font-weight: 600;
-  color: #2a2a2a;
+  color: inherit;
 }
 
 .pipeline-log-hint {
-  font-size: 10px;
-  color: var(--text-soft);
+  font-size: 12px;
+  color: inherit;
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
 
 .pipeline-log-list {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .pipeline-log-entry {
   display: grid;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 10px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: #fbfaf7;
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  background: transparent;
 }
 
 .pipeline-log-entry.is-error {
-  border-color: rgba(176, 58, 46, 0.35);
-  background: rgba(176, 58, 46, 0.06);
+  border-color: transparent;
+  background: transparent;
 }
 
 .pipeline-log-entry.is-done {
-  border-color: rgba(42, 157, 143, 0.35);
-  background: rgba(42, 157, 143, 0.05);
+  border-color: transparent;
+  background: transparent;
 }
 
 .pipeline-log-toggle {
@@ -951,10 +952,10 @@ body::before {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   cursor: pointer;
   font-size: 12px;
-  color: #1f1f1f;
+  color: inherit;
 }
 
 .pipeline-log-toggle:focus-visible {
@@ -964,10 +965,10 @@ body::before {
 }
 
 .pipeline-log-stage {
-  font-size: 10px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  color: var(--text-soft);
+  color: inherit;
   font-family: var(--font-mono);
 }
 
@@ -976,26 +977,22 @@ body::before {
 }
 
 .pipeline-log-state {
-  font-size: 10px;
-  color: rgba(42, 157, 143, 0.9);
+  font-size: 12px;
+  color: inherit;
   font-family: var(--font-mono);
 }
 
 .pipeline-log-entry:not(.is-done) .pipeline-log-state {
-  color: rgba(127, 116, 99, 0.7);
+  color: inherit;
 }
 
 .pipeline-log-entry.is-error .pipeline-log-state {
-  color: rgba(176, 58, 46, 0.9);
+  color: inherit;
 }
 
 .pipeline-log-entry.is-running .pipeline-log-state::after {
-  content: "...";
-  display: inline-block;
-  margin-left: 4px;
-  overflow: hidden;
-  width: 0;
-  animation: logDots 1.2s steps(4, end) infinite;
+  content: "";
+  animation: none;
 }
 
 .pipeline-log-entry.is-error .pipeline-log-state::after,
@@ -1006,11 +1003,11 @@ body::before {
 
 .pipeline-log-detail {
   display: block;
-  background: #f6f4ef;
-  border-radius: 8px;
-  padding: 8px;
+  background: transparent;
+  border-radius: 0;
+  padding: 0 0 0 14px;
   font-size: 12px;
-  color: #2b2b2b;
+  color: inherit;
   overflow-x: auto;
 }
 
@@ -1023,16 +1020,16 @@ body::before {
 }
 
 .pipeline-log-table-title {
-  font-size: 11px;
-  color: var(--text-soft);
+  font-size: 12px;
+  color: inherit;
   font-weight: 600;
   margin-bottom: 4px;
 }
 
 .pipeline-log-note,
 .pipeline-log-empty {
-  font-size: 11px;
-  color: var(--text-soft);
+  font-size: 12px;
+  color: inherit;
   margin-bottom: 6px;
 }
 
@@ -1254,7 +1251,7 @@ body::before {
 
 .section-label {
   margin: 14px 0 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
   letter-spacing: 0.4px;
 }
@@ -1274,7 +1271,7 @@ body::before {
 
 .param-item span {
   display: block;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1308,7 +1305,7 @@ body::before {
 
 .metric span {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1325,7 +1322,7 @@ body::before {
 }
 
 .summary-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
   letter-spacing: 0.3px;
 }
@@ -1337,7 +1334,7 @@ body::before {
 }
 
 .summary-pill {
-  font-size: 10px;
+  font-size: 12px;
   padding: 4px 8px;
   font-family: var(--font-mono);
 }
@@ -1348,7 +1345,7 @@ body::before {
 }
 
 .summary-note {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
   line-height: 1.4;
 }
@@ -1379,7 +1376,7 @@ body::before {
 }
 
 .sim-field label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1428,7 +1425,7 @@ body::before {
 
 .sim-status {
   margin-top: 10px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1536,7 +1533,7 @@ body::before {
 }
 
 .defect-column-label {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-soft);
   white-space: nowrap;
   overflow: hidden;
@@ -1544,7 +1541,7 @@ body::before {
 }
 
 .defect-column-value {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1565,13 +1562,13 @@ body::before {
 }
 
 .defect-bin-label {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-soft);
   text-align: center;
 }
 
 .defect-bin-value {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1591,7 +1588,7 @@ body::before {
 
 .defect-row .defect-label {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1617,7 +1614,7 @@ body::before {
 }
 
 .defect-value {
-  font-size: 11px;
+  font-size: 12px;
   text-align: right;
   color: var(--text-soft);
 }
@@ -1628,7 +1625,7 @@ body::before {
 }
 
 .candidate-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
   margin-bottom: 8px;
 }
@@ -1695,7 +1692,7 @@ body::before {
 
 .kpi-card span {
   display: block;
-  font-size: 10px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--text-soft);
@@ -1752,7 +1749,7 @@ body::before {
 }
 
 .lot-grid dt {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 
@@ -1765,7 +1762,7 @@ body::before {
 
 .lot-count {
   margin-top: 10px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-soft);
 }
 

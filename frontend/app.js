@@ -620,15 +620,12 @@ function ensurePipelineLogMessage() {
     pipelineLogMessageEl.className = "message assistant status pipeline-log";
     const header = document.createElement("div");
     header.className = "pipeline-log-header";
-    pipelineLogSpinnerEl = document.createElement("span");
-    pipelineLogSpinnerEl.className = "status-spinner";
     pipelineLogLabelEl = document.createElement("span");
     pipelineLogLabelEl.className = "pipeline-log-title";
     pipelineLogLabelEl.textContent = "응답 생성 중";
     const hint = document.createElement("span");
     hint.className = "pipeline-log-hint";
     hint.textContent = "단계별 로그";
-    header.appendChild(pipelineLogSpinnerEl);
     header.appendChild(pipelineLogLabelEl);
     header.appendChild(hint);
     pipelineLogListEl = document.createElement("div");
@@ -639,20 +636,8 @@ function ensurePipelineLogMessage() {
       statusMessageEl && statusMessageEl.parentNode === messages
         ? statusMessageEl
         : null;
-    const streamingAnchor = messages.querySelector(
-      ".message.assistant.streaming"
-    );
-    const lastMessage = messages.lastElementChild;
-    if (streamingAnchor) {
-      messages.insertBefore(pipelineLogMessageEl, streamingAnchor);
-    } else if (statusAnchor) {
+    if (statusAnchor) {
       messages.insertBefore(pipelineLogMessageEl, statusAnchor);
-    } else if (
-      lastMessage &&
-      lastMessage.classList.contains("message") &&
-      lastMessage.classList.contains("assistant")
-    ) {
-      messages.insertBefore(pipelineLogMessageEl, lastMessage);
     } else {
       messages.appendChild(pipelineLogMessageEl);
     }
@@ -868,36 +853,15 @@ function setChatStatus(message, source = "system") {
   if (!statusMessageEl) {
     statusMessageEl = document.createElement("div");
     statusMessageEl.className = "message assistant status";
-    const spinner = document.createElement("span");
-    spinner.className = "status-spinner";
     statusMessageTextEl = document.createElement("span");
     statusMessageTextEl.className = "status-text";
-    statusMessageDotsEl = document.createElement("span");
-    statusMessageDotsEl.className = "status-dots";
-    statusMessageDotsEl.setAttribute("aria-hidden", "true");
-    statusMessageEl.appendChild(spinner);
     statusMessageEl.appendChild(statusMessageTextEl);
-    statusMessageEl.appendChild(statusMessageDotsEl);
     messages.appendChild(statusMessageEl);
   }
   const baseMessage = message.replace(/\s*\.{1,3}\s*$/, "") || message;
   if (statusMessageTextEl) {
     statusMessageTextEl.textContent = baseMessage;
   }
-  if (statusMessageDotsEl) {
-    statusMessageDotsEl.textContent = "";
-  }
-  if (statusAnimationInterval) {
-    clearInterval(statusAnimationInterval);
-  }
-  const dotFrames = [" .", " ..", " ..."];
-  let dotIndex = 0;
-  statusAnimationInterval = setInterval(() => {
-    if (statusMessageDotsEl) {
-      statusMessageDotsEl.textContent = dotFrames[dotIndex % dotFrames.length];
-    }
-    dotIndex += 1;
-  }, 450);
   messages.scrollTop = messages.scrollHeight;
 }
 
