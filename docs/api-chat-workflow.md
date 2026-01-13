@@ -10,16 +10,17 @@ flowchart TD
   U[User] -->|POST /api/chat| API[FastAPI /api/chat]
   API --> Policy[pending_action policy]
   Policy -->|confirmed| Handler{workflow handler}
-  Policy --> Planner[planner_agent]
+  Policy --> Route[route_agent]
+  Route -->|primary_intent=chat/unknown| Chat[conversation_agent]
+  Route -->|primary_intent!=chat| Planner[planner_agent]
   Planner -->|run_step| Handler{workflow handler}
-  Planner -->|no plan| Route[route_agent]
-  Route -->|primary_intent| Handler{workflow handler}
+  Planner -->|no plan/chat-only| Handler{workflow handler}
 
   Handler -->|simulation_run/edit| Sim[_maybe_handle_simulation_message]
   Handler -->|db_query| DB[db_agent + query tools]
   Handler -->|chart_edit| Chart[chart_agent + apply_chart_config]
   Handler -->|stage_view| Stage[show_simulation_stage]
-  Handler -->|chat/unknown| Chat[conversation_agent]
+  Handler -->|fallback| Chat[conversation_agent]
 
   Sim --> Ref[_run_reference_pipeline]
   Ref --> Events[event_bus]
@@ -34,13 +35,15 @@ flowchart TD
 ## 라우팅 로직 요약
 1) `/api/chat`는 먼저 `pending_action` 정책 레이어를 확인합니다.  
 2) pending_action이 확인되면 해당 워크플로우를 즉시 실행하고 응답합니다.  
-3) pending_action이 없으면 `planner_agent`로 요청을 단계화합니다.  
+3) pending_action이 없으면 먼저 `route_agent`로 의도를 분기합니다.  
+4) primary_intent가 `chat/unknown`이면 바로 대화 흐름으로 처리합니다.  
+5) 그 외 intent면 `planner_agent`로 단계화를 시도합니다.  
    - planner context JSON에는 `memory_keys`, `missing_sim_fields`, `has_chip_prod_id`, `events`에 더해  
-     `keyword_hints`, `simulation_active`가 포함됩니다.
-4) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
-5) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
-6) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  
-7) planner가 비활성/실패 시 `route_agent`로 fallback합니다.
+     `keyword_hints`, `simulation_active`, `route_hint`가 포함됩니다.
+   - planner가 plan을 반환하지 않거나 chat-only plan이면 라우터의 primary_intent 핸들러로 fallback합니다.
+6) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
+7) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
+8) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  
 추가: planner가 `next_action=confirm`을 반환하면 `pending_action`에 저장하고 확인 질문을 출력합니다.
 
 주요 intent:

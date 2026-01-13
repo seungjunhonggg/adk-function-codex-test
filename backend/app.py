@@ -194,14 +194,6 @@ async def chat(request: ChatRequest) -> dict:
             return await _record_workflow_outcome(
                 request.session_id, request.message, workflow_id, outcome
             )
-        planner_result = await _maybe_handle_planner_message(
-            request.message, request.session_id, session
-        )
-        if planner_result is not None:
-            workflow_id, outcome = planner_result
-            return await _record_workflow_outcome(
-                request.session_id, request.message, workflow_id, outcome
-            )
         route_command = await _route_message(request.message, request.session_id)
         if route_command.get("needs_clarification") and route_command.get("clarifying_question"):
             clarifying = route_command.get("clarifying_question")
@@ -233,6 +225,15 @@ async def chat(request: ChatRequest) -> dict:
                 "reason": route_command.get("reason"),
             },
         )
+        if primary_intent not in {"chat", "unknown"}:
+            planner_result = await _maybe_handle_planner_message(
+                request.message, request.session_id, session, route_command
+            )
+            if planner_result is not None:
+                workflow_id, outcome = planner_result
+                return await _record_workflow_outcome(
+                    request.session_id, request.message, workflow_id, outcome
+                )
         handler = WORKFLOW_HANDLERS.get(primary_intent)
         outcome: WorkflowOutcome | None = None
         if handler:
@@ -1243,6 +1244,8 @@ def _build_keyword_hints(message: str) -> dict:
     }
 
 
+
+
 def _is_chart_request(message: str) -> bool:
     return _contains_any(message, CHART_KEYWORDS)
 
@@ -1855,6 +1858,13 @@ def _ensure_briefing_step(decision: dict) -> dict:
     return decision
 
 
+def _planner_is_chat_only(decision: dict) -> bool:
+    steps = decision.get("steps") if isinstance(decision.get("steps"), list) else []
+    if not steps:
+        return False
+    return all(str(step.get("workflow") or "chat") == "chat" for step in steps)
+
+
 def _normalize_memory_list(values: object) -> list[str]:
     if not values:
         return []
@@ -2289,13 +2299,23 @@ async def _maybe_handle_pending_action(
 
 
 async def _maybe_handle_planner_message(
-    message: str, session_id: str, session: SQLiteSession
+    message: str,
+    session_id: str,
+    session: SQLiteSession,
+    route_command: dict | None = None,
 ) -> tuple[str, WorkflowOutcome] | None:
     if not OPENAI_API_KEY:
         return None
     context_payload = _planner_context_payload(session_id)
+    keyword_hints = _build_keyword_hints(message)
     context_payload["simulation_active"] = simulation_store.is_active(session_id)
-    context_payload["keyword_hints"] = _build_keyword_hints(message)
+    context_payload["keyword_hints"] = keyword_hints
+    if route_command:
+        context_payload["route_hint"] = {
+            "primary_intent": route_command.get("primary_intent"),
+            "secondary_intents": route_command.get("secondary_intents"),
+            "stage": route_command.get("stage"),
+        }
     prompt = (
         "Return JSON only. Create a concise execution plan. "
         "Keys: goal, steps, missing_inputs, next_action, confirmation_prompt, pending_action. "
@@ -2316,6 +2336,13 @@ async def _maybe_handle_planner_message(
     decision = _normalize_planner_decision(run.final_output)
     if not decision.get("steps"):
         return None
+    if _planner_is_chat_only(decision):
+        if route_command:
+            primary_intent = route_command.get("primary_intent") or "unknown"
+            if primary_intent not in {"chat", "unknown"}:
+                return None
+        elif keyword_hints["simulation_run_hits"] or keyword_hints["simulation_edit_hits"]:
+            return None
 
     decision = _ensure_briefing_step(decision)
     memory_keys = _collect_planner_memory_keys(session_id)
