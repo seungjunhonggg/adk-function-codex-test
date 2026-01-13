@@ -2354,11 +2354,24 @@ async def _maybe_handle_planner_message(
             pending = _build_pending_action_from_step(next_step, message)
         if pending:
             pending = _apply_pending_action_defaults(pending, memory_keys)
-            confirmation_prompt = decision.get("confirmation_prompt") or ""
-            if not confirmation_prompt:
-                confirmation_prompt = _default_confirmation_prompt(pending.get("workflow", ""))
-            _store_pending_action(session_id, pending, confirmation_prompt, decision)
-            return "planner", WorkflowOutcome(confirmation_prompt)
+            pending_missing = _planner_missing_required(
+                {
+                    "workflow": pending.get("workflow"),
+                    "required_memory": pending.get("required_memory", []),
+                },
+                memory_keys,
+            )
+            if pending_missing:
+                decision["next_action"] = "run_step"
+                decision["pending_action"] = None
+            else:
+                confirmation_prompt = decision.get("confirmation_prompt") or ""
+                if not confirmation_prompt:
+                    confirmation_prompt = _default_confirmation_prompt(
+                        pending.get("workflow", "")
+                    )
+                _store_pending_action(session_id, pending, confirmation_prompt, decision)
+                return "planner", WorkflowOutcome(confirmation_prompt)
     pipeline_store.update(
         session_id,
         planner_state=_json_safe_dict(decision),

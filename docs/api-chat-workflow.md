@@ -41,6 +41,7 @@ flowchart TD
    - planner context JSON에는 `memory_keys`, `missing_sim_fields`, `has_chip_prod_id`, `events`에 더해  
      `keyword_hints`, `simulation_active`, `route_hint`가 포함됩니다.
    - planner가 plan을 반환하지 않거나 chat-only plan이면 라우터의 primary_intent 핸들러로 fallback합니다.
+   - 필수 입력이 누락된 경우에는 confirmation 대신 입력 요청(예: `simulation_form`)을 우선합니다.
 6) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
 7) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
 8) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  
