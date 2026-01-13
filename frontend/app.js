@@ -632,15 +632,19 @@ function ensurePipelineLogMessage() {
     pipelineLogListEl.className = "pipeline-log-list";
     pipelineLogMessageEl.appendChild(header);
     pipelineLogMessageEl.appendChild(pipelineLogListEl);
-    const statusAnchor =
-      statusMessageEl && statusMessageEl.parentNode === messages
-        ? statusMessageEl
-        : null;
-    if (statusAnchor) {
-      messages.insertBefore(pipelineLogMessageEl, statusAnchor);
-    } else {
-      messages.appendChild(pipelineLogMessageEl);
-    }
+  }
+  const statusAnchor =
+    statusMessageEl && statusMessageEl.parentNode === messages
+      ? statusMessageEl
+      : null;
+  const streamingAnchor = messages.querySelector(
+    ".message.assistant.streaming"
+  );
+  const anchor = streamingAnchor || statusAnchor;
+  if (anchor) {
+    messages.insertBefore(pipelineLogMessageEl, anchor);
+  } else {
+    messages.appendChild(pipelineLogMessageEl);
   }
   return pipelineLogMessageEl;
 }

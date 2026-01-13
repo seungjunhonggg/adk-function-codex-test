@@ -1,6 +1,7 @@
 from typing import Dict, Set
 
 from fastapi import WebSocket
+from fastapi.encoders import jsonable_encoder
 
 from .context import current_session_id
 from .pipeline_store import pipeline_store
@@ -39,10 +40,11 @@ class EventBus:
             workflow_id = pipeline_store.get(session).get("workflow_id")
             if workflow_id:
                 event_out["workflow_id"] = workflow_id
+        safe_event = jsonable_encoder(event_out)
         stale = []
         for ws in list(self._clients_by_session.get(session, set())):
             try:
-                await ws.send_json(event_out)
+                await ws.send_json(safe_event)
             except Exception:
                 stale.append(ws)
         for ws in stale:
