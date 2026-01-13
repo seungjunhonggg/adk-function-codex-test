@@ -16,7 +16,7 @@ TRACING_ENABLED = _env_bool("OPENAI_AGENTS_TRACING_ENABLED", False)
 SIM_API_URL = os.getenv("SIM_API_URL", "")
 PREDICT_API_URL = os.getenv("PREDICT_API_URL", "")
 GRID_SEARCH_API_URL = os.getenv(
-    "GRID_SEARCH_API_URL", "http://16.3.57.118:8002/calc_sim_recommend"
+    "GRID_SEARCH_API_URL", "http://16.3.57.118:8002/calc_sim_recommend_raw"
 )
 DEMO_LATENCY_SECONDS = float(os.getenv("DEMO_LATENCY_SECONDS", "2.5"))
 BRIEFING_STREAM_DELAY_SECONDS = float(
