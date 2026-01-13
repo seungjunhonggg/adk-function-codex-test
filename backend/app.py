@@ -95,6 +95,16 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 app = FastAPI(title="공정 모니터링 데모")
 logger = logging.getLogger(__name__)
 
+SIMULATION_EVENT_TYPES = {
+    "simulation_form",
+    "simulation_result",
+    "lot_result",
+    "defect_rate_chart",
+    "design_candidates",
+    "final_briefing",
+    "final_defect_chart",
+}
+
 
 @dataclass
 class WorkflowOutcome:
@@ -677,6 +687,47 @@ def _coerce_float(value: object) -> float | None:
         return None
 
 
+def _coerce_positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_selection_overrides(raw: dict | None) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    top_k_value = (
+        raw.get("top_k")
+        if raw.get("top_k") is not None
+        else raw.get("top") or raw.get("topn")
+    )
+    top_k = _coerce_positive_int(top_k_value)
+    if top_k is not None:
+        normalized["top_k"] = top_k
+    max_blocks_value = (
+        raw.get("max_blocks")
+        if raw.get("max_blocks") is not None
+        else raw.get("blocks")
+    )
+    max_blocks = _coerce_positive_int(max_blocks_value)
+    if max_blocks is not None:
+        normalized["max_blocks"] = max_blocks
+    return normalized
+
+
+def _attach_run_id(payload: object, run_id: str) -> object:
+    if not run_id or not isinstance(payload, dict):
+        return payload
+    if payload.get("run_id") == run_id:
+        return payload
+    updated = dict(payload)
+    updated["run_id"] = run_id
+    return updated
+
+
 def _json_safe_value(value: object) -> object:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -1214,6 +1265,14 @@ SIM_EDIT_KEYWORDS = (
     "reset",
     "rerun",
 )
+SIM_FORM_FIELDS = {
+    "temperature",
+    "voltage",
+    "size",
+    "capacity",
+    "production_mode",
+    "chip_prod_id",
+}
 DB_KEYWORDS = (
     "lot",
     "db",
@@ -1475,6 +1534,7 @@ def _normalize_edit_decision(raw: object) -> dict:
         "update_recommendation_params",
         "update_grid",
         "update_reference",
+        "update_selection",
         "show_stage",
         "show_progress",
         "reset",
@@ -1494,6 +1554,15 @@ def _normalize_edit_decision(raw: object) -> dict:
     grid_overrides = grid_overrides if isinstance(grid_overrides, dict) else {}
     reference_lot_id = data.get("reference_lot_id")
     reference_lot_id = str(reference_lot_id).strip() if reference_lot_id else None
+    selection_overrides = data.get("selection_overrides")
+    selection_overrides = (
+        selection_overrides if isinstance(selection_overrides, dict) else {}
+    )
+    if not selection_overrides:
+        for key in ("top_k", "max_blocks"):
+            if key in data:
+                selection_overrides[key] = data.get(key)
+    selection_overrides = _normalize_selection_overrides(selection_overrides)
 
     stage = str(data.get("stage") or "unknown").lower()
     if stage not in {"recommendation", "reference", "grid", "final", "any", "unknown"}:
@@ -1513,6 +1582,7 @@ def _normalize_edit_decision(raw: object) -> dict:
         "clear_fields": clear_fields,
         "grid_overrides": grid_overrides,
         "reference_lot_id": reference_lot_id,
+        "selection_overrides": selection_overrides,
         "stage": stage,
         "rerun": rerun,
         "needs_clarification": needs_clarification,
@@ -1599,6 +1669,7 @@ def _build_simulation_summary(session_id: str) -> dict:
     state = pipeline_store.get(session_id)
     events = pipeline_store.get_events(session_id)
     status = pipeline_store.get_status(session_id)
+    stage_inputs = pipeline_store.get_stage_inputs(session_id)
     reference = state.get("reference") if isinstance(state, dict) else {}
     if not isinstance(reference, dict):
         reference = {}
@@ -1620,7 +1691,52 @@ def _build_simulation_summary(session_id: str) -> dict:
         "last_stage_request": state.get("last_stage_request"),
         "reference_lot_id": reference_lot_id,
         "grid_overrides": grid_overrides,
+        "stage_inputs": stage_inputs,
     }
+
+
+def _get_selection_overrides(session_id: str) -> dict[str, int]:
+    stage_inputs = pipeline_store.get_stage_inputs(session_id)
+    selection = stage_inputs.get("selection") if isinstance(stage_inputs, dict) else {}
+    if not isinstance(selection, dict):
+        return {}
+    sim_run_id = simulation_store.get_run_id(session_id)
+    if sim_run_id and selection.get("run_id") not in ("", None, sim_run_id):
+        return {}
+    overrides = selection.get("overrides")
+    if isinstance(overrides, dict):
+        return _normalize_selection_overrides(overrides)
+    return _normalize_selection_overrides(selection)
+
+
+def _get_reference_override(session_id: str) -> str | None:
+    stage_inputs = pipeline_store.get_stage_inputs(session_id)
+    reference = stage_inputs.get("reference") if isinstance(stage_inputs, dict) else {}
+    if not isinstance(reference, dict):
+        return None
+    sim_run_id = simulation_store.get_run_id(session_id)
+    if sim_run_id and reference.get("run_id") not in ("", None, sim_run_id):
+        return None
+    override = reference.get("reference_override")
+    return str(override).strip() if override else None
+
+
+def _get_grid_overrides(session_id: str) -> dict[str, float]:
+    stage_inputs = pipeline_store.get_stage_inputs(session_id)
+    grid = stage_inputs.get("grid") if isinstance(stage_inputs, dict) else {}
+    if isinstance(grid, dict):
+        sim_run_id = simulation_store.get_run_id(session_id)
+        if sim_run_id and grid.get("run_id") not in ("", None, sim_run_id):
+            grid = {}
+        overrides = grid.get("overrides")
+        if isinstance(overrides, dict):
+            return overrides
+    state = pipeline_store.get(session_id)
+    grid_state = state.get("grid") if isinstance(state, dict) else {}
+    if not isinstance(grid_state, dict):
+        return {}
+    stored_overrides = grid_state.get("overrides")
+    return stored_overrides if isinstance(stored_overrides, dict) else {}
 
 
 def _build_route_summary(session_id: str) -> dict:
@@ -1655,6 +1771,11 @@ PLANNER_WORKFLOW_CONFIG: dict[str, dict[str, list[str]]] = {
             "sim.chip_prod_id",
             "events.simulation_form",
             "events.simulation_result",
+            "stage_inputs.recommendation",
+            "stage_inputs.reference",
+            "stage_inputs.grid",
+            "stage_inputs.selection",
+            "stage_inputs.chart",
         ],
         "success_criteria": ["events.simulation_result", "last_stage_request"],
     },
@@ -1734,8 +1855,19 @@ def _collect_planner_memory_keys(session_id: str) -> set[str]:
     keys: set[str] = set()
     state = pipeline_store.get(session_id)
     events = pipeline_store.get_events(session_id)
-    for event_type in events.keys():
+    sim_run_id = simulation_store.get_run_id(session_id)
+    for event_type, payload in events.items():
+        if event_type in SIMULATION_EVENT_TYPES and sim_run_id:
+            if not isinstance(payload, dict) or payload.get("run_id") != sim_run_id:
+                continue
         keys.add(f"events.{event_type}")
+    stage_inputs = pipeline_store.get_stage_inputs(session_id)
+    for stage, payload in stage_inputs.items():
+        if sim_run_id and isinstance(payload, dict):
+            if payload.get("run_id") != sim_run_id:
+                continue
+        if payload not in (None, "", {}, []):
+            keys.add(f"stage_inputs.{stage}")
     for key in (
         "reference",
         "grid",
@@ -1767,12 +1899,18 @@ def _planner_context_payload(session_id: str) -> dict:
     memory_keys = sorted(_collect_planner_memory_keys(session_id))
     sim_params = simulation_store.get(session_id)
     sim_missing = simulation_store.missing(session_id)
-    events = pipeline_store.get_events(session_id)
+    event_keys = sorted(
+        {
+            key.split("events.", 1)[1]
+            for key in memory_keys
+            if key.startswith("events.")
+        }
+    )
     return {
         "memory_keys": memory_keys,
         "missing_sim_fields": sim_missing,
         "has_chip_prod_id": bool(sim_params.get("chip_prod_id")),
-        "events": sorted(events.keys()),
+        "events": event_keys,
     }
 
 
@@ -1826,6 +1964,14 @@ def _normalize_planner_decision(raw: object) -> dict:
         next_action = "run_step"
     confirmation_prompt = str(data.get("confirmation_prompt") or "")
     pending_action = _normalize_pending_action_definition(data.get("pending_action"))
+    open_form_fields = data.get("open_form_fields")
+    if not isinstance(open_form_fields, list):
+        open_form_fields = []
+    open_form_fields = [
+        str(item).strip()
+        for item in open_form_fields
+        if isinstance(item, (str, int, float)) and str(item).strip()
+    ]
     return {
         "goal": goal,
         "steps": steps,
@@ -1833,6 +1979,7 @@ def _normalize_planner_decision(raw: object) -> dict:
         "next_action": next_action,
         "confirmation_prompt": confirmation_prompt,
         "pending_action": pending_action,
+        "open_form_fields": open_form_fields,
     }
 
 
@@ -1877,6 +2024,22 @@ def _normalize_memory_list(values: object) -> list[str]:
     else:
         return []
     return [item for item in raw if item]
+
+
+def _normalize_sim_form_fields(values: object) -> list[str]:
+    if not values:
+        return []
+    if isinstance(values, str):
+        raw = [chunk.strip() for chunk in values.split(",")]
+    elif isinstance(values, list):
+        raw = [str(item).strip() for item in values]
+    else:
+        return []
+    deduped: list[str] = []
+    for item in raw:
+        if item in SIM_FORM_FIELDS and item not in deduped:
+            deduped.append(item)
+    return deduped
 
 
 def _apply_planner_defaults(decision: dict, memory_keys: set[str]) -> dict:
@@ -2320,10 +2483,13 @@ async def _maybe_handle_planner_message(
         }
     prompt = (
         "Return JSON only. Create a concise execution plan. "
-        "Keys: goal, steps, missing_inputs, next_action, confirmation_prompt, pending_action. "
+        "Keys: goal, steps, missing_inputs, next_action, confirmation_prompt, pending_action, open_form_fields. "
         "Each step: step_id, workflow, required_memory, optional_memory, success_criteria, status, notes. "
         "Notes must be short. "
         "If next_action=confirm, include confirmation_prompt and pending_action (workflow + memory criteria). "
+        "If the intent is simulation_edit and the user mentions param names without values, "
+        "set open_form_fields to those param keys "
+        "(temperature/voltage/size/capacity/production_mode/chip_prod_id). "
         f"Context JSON: {json.dumps(context_payload, ensure_ascii=False)}\n"
         f"User message: {message}"
     )
@@ -2349,6 +2515,23 @@ async def _maybe_handle_planner_message(
     decision = _ensure_briefing_step(decision)
     memory_keys = _collect_planner_memory_keys(session_id)
     decision = _apply_planner_defaults(decision, memory_keys)
+    open_form_fields = _normalize_sim_form_fields(decision.get("open_form_fields"))
+    if open_form_fields:
+        _, next_step = _evaluate_planner_decision(decision, memory_keys)
+        if next_step and next_step.get("workflow") == "simulation_edit":
+            params = simulation_store.get(session_id)
+            form_payload = await emit_simulation_form(params, open_form_fields)
+            missing_text = _format_missing_fields(open_form_fields)
+            message = f"수정할 값을 입력해 주세요. ({missing_text})"
+            pipeline_store.update(
+                session_id,
+                planner_state=_json_safe_dict(decision),
+                planner_goal=decision.get("goal") or "",
+            )
+            return "planner", WorkflowOutcome(
+                message,
+                ui_event={"type": "simulation_form", "payload": form_payload},
+            )
     if decision.get("next_action") == "confirm" or decision.get("pending_action"):
         pending = decision.get("pending_action")
         if not pending:
@@ -2651,6 +2834,11 @@ async def _apply_edit_decision(
         if isinstance(decision.get("grid_overrides"), dict)
         else {}
     )
+    selection_overrides = (
+        decision.get("selection_overrides")
+        if isinstance(decision.get("selection_overrides"), dict)
+        else {}
+    )
 
     if intent == "update_recommendation_params":
         current = recommendation_store.get(session_id)
@@ -2681,7 +2869,10 @@ async def _apply_edit_decision(
             "representative_lot": updated.get("representative_lot"),
             "param_count": len(updated.get("params") or {}),
         }
+        run_id = simulation_store.ensure_run_id(session_id)
         payload = {"params": updated.get("input_params") or {}, "result": result_payload}
+        if run_id:
+            payload["run_id"] = run_id
         await event_bus.broadcast({"type": "simulation_result", "payload": payload})
         pipeline_store.set_event(session_id, "simulation_result", payload)
         param_count = result_payload.get("param_count", 0)
@@ -2747,18 +2938,16 @@ async def _apply_edit_decision(
                     fallback,
                 )
             if decision.get("rerun"):
-                state = pipeline_store.get(session_id)
-                grid_state = state.get("grid") if isinstance(state, dict) else {}
-                if not isinstance(grid_state, dict):
-                    grid_state = {}
-                stored_overrides = grid_state.get("overrides")
-                if not isinstance(stored_overrides, dict):
-                    stored_overrides = {}
+                stored_overrides = _get_grid_overrides(session_id)
+                selection_state = _get_selection_overrides(session_id)
+                reference_override = _get_reference_override(session_id)
                 result = await _run_reference_pipeline(
                     session_id,
                     update_result.get("params", {}),
                     chip_prod_override=update_result.get("params", {}).get("chip_prod_id"),
+                    reference_override=reference_override,
                     grid_overrides=stored_overrides,
+                    selection_overrides=selection_state,
                 )
                 sim_result = (
                     result.get("simulation_result", {}).get("result")
@@ -2821,7 +3010,9 @@ async def _apply_edit_decision(
             session_id,
             params,
             chip_prod_override=params.get("chip_prod_id"),
+            reference_override=_get_reference_override(session_id),
             grid_overrides=overrides,
+            selection_overrides=_get_selection_overrides(session_id),
         )
         sim_result = (
             result.get("simulation_result", {}).get("result")
@@ -2872,6 +3063,8 @@ async def _apply_edit_decision(
             params,
             chip_prod_override=params.get("chip_prod_id"),
             reference_override=reference_lot_id,
+            grid_overrides=_get_grid_overrides(session_id),
+            selection_overrides=_get_selection_overrides(session_id),
         )
         sim_result = (
             result.get("simulation_result", {}).get("result")
@@ -2890,6 +3083,59 @@ async def _apply_edit_decision(
         fallback = result.get("message") or "레퍼런스 LOT를 반영해 다시 계산했습니다."
         return await _generate_edit_auto_message(
             "update_reference",
+            {
+                "pipeline_message": result.get("message", ""),
+                "result": result_payload,
+                "ask_prediction": False,
+            },
+            fallback,
+        )
+
+    if intent == "update_selection":
+        if not selection_overrides:
+            fallback = "변경할 선정 조건을 알려주세요. 예: 상위 5개, max_blocks=2"
+            return await _generate_edit_auto_message(
+                "update_selection_missing",
+                {"missing_fields": ["selection_overrides"], "ask_prediction": False},
+                fallback,
+            )
+        params = simulation_store.get(session_id)
+        if not params:
+            missing = simulation_store.missing(session_id)
+            missing_text = _format_missing_fields(missing)
+            fallback = f"시뮬레이션 입력이 부족합니다. {missing_text} 값을 알려주세요."
+            return await _generate_edit_auto_message(
+                "update_selection_missing",
+                {"missing_fields": missing, "ask_prediction": False},
+                fallback,
+            )
+        merged_overrides = _get_selection_overrides(session_id)
+        merged_overrides.update(selection_overrides)
+        result = await _run_reference_pipeline(
+            session_id,
+            params,
+            chip_prod_override=params.get("chip_prod_id"),
+            reference_override=_get_reference_override(session_id),
+            grid_overrides=_get_grid_overrides(session_id),
+            selection_overrides=merged_overrides,
+        )
+        sim_result = (
+            result.get("simulation_result", {}).get("result")
+            if isinstance(result.get("simulation_result"), dict)
+            else None
+        )
+        result_payload = None
+        if isinstance(sim_result, dict):
+            result_payload = {
+                "recommended_chip_prod_id": sim_result.get(
+                    "recommended_chip_prod_id"
+                ),
+                "representative_lot": sim_result.get("representative_lot"),
+                "param_count": len(sim_result.get("params") or {}),
+            }
+        fallback = result.get("message") or "선정 조건을 반영해 다시 계산했습니다."
+        return await _generate_edit_auto_message(
+            "update_selection",
             {
                 "pipeline_message": result.get("message", ""),
                 "result": result_payload,
@@ -4081,7 +4327,7 @@ def _build_post_grid_step(
         details.append(f"TOP{rank} 설계안[{design_text}] → LOT {lot_detail}")
     summary = " / ".join(details) if details else "매칭 LOT 없음"
     return (
-        f"{prefix}TOP3 설계조건으로 {period} LOT 불량실적({', '.join(display_columns)})을 조회했습니다. "
+        f"{prefix}TOP3 설계조건으로 {period} LOT 불량실적을 조회했습니다. "
         f"{summary}"
     )
 
@@ -4098,12 +4344,34 @@ async def _run_reference_pipeline(
     chip_prod_override: str | None = None,
     reference_override: str | None = None,
     grid_overrides: dict | None = None,
+    selection_overrides: dict | None = None,
     emit_briefing: bool | None = None,
 ) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
+    selection_overrides = _normalize_selection_overrides(selection_overrides)
+    if selection_overrides:
+        grid_config = dict(rules.get("grid_search") or {})
+        if "top_k" in selection_overrides:
+            grid_config["top_k"] = selection_overrides["top_k"]
+        rules["grid_search"] = grid_config
+        final_config = dict(rules.get("final_briefing") or {})
+        if "max_blocks" in selection_overrides:
+            final_config["max_blocks"] = selection_overrides["max_blocks"]
+        rules["final_briefing"] = final_config
     db_config = rules.get("db", {})
     chip_prod_column = db_config.get("chip_prod_id_column") or "chip_prod_id"
     lot_id_column = db_config.get("lot_id_column") or "lot_id"
+    run_id = simulation_store.ensure_run_id(session_id)
+    pipeline_store.set_stage_inputs(
+        session_id,
+        "recommendation",
+        {
+            "run_id": run_id,
+            "params": params,
+            "missing": simulation_store.missing(session_id),
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
     label_connection_id = db_config.get("connection_id") or ""
     label_schema = db_config.get("schema") or "public"
     column_label_map = get_column_label_map(label_connection_id, label_schema)
@@ -4203,7 +4471,21 @@ async def _run_reference_pipeline(
         "reference_rows": _json_safe_rows(reference_rows),
         "reference_column_labels": reference_column_labels,
     }
+    reference_payload = _attach_run_id(reference_payload, run_id)
     pipeline_store.set_reference(session_id, reference_payload)
+    pipeline_store.set_stage_inputs(
+        session_id,
+        "reference",
+        {
+            "run_id": run_id,
+            "chip_prod_id": chip_prod_id,
+            "reference_override": reference_override,
+            "selected_lot_id": selected_lot_id,
+            "chip_prod_id_count": chip_prod_id_count,
+            "chip_prod_id_samples": chip_prod_id_samples,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
     lot_payload = {
         "lot_id": selected_lot_id,
         "columns": reference_payload.get("columns", []),
@@ -4211,6 +4493,7 @@ async def _run_reference_pipeline(
         "column_labels": reference_payload.get("column_labels", {}),
         "source": reference_payload.get("source") or "postgresql",
     }
+    lot_payload = _attach_run_id(lot_payload, run_id)
     await event_bus.broadcast({"type": "lot_result", "payload": lot_payload})
     pipeline_store.set_event(session_id, "lot_result", lot_payload)
     await _maybe_demo_sleep()
@@ -4221,13 +4504,16 @@ async def _run_reference_pipeline(
         "representative_lot": selected_lot_id,
         "params": {},
     }
+    simulation_payload = {"params": params, "result": synthetic}
+    if run_id:
+        simulation_payload["run_id"] = run_id
     await event_bus.broadcast(
-        {"type": "simulation_result", "payload": {"params": params, "result": synthetic}}
+        {"type": "simulation_result", "payload": simulation_payload}
     )
     pipeline_store.set_event(
         session_id,
         "simulation_result",
-        {"params": params, "result": synthetic},
+        simulation_payload,
     )
     simulation_result = {"status": "ok", "result": synthetic}
     await _emit_pipeline_status("recommendation", "조건 매칭 완료", done=True)
@@ -4245,6 +4531,7 @@ async def _run_reference_pipeline(
     defect_stats = {}
     defect_rate_overall = None
     if condition_table:
+        condition_table = _attach_run_id(condition_table, run_id)
         rate_values = [
             item.get("defect_rate")
             for item in defect_rates
@@ -4302,6 +4589,7 @@ async def _run_reference_pipeline(
                 "metric_label": "불량률",
                 "value_unit": "ratio",
             }
+            chart_payload = _attach_run_id(chart_payload, run_id)
             await event_bus.broadcast(
                 {"type": "defect_rate_chart", "payload": chart_payload}
             )
@@ -4326,6 +4614,17 @@ async def _run_reference_pipeline(
         payload_fill_value=payload_fill_value,
         payload_fallback_to_ref=payload_fallback,
         rules=rules,
+    )
+    pipeline_store.set_stage_inputs(
+        session_id,
+        "grid",
+        {
+            "run_id": run_id,
+            "overrides": grid_overrides,
+            "payload_columns": grid_payload_columns,
+            "payload_missing_columns": grid_payload_missing,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
     )
     await _emit_pipeline_status("grid", "그리드 탐색 중...")
     grid_results = await call_grid_search_api(grid_payload)
@@ -4363,6 +4662,7 @@ async def _run_reference_pipeline(
     pipeline_store.set_grid(
         session_id,
         {
+            "run_id": run_id,
             "chip_prod_id": chip_prod_id,
             "lot_id": selected_lot_id,
             "results": grid_results,
@@ -4376,6 +4676,7 @@ async def _run_reference_pipeline(
         candidate_matches, defect_label_map
     )
     if candidate_chart:
+        candidate_chart = _attach_run_id(candidate_chart, run_id)
         await event_bus.broadcast(
             {"type": "defect_rate_chart", "payload": candidate_chart}
         )
@@ -4385,29 +4686,33 @@ async def _run_reference_pipeline(
             candidate_chart,
         )
 
+    design_payload = {
+        "candidates": top_candidates,
+        "total": len(grid_results),
+        "offset": 0,
+        "limit": len(top_candidates),
+        "target": chip_prod_id,
+        "design_labels": design_label_map,
+    }
+    design_payload = _attach_run_id(design_payload, run_id)
     await event_bus.broadcast(
-        {
-            "type": "design_candidates",
-            "payload": {
-                "candidates": top_candidates,
-                "total": len(grid_results),
-                "offset": 0,
-                "limit": len(top_candidates),
-                "target": chip_prod_id,
-                "design_labels": design_label_map,
-            },
-        }
+        {"type": "design_candidates", "payload": design_payload}
     )
     pipeline_store.set_event(
         session_id,
         "design_candidates",
+        design_payload,
+    )
+    briefing_config = _resolve_final_briefing_config(rules)
+    pipeline_store.set_stage_inputs(
+        session_id,
+        "selection",
         {
-            "candidates": top_candidates,
-            "total": len(grid_results),
-            "offset": 0,
-            "limit": len(top_candidates),
-            "target": chip_prod_id,
-            "design_labels": design_label_map,
+            "run_id": run_id,
+            "overrides": selection_overrides,
+            "top_k": top_k,
+            "max_blocks": briefing_config.get("max_blocks"),
+            "updated_at": datetime.utcnow().isoformat(),
         },
     )
     summary_payload = _build_final_briefing_payload(
@@ -4425,6 +4730,7 @@ async def _run_reference_pipeline(
         chip_prod_id_samples=chip_prod_id_samples,
         column_labels=column_label_map,
     )
+    summary_payload = _attach_run_id(summary_payload, run_id)
     memory_summary = _build_memory_summary(summary_payload)
     await event_bus.broadcast({"type": "final_briefing", "payload": summary_payload})
     pipeline_store.set_event(session_id, "final_briefing", summary_payload)
@@ -4440,7 +4746,6 @@ async def _run_reference_pipeline(
             "simulation_result": simulation_result,
         }
 
-    briefing_config = _resolve_final_briefing_config(rules)
     reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
     detail_chunk_size = briefing_config.get("reference_detail_chunk_size", 6)
 
@@ -4715,12 +5020,15 @@ async def _handle_pipeline_edit_message(
 
     params = simulation_store.get(session_id)
     chip_prod_override = params.get("chip_prod_id")
+    selection_overrides = _get_selection_overrides(session_id)
+    reference_override = reference_override or _get_reference_override(session_id)
     result = await _run_reference_pipeline(
         session_id,
         params,
         chip_prod_override=chip_prod_override,
         reference_override=reference_override,
-        grid_overrides=grid_overrides or (state.get("grid") or {}).get("overrides"),
+        grid_overrides=grid_overrides or _get_grid_overrides(session_id),
+        selection_overrides=selection_overrides,
     )
     if isinstance(result, dict) and result.get("streamed"):
         return result
@@ -4745,7 +5053,12 @@ async def _handle_pipeline_run_message(
                     stored_params, missing, None
                 )
             result = await _run_reference_pipeline(
-                session_id, stored_params, chip_prod_override=chip_prod_override
+                session_id,
+                stored_params,
+                chip_prod_override=chip_prod_override,
+                reference_override=_get_reference_override(session_id),
+                grid_overrides=_get_grid_overrides(session_id),
+                selection_overrides=_get_selection_overrides(session_id),
             )
             if isinstance(result, dict) and result.get("streamed"):
                 return result
@@ -4790,6 +5103,9 @@ async def _handle_pipeline_run_message(
         session_id,
         update_result.get("params", {}),
         chip_prod_override=chip_prod_override,
+        reference_override=_get_reference_override(session_id),
+        grid_overrides=_get_grid_overrides(session_id),
+        selection_overrides=_get_selection_overrides(session_id),
     )
     if isinstance(result, dict) and result.get("streamed"):
         return result
@@ -5009,7 +5325,12 @@ async def run_simulation_route(request: SimulationRunRequest) -> dict:
             await _emit_chat_message(request.session_id, auto_message)
             return {"status": "missing", "missing": missing, "params": params}
         pipeline_result = await _run_reference_pipeline(
-            request.session_id, params, chip_prod_override=chip_prod_override
+            request.session_id,
+            params,
+            chip_prod_override=chip_prod_override,
+            reference_override=_get_reference_override(request.session_id),
+            grid_overrides=_get_grid_overrides(request.session_id),
+            selection_overrides=_get_selection_overrides(request.session_id),
         )
         await _append_system_note(
             request.session_id, "추천 파이프라인 실행 완료."
@@ -5055,10 +5376,13 @@ async def update_recommendation_params_route(
             "representative_lot": updated.get("representative_lot"),
             "params": updated.get("params"),
         }
+        run_id = simulation_store.ensure_run_id(request.session_id)
         payload = {
             "params": updated.get("input_params") or {},
             "result": result_payload,
         }
+        if run_id:
+            payload["run_id"] = run_id
         await event_bus.broadcast({"type": "simulation_result", "payload": payload})
         pipeline_store.set_event(request.session_id, "simulation_result", payload)
         await _append_system_note(

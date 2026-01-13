@@ -29,6 +29,16 @@ STAGE_EVENT_MAP = {
     "final": ["final_briefing"],
 }
 
+SIMULATION_EVENT_TYPES = {
+    "simulation_form",
+    "simulation_result",
+    "lot_result",
+    "defect_rate_chart",
+    "design_candidates",
+    "final_briefing",
+    "final_defect_chart",
+}
+
 STAGE_ALIASES = {
     "추천": "recommendation",
     "추천결과": "recommendation",
@@ -661,6 +671,16 @@ def collect_simulation_params(
         for key in extra_missing:
             if key not in missing:
                 missing.append(key)
+    pipeline_store.set_stage_inputs(
+        session_id,
+        "recommendation",
+        {
+            "run_id": simulation_store.get_run_id(session_id),
+            "params": params,
+            "missing": missing,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
     return {"params": params, "missing": missing}
 
 
@@ -686,20 +706,24 @@ async def execute_simulation() -> dict:
     recommendation_store.set(
         session_id, {"input_params": params, "awaiting_prediction": True, **result}
     )
+    run_id = simulation_store.ensure_run_id(session_id)
+    payload = {"params": params, "result": result}
+    if run_id:
+        payload["run_id"] = run_id
     await event_bus.broadcast(
         {
             "type": "simulation_result",
-            "payload": {"params": params, "result": result},
+            "payload": payload,
         }
     )
     pipeline_store.set_event(
         session_id,
         "simulation_result",
-        {"params": params, "result": result},
+        payload,
     )
     await emit_frontend_trigger(
         "인접기종 추천 결과가 도착했습니다.",
-        {"params": params, "result": result},
+        payload,
     )
     return {
         "status": "ok",
@@ -722,10 +746,24 @@ async def emit_frontend_trigger(message: str, payload: dict | None = None) -> di
 async def emit_simulation_form(params: dict, missing: list[str]) -> dict:
     session_id = current_session_id.get()
     simulation_store.activate(session_id)
-    event = {"type": "simulation_form", "payload": {"params": params, "missing": missing}}
+    run_id = simulation_store.ensure_run_id(session_id)
+    payload = {"params": params, "missing": missing}
+    if run_id:
+        payload["run_id"] = run_id
+    pipeline_store.set_stage_inputs(
+        session_id,
+        "recommendation",
+        {
+            "run_id": run_id,
+            "params": params,
+            "missing": missing,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
+    event = {"type": "simulation_form", "payload": payload}
     await event_bus.broadcast(event)
-    pipeline_store.set_event(session_id, "simulation_form", event["payload"])
-    return event["payload"]
+    pipeline_store.set_event(session_id, "simulation_form", payload)
+    return payload
 
 
 async def show_simulation_stage_impl(stage: str = "") -> dict:
@@ -733,6 +771,7 @@ async def show_simulation_stage_impl(stage: str = "") -> dict:
     await _log_tool_call("show_simulation_stage", stage=stage)
     session_id = current_session_id.get()
     events = pipeline_store.get_events(session_id)
+    sim_run_id = simulation_store.get_run_id(session_id)
     if not events:
         message = "저장된 단계 결과가 없습니다. 먼저 시뮬레이션을 실행해 주세요."
         await _log_tool_result("show_simulation_stage", "status=missing events=0")
@@ -751,6 +790,9 @@ async def show_simulation_stage_impl(stage: str = "") -> dict:
     sent = []
     for event_type in event_types:
         payload = events.get(event_type)
+        if sim_run_id and event_type in SIMULATION_EVENT_TYPES:
+            if not isinstance(payload, dict) or payload.get("run_id") != sim_run_id:
+                continue
         if payload:
             await event_bus.broadcast({"type": event_type, "payload": payload})
             sent.append(event_type)
@@ -909,6 +951,15 @@ async def apply_chart_config_impl(
     await event_bus.broadcast({"type": "defect_rate_chart", "payload": updated_payload})
     pipeline_store.set_event(session_id, "defect_rate_chart", updated_payload)
     pipeline_store.update(session_id, chart_config=config)
+    pipeline_store.set_stage_inputs(
+        session_id,
+        "chart",
+        {
+            "run_id": updated_payload.get("run_id"),
+            "config": config,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
     await _log_tool_result("apply_chart_config", f"status=ok bins={bins} normalize={normalize}")
     return {"status": "ok", "chart_type": chart_type, "config": config}
 

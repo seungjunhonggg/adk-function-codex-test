@@ -92,6 +92,7 @@ class PlannerDecision(BaseModel):
     next_action: Literal["ask_user", "run_step", "finalize", "confirm"] = "run_step"
     confirmation_prompt: str = ""
     pending_action: dict | None = None
+    open_form_fields: list[str] = []
 
 
 class EditIntent(BaseModel):
@@ -101,6 +102,7 @@ class EditIntent(BaseModel):
         "update_recommendation_params",
         "update_grid",
         "update_reference",
+        "update_selection",
         "show_stage",
         "show_progress",
         "reset",
@@ -111,6 +113,7 @@ class EditIntent(BaseModel):
     clear_fields: list[str] = []
     grid_overrides: dict[str, float] = {}
     reference_lot_id: str | None = None
+    selection_overrides: dict[str, int] = {}
     stage: Literal["recommendation", "reference", "grid", "final", "any", "unknown"] = "unknown"
     rerun: bool = False
     needs_clarification: bool = False
@@ -252,6 +255,9 @@ planner_agent = _build_agent(
         "If the user asks for multiple tasks, split them into ordered steps. "
         "If the user explicitly asks for confirmation before execution, set next_action=confirm, "
         "provide confirmation_prompt, and include pending_action with workflow + memory criteria. "
+        "If the user intent is simulation_edit and they mention param names without values, "
+        "set open_form_fields to the field names that should be edited "
+        "(temperature/voltage/size/capacity/production_mode/chip_prod_id). "
         "Use the provided context JSON for available memory keys and session state."
     ),
     output_type=AgentOutputSchema(PlannerDecision, strict_json_schema=False),
@@ -262,11 +268,16 @@ edit_intent_agent = _build_agent(
     name="Edit Intent Agent",
     instructions=(
         "Parse the user request into a structured edit intent for the simulation pipeline. "
-        "Return JSON with keys: intent, updates, clear_fields, grid_overrides, reference_lot_id, stage, "
+        "Return JSON with keys: intent, updates, clear_fields, grid_overrides, reference_lot_id, "
+        "selection_overrides, stage, "
         "rerun, needs_clarification, note, confidence. "
         "intent values: update_params (temperature/voltage/size/capacity/production_mode/chip_prod_id), "
         "update_recommendation_params (param1..param30), update_grid (sheet_t/laydown/active_layer), "
-        "update_reference (reference lot change), show_stage, show_progress, reset, rerun, new_simulation, none. "
+        "update_reference (reference lot change), update_selection (top_k/max_blocks overrides), "
+        "show_stage, show_progress, reset, rerun, new_simulation, none. "
+        "If the user asks to change selection criteria like '상위 5개' or 'TOP 3', "
+        "set intent=update_selection and set selection_overrides.top_k. "
+        "If the user asks to change the number of briefing blocks, set selection_overrides.max_blocks. "
         "Alias map examples: sheet_t=시트티/시트 T/시트두께/성형두께/성형 두께/sheet thickness; "
         "laydown=레이다운/레이 다운/lay down/도포량/코팅량; "
         "active_layer=액티브/활성층/활성 레이어/active layer; "

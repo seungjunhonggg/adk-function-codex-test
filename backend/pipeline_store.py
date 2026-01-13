@@ -148,6 +148,27 @@ class PipelineStateStore:
         self._persist(session_id, record)
         return dict(record)
 
+    def get_stage_inputs(self, session_id: str) -> dict[str, Any]:
+        record = self._get_record(session_id)
+        stage_inputs = record.get("stage_inputs", {})
+        return dict(stage_inputs) if isinstance(stage_inputs, dict) else {}
+
+    def set_stage_inputs(
+        self, session_id: str, stage: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not session_id or not stage:
+            return self.get(session_id)
+        record = dict(self._get_record(session_id))
+        stage_inputs = record.get("stage_inputs", {})
+        if not isinstance(stage_inputs, dict):
+            stage_inputs = {}
+        stage_inputs = dict(stage_inputs)
+        stage_inputs[stage] = payload
+        record["stage_inputs"] = stage_inputs
+        self._data[session_id] = record
+        self._persist(session_id, record)
+        return dict(record)
+
     def set_pending_memory_summary(
         self, session_id: str, summary: str, label: str | None = None
     ) -> dict[str, Any]:

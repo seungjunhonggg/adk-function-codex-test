@@ -1,4 +1,5 @@
 import re
+import uuid
 from typing import Dict, List
 
 import httpx
@@ -97,9 +98,14 @@ class SimulationStore:
     def __init__(self) -> None:
         self._data: Dict[str, Dict[str, float | str]] = {}
         self._active: Dict[str, bool] = {}
+        self._run_id: Dict[str, str] = {}
+
+    def _new_run_id(self) -> str:
+        return uuid.uuid4().hex
 
     def update(self, session_id: str, **kwargs: object) -> Dict[str, float | str]:
         record: Dict[str, float | str] = self._data.get(session_id, {})
+        before = dict(record)
         for key, value in kwargs.items():
             if key == "chip_prod_id":
                 text = _normalize_chip_prod_id(value) or ""
@@ -134,7 +140,21 @@ class SimulationStore:
             if coerced is not None:
                 record[key] = coerced
         self._data[session_id] = record
+        if session_id and record != before:
+            self._run_id[session_id] = self._new_run_id()
         return record
+
+    def get_run_id(self, session_id: str) -> str:
+        return self._run_id.get(session_id, "")
+
+    def ensure_run_id(self, session_id: str) -> str:
+        if not session_id:
+            return ""
+        run_id = self._run_id.get(session_id)
+        if not run_id:
+            run_id = self._new_run_id()
+            self._run_id[session_id] = run_id
+        return run_id
 
     def get(self, session_id: str) -> Dict[str, float | str]:
         return dict(self._data.get(session_id, {}))
@@ -146,14 +166,20 @@ class SimulationStore:
     def clear(self, session_id: str) -> None:
         self._data.pop(session_id, None)
         self._active.pop(session_id, None)
+        self._run_id.pop(session_id, None)
 
     def remove_keys(self, session_id: str, keys: list[str]) -> Dict[str, float | str]:
         record = self._data.get(session_id, {})
         if not record or not keys:
             return dict(record)
+        removed = False
         for key in keys:
-            record.pop(key, None)
+            if key in record:
+                removed = True
+                record.pop(key, None)
         self._data[session_id] = record
+        if removed and session_id:
+            self._run_id[session_id] = self._new_run_id()
         return dict(record)
 
     def activate(self, session_id: str) -> None:

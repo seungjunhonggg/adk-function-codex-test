@@ -123,6 +123,7 @@ flowchart TD
    - `event_bus.broadcast`로 프론트 카드 업데이트  
    - 주요 이벤트: `simulation_form`, `lot_result`, `defect_rate_chart`,  
      `design_candidates`, `final_briefing`
+   - 시뮬레이션 관련 이벤트는 `run_id`를 포함해 최신 실행만 필터링되도록 구성
    - 진행 로그 이벤트:
      - `pipeline_status`: 단계별 진행 메시지 (프론트에서 누적 로그로 표시)
        - planner 루프는 `stage=planner`로 step 진행 로그를 남김
@@ -175,6 +176,8 @@ flowchart TD
 - `pending_action`/`pending_plan`/`pending_inputs`/`dialogue_state`: 제안→확인→실행 상태 관리
 - 이벤트 패널 재현에 필요한 payload를 저장
 - 단계별 진행 로그용 `stage_tables`(reference/grid 표 목록)도 이벤트로 저장
+- `stage_inputs`: 단계별 입력 스냅샷(recommendation/reference/grid/selection/chart)과 `run_id`를 저장해
+  특정 단계 수정 시 재실행 기준으로 사용
 - `PIPELINE_STATE_DB_PATH`(기본 `sessions.db`)의 `pipeline_state` 테이블에 스냅샷을 저장해
   서버 재시작 시에도 세션별 이벤트 복원이 가능하도록 함
 - `reference` 페이로드에는 최종 브리핑 표 생성을 위한
