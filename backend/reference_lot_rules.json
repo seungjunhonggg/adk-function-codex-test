@@ -310,9 +310,9 @@
         "order": "desc",
         "combine": "min",
         "value_priority": {
-          "MCS_GRADE_S": 3,
-          "MCS_GRADE_A": 2,
-          "MCS_GRADE_B": 1
+          "S 등급": 3,
+          "A 등급": 2,
+          "B 등급": 1
         }
       },
       { "column": "bdv_avg", "order": "desc" },
@@ -324,7 +324,7 @@
       "key": "cutting_defect",
       "column": "cutting_defect",
       "operator": "in",
-      "value": ["MCS_GRADE_S", "MCS_GRADE_A", "MCS_GRADE_B"]
+      "value": ["S 등급", "A 등급", "B 등급"]
     },
     {
       "key": "x_fr_ispass",
@@ -342,7 +342,7 @@
       "key": "measure_defect",
       "column": "measure_defect",
       "operator": "in",
-      "value": ["MCS_GRADE_S", "MCS_GRADE_A", "MCS_GRADE_B"]
+      "value": ["S 등급", "A 등급", "B 등급"]
     },
     {
       "key": "pass_halt",

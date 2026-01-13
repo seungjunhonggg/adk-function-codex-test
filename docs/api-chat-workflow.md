@@ -79,7 +79,7 @@ flowchart TD
     - 레퍼런스 LOT 선택 (`reference_lot.py`)
       - ref_lot_search_filter: 파라미터 필터 + conditions.required_not_null +
         defect_conditions + (파라미터 기반으로 찾은 chip_prod_id IN 조건)을 단일 조회로 적용
-      - lot_search 불량 필터: cutting_defect/measure_defect는 MCS_GRADE_S/A/B,
+      - lot_search 불량 필터: cutting_defect/measure_defect는 S 등급/A 등급/B 등급,
         contact_defect=0 또는 NULL,
         x_fr_ispass/pass_halt/pass_8585/pass_burn_in/x_df_ispass/x_odb_pass_yn은
         IS DISTINCT FROM 'NG'
