@@ -46,21 +46,22 @@
 
       <main id="main-panels" class="main event-collapsed">
         <section class="chat-panel">
-          <div class="panel-header">
-            <div>
-              <h2>Rafaello Demo</h2>
+          <div class="chat-panel-inner">
+            <div class="panel-header">
+              <div>
+                <h2>Rafaello Demo</h2>
+              </div>
+              <div class="panel-header-actions"></div>
             </div>
-            <div class="panel-header-actions">
-            </div>
+            <div id="messages" class="messages"></div>
+            <form id="chat-form" class="composer">
+              <textarea
+                id="chat-input"
+                placeholder="LOT ID를 입력하거나 인접기종 추천을 요청해 보세요."
+              ></textarea>
+              <button type="submit">전송</button>
+            </form>
           </div>
-          <div id="messages" class="messages"></div>
-          <form id="chat-form" class="composer">
-            <textarea
-              id="chat-input"
-              placeholder="LOT ID를 입력하거나 인접기종 추천을 요청해 보세요."
-            ></textarea>
-            <button type="submit">전송</button>
-          </form>
         </section>
 
         <section id="event-panel" class="event-panel">

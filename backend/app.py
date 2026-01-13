@@ -780,6 +780,7 @@ def _build_grid_search_payload(
     if grinding_w is None:
         grinding_w = grinding_t
 
+
     total_cover = _row_value(ref_payload, "total_cover_layer_num")
     if total_cover is None:
         top_cover = _coerce_float(_row_value(ref_payload, "top_cover_layer_num"))
