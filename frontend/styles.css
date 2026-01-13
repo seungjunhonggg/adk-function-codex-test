@@ -707,6 +707,14 @@ body::before {
 
 .chat-panel {
   border-left: 0;
+  --chat-panel-inline-padding: 200px;
+  font-size: 19px;
+}
+
+@media (max-width: 960px) {
+  .chat-panel {
+    --chat-panel-inline-padding: 24px;
+  }
 }
 
 .event-panel {
@@ -731,6 +739,11 @@ body::before {
   align-items: center;
 }
 
+.chat-panel .panel-header {
+  padding-left: var(--chat-panel-inline-padding);
+  padding-right: var(--chat-panel-inline-padding);
+}
+
 .panel-header h2 {
   margin: 0;
   font-size: 17px;
@@ -739,6 +752,14 @@ body::before {
 .panel-header span {
   font-size: 12px;
   color: var(--text-soft);
+}
+
+.chat-panel .panel-header h2 {
+  font-size: 20px;
+}
+
+.chat-panel .panel-header span {
+  font-size: 15px;
 }
 
 .panel-header-actions {
@@ -755,6 +776,10 @@ body::before {
   padding: 6px 10px;
   border-radius: 999px;
   cursor: pointer;
+}
+
+.chat-panel .panel-header-actions .ghost {
+  font-size: 15px;
 }
 
 .panel-toggle {
@@ -842,11 +867,20 @@ body::before {
   overflow-y: auto;
 }
 
+.chat-panel .messages {
+  padding-left: var(--chat-panel-inline-padding);
+  padding-right: var(--chat-panel-inline-padding);
+}
+
 .message {
   max-width: 100%;
   line-height: 1.4;
   font-size: 16px;
   animation: rise 0.35s ease;
+}
+
+.chat-panel .message {
+  font-size: 19px;
 }
 
 .message.user {
@@ -885,6 +919,15 @@ body::before {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.chat-panel .message.system,
+.chat-panel .message.status {
+  font-size: 15px;
+}
+
+.chat-panel .message.status * {
+  font-size: 15px;
 }
 
 .message.status.pipeline-log {
@@ -1048,6 +1091,10 @@ body::before {
   font-size: 14px;
 }
 
+.chat-panel .message table {
+  font-size: 17px;
+}
+
 .message th,
 .message td {
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -1122,6 +1169,11 @@ body::before {
   gap: 12px;
 }
 
+.chat-panel .composer {
+  padding-left: var(--chat-panel-inline-padding);
+  padding-right: var(--chat-panel-inline-padding);
+}
+
 .composer textarea {
   flex: 1;
   border: 1px solid rgba(0, 0, 0, 0.12);
@@ -1131,6 +1183,10 @@ body::before {
   font-family: var(--font-sans);
   min-height: 44px;
   resize: none;
+}
+
+.chat-panel .composer textarea {
+  font-size: 17px;
 }
 
 .composer textarea:focus {
