@@ -35,6 +35,8 @@ flowchart TD
 1) `/api/chat`는 먼저 `pending_action` 정책 레이어를 확인합니다.  
 2) pending_action이 확인되면 해당 워크플로우를 즉시 실행하고 응답합니다.  
 3) pending_action이 없으면 `planner_agent`로 요청을 단계화합니다.  
+   - planner context JSON에는 `memory_keys`, `missing_sim_fields`, `has_chip_prod_id`, `events`에 더해  
+     `keyword_hints`, `simulation_active`가 포함됩니다.
 4) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
 5) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
 6) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  

@@ -1232,6 +1232,17 @@ DB_KEYWORDS = (
 )
 
 
+def _build_keyword_hints(message: str) -> dict:
+    return {
+        "stage_keyword_hits": _keyword_hits(message, STAGE_NOUN_KEYWORDS),
+        "stage_action_hits": _keyword_hits(message, STAGE_ACTION_KEYWORDS),
+        "chart_keyword_hits": _keyword_hits(message, CHART_KEYWORDS),
+        "simulation_run_hits": _keyword_hits(message, SIM_RUN_KEYWORDS),
+        "simulation_edit_hits": _keyword_hits(message, SIM_EDIT_KEYWORDS),
+        "db_keyword_hits": _keyword_hits(message, DB_KEYWORDS),
+    }
+
+
 def _is_chart_request(message: str) -> bool:
     return _contains_any(message, CHART_KEYWORDS)
 
@@ -2283,6 +2294,8 @@ async def _maybe_handle_planner_message(
     if not OPENAI_API_KEY:
         return None
     context_payload = _planner_context_payload(session_id)
+    context_payload["simulation_active"] = simulation_store.is_active(session_id)
+    context_payload["keyword_hints"] = _build_keyword_hints(message)
     prompt = (
         "Return JSON only. Create a concise execution plan. "
         "Keys: goal, steps, missing_inputs, next_action, confirmation_prompt, pending_action. "
@@ -2386,14 +2399,7 @@ async def _route_message(message: str, session_id: str) -> dict:
     if not OPENAI_API_KEY:
         return _fallback_route(message)
     summary = _build_route_summary(session_id)
-    keyword_hints = {
-        "stage_keyword_hits": _keyword_hits(message, STAGE_NOUN_KEYWORDS),
-        "stage_action_hits": _keyword_hits(message, STAGE_ACTION_KEYWORDS),
-        "chart_keyword_hits": _keyword_hits(message, CHART_KEYWORDS),
-        "simulation_run_hits": _keyword_hits(message, SIM_RUN_KEYWORDS),
-        "simulation_edit_hits": _keyword_hits(message, SIM_EDIT_KEYWORDS),
-        "db_keyword_hits": _keyword_hits(message, DB_KEYWORDS),
-    }
+    keyword_hints = _build_keyword_hints(message)
     meta = {
         "simulation_active": simulation_store.is_active(session_id),
         "summary": summary,
@@ -2987,14 +2993,15 @@ async def _resolve_stage_with_llm(
     events = pipeline_store.get_events(session_id)
     available = _available_stages_from_events(events)
     last_stage = pipeline_store.get(session_id).get("last_stage_request")
+    keyword_hints = _build_keyword_hints(message)
     payload = {
         "message": message,
         "available_stages": available,
         "last_stage_request": last_stage,
         "keyword_hints": {
-            "stage_keyword_hits": _keyword_hits(message, STAGE_NOUN_KEYWORDS),
-            "stage_action_hits": _keyword_hits(message, STAGE_ACTION_KEYWORDS),
-            "chart_keyword_hits": _keyword_hits(message, CHART_KEYWORDS),
+            "stage_keyword_hits": keyword_hints["stage_keyword_hits"],
+            "stage_action_hits": keyword_hints["stage_action_hits"],
+            "chart_keyword_hits": keyword_hints["chart_keyword_hits"],
         },
         "route_hint": {
             "primary_intent": route_command.get("primary_intent"),
