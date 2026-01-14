@@ -442,7 +442,6 @@ def _format_planner_notes(decision: dict) -> list[str]:
         "simulation_edit": "조건 수정",
         "db_query": "DB 조회",
         "chart_edit": "차트 수정",
-        "stage_view": "단계 보기",
         "briefing": "브리핑",
         "chat": "대화",
     }
@@ -805,7 +804,6 @@ async def _handle_fallback_workflow(
 
 
 WORKFLOW_HANDLERS: dict[str, Callable[..., Awaitable[WorkflowOutcome | None]]] = {
-    "stage_view": _handle_stage_view_workflow,
     "chart_edit": _handle_chart_edit_workflow,
     "simulation_edit": _handle_simulation_edit_workflow,
     "simulation_run": _handle_simulation_run_workflow,
@@ -1531,7 +1529,6 @@ def _normalize_route_command(raw: object) -> dict:
     allowed = {
         "simulation_edit",
         "simulation_run",
-        "stage_view",
         "db_query",
         "chart_edit",
         "chat",
@@ -1599,16 +1596,6 @@ def _fallback_route(message: str) -> dict:
             "clarifying_question": "",
             "confidence": 0.5,
             "reason": "db_chart_keyword",
-        }
-    if _is_stage_view_request(message):
-        return {
-            "primary_intent": "stage_view",
-            "secondary_intents": [],
-            "stage": _extract_stage_label(message) or "unknown",
-            "needs_clarification": False,
-            "clarifying_question": "",
-            "confidence": 0.55,
-            "reason": "stage_view_keyword",
         }
     if _is_chart_request(message):
         return {
@@ -1701,7 +1688,6 @@ def _normalize_edit_decision(raw: object) -> dict:
         "update_grid",
         "update_reference",
         "update_selection",
-        "show_stage",
         "show_progress",
         "reset",
         "rerun",
@@ -1963,17 +1949,6 @@ PLANNER_WORKFLOW_CONFIG: dict[str, dict[str, list[str]]] = {
         "optional_memory": [],
         "success_criteria": ["events.defect_rate_chart", "chart_config"],
     },
-    "stage_view": {
-        "required_memory": [],
-        "optional_memory": [
-            "events.simulation_result",
-            "events.lot_result",
-            "events.defect_rate_chart",
-            "events.design_candidates",
-            "events.final_briefing",
-        ],
-        "success_criteria": ["last_stage_request"],
-    },
     "briefing_choice": {
         "required_memory": ["events.final_briefing"],
         "optional_memory": ["briefing_mode"],
@@ -2002,7 +1977,6 @@ PLANNER_SELF_SUFFICIENT = {
     "simulation_run",
     "simulation_edit",
     "db_query",
-    "stage_view",
     "chat",
 }
 PLANNER_MAX_STEPS = 6
@@ -3034,7 +3008,6 @@ def _default_confirmation_prompt(workflow: str) -> str:
         "simulation_edit": "수정된 조건으로 다시 진행할까요?",
         "db_query": "DB 조회를 진행할까요?",
         "chart_edit": "차트를 변경해도 될까요?",
-        "stage_view": "요청하신 화면을 보여드릴까요?",
         "briefing": "브리핑을 진행할까요?",
     }
     return prompts.get(workflow, "이 작업을 진행할까요?")
@@ -3376,14 +3349,11 @@ async def _route_message(message: str, session_id: str) -> dict:
     prompt = (
         "Return JSON only. Decide the primary intent and any secondary intents. "
         "Output keys: primary_intent, secondary_intents, needs_clarification, clarifying_question, confidence, reason. "
-        "Intents: simulation_run, simulation_edit, stage_view, db_query, chart_edit, chat, unknown. "
+        "Intents: simulation_run, simulation_edit, db_query, chart_edit, chat, unknown. "
         "Guidelines: "
         "- chart_edit when user wants to change or redraw charts/graphs/histograms. "
         "- simulation_edit when user wants to modify existing simulation inputs/results, "
         "replay stages, check progress, or reset. "
-        "- stage_view when user asks to show/replay a stage screen "
-        "(추천/레퍼런스/그리드/최종/화면). If stage_view, set stage to "
-        "recommendation/reference/grid/final if possible. "
         "- simulation_run when user wants to start/restart a simulation with new inputs. "
         "- If the user mentions simulation params (temperature/voltage/size/capacity/production_mode/chip_prod_id) "
         "with a value or change request, prefer simulation_edit over chart_edit. "
@@ -3393,12 +3363,9 @@ async def _route_message(message: str, session_id: str) -> dict:
         "- db_query for LOT/process database lookups (including averages/trends/graphs from DB). "
         "- chat for casual or unrelated conversation. "
         "Use keyword_hints as soft signals: "
-        "1) If stage_keyword_hits or stage_action_hits are present and chart_keyword_hits are empty, "
-        "prefer stage_view. "
-        "2) If both stage_* and chart_keyword_hits are present, ask for clarification. "
-        "3) If simulation_active and simulation_edit_hits are present, prefer simulation_edit. "
-        "4) If simulation_run_hits are present and simulation_active is false, prefer simulation_run. "
-        "5) If db_keyword_hits are present and simulation keywords are weak, prefer db_query. "
+        "1) If simulation_active and simulation_edit_hits are present, prefer simulation_edit. "
+        "2) If simulation_run_hits are present and simulation_active is false, prefer simulation_run. "
+        "3) If db_keyword_hits are present and simulation keywords are weak, prefer db_query. "
         "If ambiguous between db_query and simulation_edit, ask a short Korean clarification. "
         f"Context: {json.dumps(meta, ensure_ascii=False)}\n"
         f"User message: {message}"
@@ -3552,18 +3519,6 @@ async def _apply_edit_decision(
         return await _generate_edit_auto_message(
             "show_progress",
             {"history": history[-6:], "ask_prediction": False},
-            fallback,
-        )
-
-    if intent == "show_stage":
-        stage = decision.get("stage") or ""
-        if stage in {"any", "unknown"}:
-            stage = message
-        result = await show_simulation_stage_impl(stage)
-        fallback = result.get("message") or "요청하신 단계를 다시 표시했어요."
-        return await _generate_edit_auto_message(
-            "show_stage",
-            {"stage": stage, "result": result, "ask_prediction": False},
             fallback,
         )
 
@@ -4100,7 +4055,6 @@ async def _resolve_stage_with_llm(
         "Keys: stage, needs_clarification, clarifying_question, confidence. "
         "Stage must be one of recommendation, reference, grid, final, unknown. "
         "If available_stages has exactly one entry and the user is vague, choose it. "
-        "If ambiguous between chart_edit and stage_view, ask a short Korean clarification. "
         f"Context: {json.dumps(payload, ensure_ascii=False)}"
     )
     try:
@@ -6422,9 +6376,6 @@ async def _maybe_handle_simulation_message(
         missing = simulation_store.missing(session_id)
         await emit_simulation_form({}, missing)
         return "Simulation reset. Please enter parameters again."
-
-    if _is_stage_request(message):
-        return await _handle_stage_view_request(message, session_id, {"stage": "unknown"})
 
     if _is_progress_request(message):
         await get_simulation_progress_impl()

@@ -2675,15 +2675,15 @@ function handleEvent(event) {
   }
 
   if (event.type === "simulation_result") {
-    renderSimResult(event.payload);
     const chipProdId = event.payload?.result?.recommended_chip_prod_id || "결과 수신";
     addEventLog("추천", `기종: ${chipProdId}`);
+    return;
   }
 
   if (event.type === "defect_rate_chart") {
-    renderDefectRateChart(event.payload);
     const label = event.payload?.metric_label || "불량률";
     addEventLog(label, "그래프 업데이트");
+    return;
   }
   if (event.type === "final_defect_chart") {
     if (hasFinalBriefing) {
@@ -2695,8 +2695,8 @@ function handleEvent(event) {
   }
 
   if (event.type === "design_candidates") {
-    renderDesignCandidates(event.payload);
     addEventLog("설계", "후보 업데이트");
+    return;
   }
 
   if (event.type === "final_briefing") {
@@ -2711,10 +2711,10 @@ function handleEvent(event) {
   }
 
   if (event.type === "prediction_result") {
-    renderPredictionResult(event.payload);
     const prob = event.payload?.result?.reliability_pass_prob;
     const detail = prob ? `통과확률: ${prob}` : "결과 수신";
     addEventLog("예측", detail);
+    return;
   }
 
   if (event.type === "pipeline_status") {
@@ -2752,17 +2752,6 @@ function handleEvent(event) {
 
   if (event.type === "frontend_trigger") {
     const message = event.payload?.message || "프론트 트리거가 도착했습니다.";
-    const payloadData = event.payload?.data;
-    const hasResultPayload =
-      payloadData &&
-      typeof payloadData === "object" &&
-      ("result" in payloadData || "rows" in payloadData);
-    if (frontendTriggerEl) {
-      frontendTriggerEl.textContent = message;
-    }
-    if (!hasResultPayload) {
-      showOnlyStreamCards([frontendCard]);
-    }
     addEventLog("UI", message);
     const isWarning = /필요|부족|없습니다|실패/.test(message);
     if (message.toLowerCase().includes("lot")) {

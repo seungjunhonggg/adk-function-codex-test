@@ -19,14 +19,12 @@ flowchart TD
   Handler -->|simulation_run/edit| Sim[_maybe_handle_simulation_message]
   Handler -->|db_query| DB[db_agent + query tools]
   Handler -->|chart_edit| Chart[chart_agent + apply_chart_config]
-  Handler -->|stage_view| Stage[show_simulation_stage]
   Handler -->|fallback| Chat[conversation_agent]
 
   Sim --> Ref[_run_reference_pipeline]
   Ref --> Events[event_bus]
   DB --> Events
   Chart --> Events
-  Stage --> Events
 
   Handler -->|assistant message| Session[SQLiteSession (sessions.db)]
   Events --> UI[Frontend event panel]
@@ -58,7 +56,6 @@ flowchart TD
 - `simulation_run` / `simulation_edit`
 - `db_query`
 - `chart_edit`
-- `stage_view`
 - `chat` / `unknown`
 
 참고: `simulation_run` 의도는 "추천/인접/시뮬/예측"뿐 아니라 "시작/실행" 키워드도 포함하며,
@@ -166,12 +163,6 @@ flowchart TD
 
 - `chart_agent`가 요청을 해석 → `apply_chart_config_impl` 적용  
 - 기존 `defect_rate_chart` 이벤트를 업데이트 (히스토그램/라인/바 등)
-
-## 스테이지 화면 재생 (stage_view)
-핸들러: `backend/app.py::_handle_stage_view_request`
-
-- 사용자가 “추천/레퍼런스/그리드/최종” 화면 요청 시  
-  `stage_focus` 이벤트와 함께 해당 카드로 포커스 이동
 
 ## 메모리 구조 (중요)
 ### 1) 장기 대화 메모리 (SQLite)

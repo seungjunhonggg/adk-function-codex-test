@@ -33,14 +33,13 @@ class RouteDecision(BaseModel):
     primary_intent: Literal[
         "simulation_edit",
         "simulation_run",
-        "stage_view",
         "db_query",
         "chart_edit",
         "chat",
         "unknown",
     ] = "unknown"
     secondary_intents: list[
-        Literal["simulation_edit", "simulation_run", "stage_view", "db_query", "chart_edit"]
+        Literal["simulation_edit", "simulation_run", "db_query", "chart_edit"]
     ] = []
     stage: Literal["recommendation", "reference", "grid", "final", "unknown"] = "unknown"
     needs_clarification: bool = False
@@ -74,7 +73,6 @@ class PlannerStep(BaseModel):
         "simulation_edit",
         "db_query",
         "chart_edit",
-        "stage_view",
         "chat",
         "briefing",
     ]
@@ -103,7 +101,6 @@ class EditIntent(BaseModel):
         "update_grid",
         "update_reference",
         "update_selection",
-        "show_stage",
         "show_progress",
         "reset",
         "rerun",
@@ -163,38 +160,28 @@ auto_message_agent = _build_agent(
 route_agent = _build_agent(
     name="Route Agent",
     instructions=(
+        "Always respond in Korean. "
         "Decide the best intent for the user message. "
         "Return JSON with keys: primary_intent, secondary_intents, needs_clarification, "
         "clarifying_question, confidence, reason. "
         "Use Korean for any natural-language fields (clarifying_question, reason). "
-        "Intents: simulation_run, simulation_edit, stage_view, db_query, chart_edit, chat, unknown. "
+        "Intents: simulation_run, simulation_edit, db_query, chart_edit, chat, unknown. "
         "Use chart_edit for requests to change or redraw charts/graphs/histograms. "
         "Use simulation_edit for edits to existing simulation results, params, grid overrides, "
-        "stage replay, progress check, or reset. "
-        "Use stage_view when the user asks to show or replay a stage UI screen "
-        "(추천/레퍼런스/그리드/최종/화면). "
-        "When stage_view, set stage to recommendation/reference/grid/final if possible. "
+        "progress check, or reset. "
         "Use simulation_run when the user wants to start a recommendation/simulation run. "
         "If the intent is simulation_run, do not ask for clarification just because "
         "params are missing; route to simulation_run and let the pipeline collect inputs. "
         "You will receive keyword_hints in context. Use them as soft signals: "
-        "1) stage hits without chart hits => stage_view, "
-        "2) stage + chart hits => ask clarification, "
-        "3) simulation_active + simulation_edit_hits => simulation_edit, "
-        "4) simulation_run_hits + inactive => simulation_run, "
-        "5) db_keyword_hits + weak simulation hits => db_query. "
+        "1) simulation_active + simulation_edit_hits => simulation_edit, "
+        "2) simulation_run_hits + inactive => simulation_run, "
+        "3) db_keyword_hits + weak simulation hits => db_query. "
         "Use db_query for LOT/process database lookups. "
         "Boundary examples: "
-        "\"그리드 화면 다시 보여줘\" => stage_view(stage=grid). "
-        "\"레퍼런스 화면 보여줘\" => stage_view(stage=reference). "
-        "\"최종 요약 화면으로 돌아가줘\" => stage_view(stage=final). "
-        "\"추천 화면 다시\" => stage_view(stage=recommendation). "
         "\"불량률 히스토그램 bin 20으로 바꿔줘\" => chart_edit. "
         "\"그래프를 선그래프로 바꿔줘\" => chart_edit. "
         "\"분포를 막대그래프로 보여줘\" => chart_edit. "
         "\"차트 범위 0~5%로 맞춰줘\" => chart_edit. "
-        "\"그리드 그래프 보여줘\" => needs_clarification=true. "
-        "\"분포 화면 보여줘\" => needs_clarification=true. "
         "\"시뮬레이션 시작해줘\" => simulation_run. "
         "\"온도만 130으로 바꿔서 다시 계산\" => simulation_edit. "
         "\"이전 조건으로 다시 실행\" => simulation_edit. "
@@ -214,13 +201,13 @@ route_agent = _build_agent(
 stage_resolver_agent = _build_agent(
     name="Stage Resolver Agent",
     instructions=(
+        "Always respond in Korean. "
         "Map the user request to a stage UI screen. "
         "Return JSON with keys: stage, needs_clarification, clarifying_question, confidence. "
         "Use Korean for clarifying_question. "
         "stage must be recommendation|reference|grid|final|unknown. "
         "Use available_stages to pick the closest match. "
         "If available_stages has exactly one option and the user is vague, choose it. "
-        "If ambiguous between chart_edit and stage_view, ask a short Korean clarification. "
         "If you cannot decide, set stage=unknown and needs_clarification=true."
     ),
     output_type=AgentOutputSchema(StageResolveDecision, strict_json_schema=False),
@@ -230,6 +217,7 @@ stage_resolver_agent = _build_agent(
 chart_agent = _build_agent(
     name="Chart Agent",
     instructions=(
+        "Always respond in Korean. "
         "Extract chart update intent from the user message. "
         "Return JSON with keys: chart_type, bins, range_min, range_max, normalize, value_unit, reset, note. "
         "Use Korean for note when provided. "
@@ -248,12 +236,12 @@ planner_agent = _build_agent(
         "You are a planning agent. Produce a step-by-step execution plan as JSON only. "
         "Do NOT include chain-of-thought. Notes must be short (<= 20 words). "
         "Use Korean for notes and confirmation_prompt. "
-        "Allowed workflows: simulation_run, simulation_edit, db_query, chart_edit, stage_view, briefing. "
+        "Always respond in Korean. "
+        "Allowed workflows: simulation_run, simulation_edit, db_query, chart_edit, briefing. "
         "MLCC workflow hints: simulation_run=인접기종 추천/신규 조건 입력, "
         "simulation_edit=기존 조건 수정/재실행/리셋/진행조회, "
         "db_query=LOT/공정 DB 조회(평균/트렌드 포함), "
         "chart_edit=불량률 차트 형식/범위/빈 변경, "
-        "stage_view=추천/레퍼런스/그리드/최종 화면 재표시, "
         "briefing=최종 브리핑 요약. "
         "Use required_memory for hard prerequisites, optional_memory for helpful context, "
         "success_criteria for completion keys. "
@@ -272,6 +260,7 @@ planner_agent = _build_agent(
 edit_intent_agent = _build_agent(
     name="Edit Intent Agent",
     instructions=(
+        "Always respond in Korean. "
         "Parse the user request into a structured edit intent for the simulation pipeline. "
         "Return JSON with keys: intent, updates, clear_fields, grid_overrides, reference_lot_id, "
         "selection_overrides, stage, "
@@ -280,7 +269,7 @@ edit_intent_agent = _build_agent(
         "intent values: update_params (temperature/voltage/size/capacity/production_mode/chip_prod_id), "
         "update_recommendation_params (param1..param30), update_grid (sheet_t/laydown/active_layer), "
         "update_reference (reference lot change), update_selection (top_k/max_blocks overrides), "
-        "show_stage, show_progress, reset, rerun, new_simulation, none. "
+        "show_progress, reset, rerun, new_simulation, none. "
         "If the user asks to change selection criteria like '상위 5개' or 'TOP 3', "
         "set intent=update_selection and set selection_overrides.top_k. "
         "If the user asks to change the number of briefing blocks, set selection_overrides.max_blocks. "
@@ -307,7 +296,6 @@ edit_intent_agent = _build_agent(
         "chip_prod_id=기종/모델/제품명/품번/part number; "
         "production_mode=양산/개발/시제/샘플/MP/mass=양산, proto/dev=개발; "
         "paramN=파라미터 5/param5/param 5/p5. "
-        "If the user asks to see a previous stage UI, set intent=show_stage and stage. "
         "If the user want to simulation or <인접기종 추천 or 특성예측>, set intent=new_simulation. "
         "If the user asks to start a new simulation or adjacent recommendation, set intent=new_simulation. "
         "If the user asks to restart from scratch, set intent=reset. "
@@ -352,6 +340,7 @@ briefing_agent = _build_agent(
 briefing_choice_agent = _build_agent(
     name="Briefing Choice Agent",
     instructions=(
+        "Always respond in Korean. "
         "Ask the user to choose between a detailed briefing and a brief summary. "
         "Write in Korean, 1-2 sentences. "
         "Always include the words '상세' and '간단'. "
