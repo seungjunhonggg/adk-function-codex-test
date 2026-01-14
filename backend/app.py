@@ -1423,6 +1423,14 @@ SIM_EDIT_KEYWORDS = (
     "reset",
     "rerun",
 )
+POST_GRID_LABEL_FALLBACKS = {
+    "rank": "순위",
+    "predicted_target": "예측값",
+    "lot_count": "LOT 수",
+    "sample_lots": "샘플 LOT",
+    "lot_id": "LOT",
+    "defect_rate": "평균 불량률",
+}
 SIM_FORM_FIELDS = {
     "temperature",
     "voltage",
@@ -2565,8 +2573,9 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         post_grid_columns,
     )
     post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
-    post_grid_label_map = dict(column_label_map)
-    post_grid_label_map.update(defect_label_map)
+    post_grid_label_map = _build_post_grid_label_map(
+        column_label_map, defect_label_map
+    )
     post_grid_column_labels = build_column_label_map(
         post_grid_columns, post_grid_label_map
     )
@@ -5335,10 +5344,19 @@ def _build_post_grid_table_rows(
             if not isinstance(lot, dict):
                 continue
             row = dict(base)
-            row["lot_id"] = lot.get("lot_id")
-            row["defect_rate"] = lot.get("defect_rate")
+            row.update(lot)
             rows.append({column: row.get(column) for column in columns})
     return rows
+
+
+def _build_post_grid_label_map(
+    column_label_map: dict, defect_label_map: dict
+) -> dict:
+    label_map = dict(column_label_map or {})
+    if isinstance(defect_label_map, dict):
+        label_map.update(defect_label_map)
+    label_map.update(POST_GRID_LABEL_FALLBACKS)
+    return label_map
 
 
 def _resolve_design_value(
@@ -6044,8 +6062,9 @@ async def _run_reference_pipeline(
         post_grid_columns,
     )
     post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
-    post_grid_label_map = dict(column_label_map)
-    post_grid_label_map.update(defect_label_map)
+    post_grid_label_map = _build_post_grid_label_map(
+        column_label_map, defect_label_map
+    )
     post_grid_column_labels = build_column_label_map(
         post_grid_columns, post_grid_label_map
     )

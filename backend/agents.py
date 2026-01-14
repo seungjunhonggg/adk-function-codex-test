@@ -149,6 +149,7 @@ MLCC_GLOSSARY_HINTS = (
 auto_message_agent = _build_agent(
     name="\uc790\ub3d9 \uc694\uc57d \uc5d0\uc774\uc804\ud2b8",
     instructions=(
+        "Always respond in Korean. "
         "You compose short Korean assistant messages for UI-triggered events. "
         "Do not mention tools, routing, or system logs. "
         "Write 1-2 sentences. "
@@ -165,6 +166,7 @@ route_agent = _build_agent(
         "Decide the best intent for the user message. "
         "Return JSON with keys: primary_intent, secondary_intents, needs_clarification, "
         "clarifying_question, confidence, reason. "
+        "Use Korean for any natural-language fields (clarifying_question, reason). "
         "Intents: simulation_run, simulation_edit, stage_view, db_query, chart_edit, chat, unknown. "
         "Use chart_edit for requests to change or redraw charts/graphs/histograms. "
         "Use simulation_edit for edits to existing simulation results, params, grid overrides, "
@@ -214,6 +216,7 @@ stage_resolver_agent = _build_agent(
     instructions=(
         "Map the user request to a stage UI screen. "
         "Return JSON with keys: stage, needs_clarification, clarifying_question, confidence. "
+        "Use Korean for clarifying_question. "
         "stage must be recommendation|reference|grid|final|unknown. "
         "Use available_stages to pick the closest match. "
         "If available_stages has exactly one option and the user is vague, choose it. "
@@ -229,6 +232,7 @@ chart_agent = _build_agent(
     instructions=(
         "Extract chart update intent from the user message. "
         "Return JSON with keys: chart_type, bins, range_min, range_max, normalize, value_unit, reset, note. "
+        "Use Korean for note when provided. "
         "chart_type: histogram|bar|line|scatter|area|auto. "
         "normalize: count|percent|ratio|auto. "
         "value_unit: raw|percent|auto. "
@@ -243,6 +247,7 @@ planner_agent = _build_agent(
     instructions=(
         "You are a planning agent. Produce a step-by-step execution plan as JSON only. "
         "Do NOT include chain-of-thought. Notes must be short (<= 20 words). "
+        "Use Korean for notes and confirmation_prompt. "
         "Allowed workflows: simulation_run, simulation_edit, db_query, chart_edit, stage_view, briefing. "
         "MLCC workflow hints: simulation_run=인접기종 추천/신규 조건 입력, "
         "simulation_edit=기존 조건 수정/재실행/리셋/진행조회, "
@@ -271,6 +276,7 @@ edit_intent_agent = _build_agent(
         "Return JSON with keys: intent, updates, clear_fields, grid_overrides, reference_lot_id, "
         "selection_overrides, stage, "
         "rerun, needs_clarification, note, confidence. "
+        "Use Korean for note when clarification is needed. "
         "intent values: update_params (temperature/voltage/size/capacity/production_mode/chip_prod_id), "
         "update_recommendation_params (param1..param30), update_grid (sheet_t/laydown/active_layer), "
         "update_reference (reference lot change), update_selection (top_k/max_blocks overrides), "
@@ -315,6 +321,7 @@ edit_intent_agent = _build_agent(
 conversation_agent = _build_agent(
     name="Conversation Agent",
     instructions=(
+        "Always respond in Korean. "
         "You are a friendly Korean conversation agent for casual chat. "
         "Be warm and concise. "
         "If the user asks about unrelated topics, reply naturally without routing or tool mentions. "
@@ -329,6 +336,7 @@ conversation_agent = _build_agent(
 briefing_agent = _build_agent(
     name="Briefing Agent",
     instructions=(
+        "Always respond in Korean. "
         "You summarize MLCC analysis using ONLY the provided JSON data. "
         "Do not invent LOTs, defect rates, or parameters. "
         "If required data is missing, ask a short Korean question about what is missing. "

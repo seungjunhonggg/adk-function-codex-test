@@ -1933,25 +1933,40 @@ def collect_post_grid_defects(
         rows = _filter_rows_by_recent_months(rows, date_column, recent_months)
         stats = _summarize_post_grid_defects(rows, defect_columns, input_unit)
         lot_rates: dict[str, list[float]] = {}
+        lot_column_rates: dict[str, dict[str, list[float]]] = {}
         for row in rows:
             lot_id = _get_value(row, lot_id_column)
             if lot_id is None:
                 continue
+            lot_key = str(lot_id)
+            for column in defect_columns:
+                value = _normalize_defect_rate_value(
+                    _get_value(row, column), input_unit
+                )
+                if value is None:
+                    continue
+                lot_column_rates.setdefault(lot_key, {}).setdefault(
+                    column, []
+                ).append(value)
             rate = _aggregate_defect_rate_for_row(row, defect_columns, input_unit)
             if rate is None:
                 continue
-            lot_key = str(lot_id)
             lot_rates.setdefault(lot_key, []).append(rate)
         lot_defect_rates = []
         for lot_id, rates in lot_rates.items():
             if not rates:
                 continue
-            lot_defect_rates.append(
-                {
-                    "lot_id": lot_id,
-                    "defect_rate": sum(rates) / len(rates),
-                }
-            )
+            entry = {
+                "lot_id": lot_id,
+                "defect_rate": sum(rates) / len(rates),
+            }
+            column_rates = lot_column_rates.get(lot_id, {})
+            if isinstance(column_rates, dict):
+                for column, values in column_rates.items():
+                    if not values:
+                        continue
+                    entry[column] = sum(values) / len(values)
+            lot_defect_rates.append(entry)
         lot_defect_rates.sort(
             key=lambda item: item.get("defect_rate", 0), reverse=True
         )
