@@ -2871,12 +2871,13 @@ async def _handle_planner_briefing(
         "reference": state.get("reference") if isinstance(state, dict) else None,
         "grid": state.get("grid") if isinstance(state, dict) else None,
     }
+    safe_context_payload = _json_safe_dict(context_payload)
     prompt = (
         "다음 JSON을 근거로만 MLCC 브리핑을 작성하세요. "
         "근거 없는 수치/LOT/공정 값은 말하지 마세요. "
         "3~6문장으로 간결하게 요약하세요. "
         "JSON: "
-        f"{json.dumps(context_payload, ensure_ascii=False)}"
+        f"{json.dumps(safe_context_payload, ensure_ascii=False)}"
     )
     memory_summary = None
     if not response:
