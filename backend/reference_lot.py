@@ -1013,7 +1013,9 @@ def _query_rows_for_filters(
 
 
 def select_reference_from_params(
-    params: dict, chip_prod_override: str | None = None
+    params: dict,
+    chip_prod_override: str | None = None,
+    briefing_columns: dict | None = None,
 ) -> dict:
     rules = normalize_reference_rules(load_reference_rules())
     db = rules.get("db", {})
@@ -1068,12 +1070,37 @@ def select_reference_from_params(
         for condition in defect_conditions
         if condition.get("column")
     ]
+    briefing_map = briefing_columns if isinstance(briefing_columns, dict) else {}
+    briefing_candidate_columns = [
+        str(column)
+        for column in (briefing_map.get("ref_lot_candidate") or [])
+        if column
+    ]
+    briefing_selected_columns = [
+        str(column)
+        for column in (briefing_map.get("ref_lot_selected") or [])
+        if column
+    ]
+    available_columns = (
+        _get_available_columns(connection_id, schema_name, lot_search_table)
+        if connection_id and lot_search_table
+        else None
+    )
+    if available_columns:
+        available_set = set(available_columns)
+        briefing_candidate_columns = [
+            column for column in briefing_candidate_columns if column in available_set
+        ]
+        briefing_selected_columns = [
+            column for column in briefing_selected_columns if column in available_set
+        ]
     sort_columns = _lot_search_sort_columns(rules)
     base_columns = list(
         dict.fromkeys(
             [chip_prod_column, lot_id_column, input_date_column]
             + sort_columns
             + defect_columns
+            + briefing_candidate_columns
         )
     )
     source = ""
@@ -1169,11 +1196,7 @@ def select_reference_from_params(
     payload_db_columns: list[str] = []
     payload_missing_columns: list[str] = []
     if payload_columns:
-        available = (
-            _get_available_columns(connection_id, schema_name, lot_search_table)
-            if connection_id and lot_search_table
-            else None
-        )
+        available = available_columns
         if available:
             available_set = set(available)
             payload_db_columns = [
@@ -1185,7 +1208,13 @@ def select_reference_from_params(
         else:
             payload_db_columns = payload_columns
     detail_query_columns = list(
-        dict.fromkeys(base_columns + grid_columns + list(detail_columns) + payload_db_columns)
+        dict.fromkeys(
+            base_columns
+            + grid_columns
+            + list(detail_columns)
+            + payload_db_columns
+            + briefing_selected_columns
+        )
     )
     detail_row = None
     if selected_lot_id:
@@ -1199,7 +1228,7 @@ def select_reference_from_params(
         detail_row = detail_rows[0] if detail_rows else None
 
     reference_columns = list(
-        dict.fromkeys([lot_id_column] + defect_columns)
+        dict.fromkeys([lot_id_column] + defect_columns + briefing_candidate_columns)
     )
     reference_rows = []
     if reference_columns:
@@ -1819,9 +1848,16 @@ def collect_post_grid_defects(
     design_candidates: list[dict],
     rules: dict,
     chip_prod_id: str | None = None,
+    extra_columns: list[str] | None = None,
 ) -> dict:
     normalized = normalize_reference_rules(rules)
     defect_columns = _resolve_post_grid_defect_columns(normalized)
+    if extra_columns:
+        defect_columns = list(
+            dict.fromkeys(
+                defect_columns + [str(column) for column in extra_columns if column]
+            )
+        )
     recent_months = normalized.get("post_grid_recent_months")
     if not isinstance(recent_months, int) or recent_months < 0:
         recent_months = 0

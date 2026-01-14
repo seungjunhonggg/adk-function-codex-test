@@ -2352,7 +2352,6 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         else column_label_map
     )
     briefing_columns = _load_briefing_table_columns(rules)
-    briefing_columns = _load_briefing_table_columns(rules)
 
     briefing_config = _resolve_final_briefing_config(rules)
     reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
@@ -2403,7 +2402,11 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         reference_table_label = "레퍼런스 LOT 후보 표를 생성하지 못했습니다."
 
     detail_result = (
-        get_lot_detail_by_id(selected_lot_id, use_available_columns=True)
+        get_lot_detail_by_id(
+            selected_lot_id,
+            columns=detail_override_columns or None,
+            use_available_columns=True,
+        )
         if selected_lot_id
         else {}
     )
@@ -2465,6 +2468,15 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         briefing_columns,
         "post_grid_lot_search",
         [],
+    )
+    logger.info(
+        "Briefing columns resolved: session=%s run=%s ref_candidate=%s ref_selected=%s grid=%s post_grid=%s",
+        session_id,
+        run_id,
+        reference_table_columns,
+        detail_columns,
+        grid_columns,
+        post_grid_columns,
     )
     post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
     post_grid_label_map = dict(column_label_map)
@@ -5075,6 +5087,9 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
     db_config = rules.get("db", {}) if isinstance(rules, dict) else {}
     connection_id = str(db_config.get("connection_id") or "").strip()
     if not connection_id:
+        logger.warning(
+            "Briefing columns not loaded: missing db.connection_id."
+        )
         return columns_map
     schema_name = str(db_config.get("schema") or "public")
     for step in steps:
@@ -5090,14 +5105,23 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
                 limit=1,
             )
         except Exception:
+            logger.warning(
+                "Briefing columns load failed: step=%s", step, exc_info=True
+            )
             continue
         rows = result.get("rows") if isinstance(result, dict) else None
         if not rows:
+            logger.info("Briefing columns empty: step=%s", step)
             continue
         columns_value = rows[0].get("columns") if isinstance(rows[0], dict) else None
         parsed = _parse_briefing_columns(columns_value)
         if parsed:
             columns_map[step] = parsed
+            logger.info(
+                "Briefing columns loaded: step=%s columns=%s", step, parsed
+            )
+        else:
+            logger.info("Briefing columns empty after parse: step=%s", step)
     return columns_map
 
 
@@ -5422,22 +5446,38 @@ async def _run_reference_pipeline(
         if defect_connection_id and defect_connection_id != label_connection_id
         else column_label_map
     )
+    briefing_columns = _load_briefing_table_columns(rules)
+    logger.info(
+        "Briefing columns map loaded: session=%s run=%s columns=%s",
+        session_id,
+        run_id,
+        briefing_columns,
+    )
+    detail_override_columns = briefing_columns.get("ref_lot_selected") or []
 
     await _emit_pipeline_status("recommendation", "조건 매칭 중...")
     await _emit_pipeline_status("reference", "조건에 맞는 LOT 조회 중...")
     reference_result = select_reference_from_params(
-        params, chip_prod_override=chip_prod_override
+        params,
+        chip_prod_override=chip_prod_override,
+        briefing_columns=briefing_columns,
     )
 
     if reference_override:
-        override_detail = get_lot_detail_by_id(reference_override)
+        override_detail = get_lot_detail_by_id(
+            reference_override,
+            columns=detail_override_columns or None,
+            use_available_columns=True,
+        )
         if override_detail.get("status") == "ok":
             override_row = override_detail.get("row") or {}
             override_chip = _row_value(override_row, chip_prod_column)
             override_chip_id = str(override_chip) if override_chip is not None else ""
             if override_chip_id:
                 override_result = select_reference_from_params(
-                    params, chip_prod_override=override_chip_id
+                    params,
+                    chip_prod_override=override_chip_id,
+                    briefing_columns=briefing_columns,
                 )
                 if override_result.get("status") == "ok":
                     reference_result = override_result
@@ -5697,6 +5737,7 @@ async def _run_reference_pipeline(
         top_candidates,
         rules,
         chip_prod_id=chip_prod_id,
+        extra_columns=briefing_columns.get("post_grid_lot_search") or [],
     )
     pipeline_store.set_grid(
         session_id,
@@ -5787,7 +5828,6 @@ async def _run_reference_pipeline(
 
     reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
     detail_chunk_size = briefing_config.get("reference_detail_chunk_size", 6)
-    briefing_columns = _load_briefing_table_columns(rules)
 
     safe_reference_rows = _json_safe_rows(reference_rows)
     reference_table_columns = _resolve_briefing_columns(
@@ -5815,8 +5855,13 @@ async def _run_reference_pipeline(
     else:
         reference_table_label = "레퍼런스 LOT 후보 표를 생성하지 못했습니다."
 
+    detail_override_columns = briefing_columns.get("ref_lot_selected") or []
     detail_result = (
-        get_lot_detail_by_id(selected_lot_id, use_available_columns=True)
+        get_lot_detail_by_id(
+            selected_lot_id,
+            columns=detail_override_columns or None,
+            use_available_columns=True,
+        )
         if selected_lot_id
         else {}
     )
@@ -5875,6 +5920,15 @@ async def _run_reference_pipeline(
         briefing_columns,
         "post_grid_lot_search",
         [],
+    )
+    logger.info(
+        "Briefing columns resolved (detail): session=%s run=%s ref_candidate=%s ref_selected=%s grid=%s post_grid=%s",
+        session_id,
+        simulation_store.get_run_id(session_id),
+        reference_table_columns,
+        detail_columns,
+        grid_columns,
+        post_grid_columns,
     )
     post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
     post_grid_label_map = dict(column_label_map)
