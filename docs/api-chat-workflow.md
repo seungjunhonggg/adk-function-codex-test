@@ -121,6 +121,8 @@ flowchart TD
     - 가짜 스트리밍 모드: 텍스트는 `chat_stream_*` 델타로 흘리고,
       표는 `briefing_table` 이벤트로 분리 전송해 애니메이션 표시
     - planner 경로에서는 브리핑 전에 상세/간단 선택을 확인한 뒤 출력
+    - 브리핑 완료 후 post-grid LOT 기준 공정불량률 차트를 계산해 `defect_rate_chart`로 송신하고,
+      검사불량률 차트는 사용자 확인 후 추가로 송신
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  

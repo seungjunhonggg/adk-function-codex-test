@@ -44,6 +44,7 @@ from .context import current_session_id
 from .db_connections import (
     connect_and_save,
     execute_table_query,
+    execute_table_query_aggregate,
     get_schema,
     list_connections,
     preload_schema,
@@ -111,6 +112,8 @@ SIMULATION_EVENT_TYPES = {
     "final_briefing",
     "final_defect_chart",
 }
+DEFECT_CHART_TABLE = "mdh_base_view_total_4"
+INSPECTION_CHART_PROMPT = "검사불량률도 보여드릴까요?"
 
 
 @dataclass
@@ -585,6 +588,26 @@ async def _handle_chart_edit_workflow(
     return WorkflowOutcome(response)
 
 
+async def _handle_inspection_chart_workflow(
+    message: str, session_id: str, route_command: dict
+) -> WorkflowOutcome:
+    await emit_workflow_log("FLOW", "inspection_chart -> defect_rate_chart")
+    rules = normalize_reference_rules(load_reference_rules())
+    summary_payload = pipeline_store.get_event(session_id, "final_briefing")
+    if not isinstance(summary_payload, dict) or not summary_payload:
+        return WorkflowOutcome("브리핑 데이터가 없어 검사 불량률을 확인할 수 없습니다.")
+    payload = _build_defect_chart_payload(
+        rules,
+        summary_payload,
+        "검사",
+        DEFECT_CHART_TABLE,
+    )
+    if not payload:
+        return WorkflowOutcome("검사 불량률 차트를 만들 수 없습니다.")
+    await _emit_defect_chart(session_id, payload)
+    return WorkflowOutcome("검사 불량률 차트를 표시했습니다.")
+
+
 async def _handle_simulation_edit_workflow(
     message: str, session_id: str, route_command: dict
 ) -> WorkflowOutcome | None:
@@ -703,6 +726,7 @@ WORKFLOW_HANDLERS: dict[str, Callable[..., Awaitable[WorkflowOutcome | None]]] =
     "simulation_edit": _handle_simulation_edit_workflow,
     "simulation_run": _handle_simulation_run_workflow,
     "db_query": _handle_db_query_workflow,
+    "inspection_chart": _handle_inspection_chart_workflow,
 }
 
 
@@ -1863,6 +1887,11 @@ PLANNER_WORKFLOW_CONFIG: dict[str, dict[str, list[str]]] = {
         "optional_memory": ["briefing_mode"],
         "success_criteria": ["briefing_mode"],
     },
+    "inspection_chart": {
+        "required_memory": ["events.final_briefing"],
+        "optional_memory": [],
+        "success_criteria": [],
+    },
     "briefing": {
         "required_memory": ["events.final_briefing"],
         "optional_memory": [
@@ -2607,7 +2636,26 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         stream_blocks.append({"type": "text", "value": post_grid_step})
     if summary_step:
         stream_blocks.append({"type": "text", "value": summary_step})
+    process_chart_payload = _build_defect_chart_payload(
+        rules,
+        summary_payload,
+        "공정",
+        DEFECT_CHART_TABLE,
+    )
+    if process_chart_payload:
+        message = f"{message}\n\n{INSPECTION_CHART_PROMPT}"
+        stream_blocks.append({"type": "text", "value": INSPECTION_CHART_PROMPT})
+        pending = {
+            "workflow": "inspection_chart",
+            "input": message,
+            "required_memory": ["events.final_briefing"],
+            "optional_memory": [],
+            "success_criteria": [],
+        }
+        _store_pending_action(session_id, pending, INSPECTION_CHART_PROMPT, None)
     streamed = await _stream_briefing_blocks(session_id, stream_blocks)
+    if process_chart_payload:
+        await _emit_defect_chart(session_id, process_chart_payload)
     memory_summary = _build_memory_summary(summary_payload)
     pipeline_store.update(
         session_id,
@@ -2653,42 +2701,64 @@ async def _handle_planner_briefing(
     if mode == "detail":
         return await _handle_detailed_briefing(session_id)
 
+    payload = pipeline_store.get_event(session_id, "final_briefing")
+    if not isinstance(payload, dict) or not payload:
+        return WorkflowOutcome("브리핑할 데이터가 아직 없습니다.")
+
     briefing_text = state.get("briefing_text") if isinstance(state, dict) else ""
     briefing_text_mode = str(state.get("briefing_text_mode") or "").strip().lower()
     briefing_text_run_id = str(state.get("briefing_text_run_id") or "").strip()
     current_run_id = simulation_store.get_run_id(session_id)
+    response = ""
     if (
         isinstance(briefing_text, str)
         and briefing_text.strip()
         and briefing_text_mode == "brief"
         and (not current_run_id or not briefing_text_run_id or briefing_text_run_id == current_run_id)
     ):
-        return WorkflowOutcome(briefing_text)
-
-    payload = pipeline_store.get_event(session_id, "final_briefing")
-    if not isinstance(payload, dict) or not payload:
-        return WorkflowOutcome("브리핑할 데이터가 아직 없습니다.")
+        response = briefing_text
 
     if not OPENAI_API_KEY:
-        chip_prod_id = payload.get("chip_prod_id")
-        reference_lot = payload.get("reference_lot")
-        candidate_total = payload.get("candidate_total")
-        defect_rate = payload.get("defect_rate_overall")
-        parts = ["요청하신 브리핑 요약입니다."]
-        if chip_prod_id:
-            parts.append(f"추천 기종={chip_prod_id}")
-        if reference_lot:
-            parts.append(f"레퍼런스 LOT={reference_lot}")
-        if candidate_total is not None:
-            parts.append(f"후보군={candidate_total}건")
-        if defect_rate is not None:
-            try:
-                defect_value = float(defect_rate)
-            except (TypeError, ValueError):
-                defect_value = None
-            if defect_value is not None:
-                parts.append(f"평균 불량률={defect_value:.4f}")
-        return WorkflowOutcome(" ".join(str(part) for part in parts))
+        if not response:
+            chip_prod_id = payload.get("chip_prod_id")
+            reference_lot = payload.get("reference_lot")
+            candidate_total = payload.get("candidate_total")
+            defect_rate = payload.get("defect_rate_overall")
+            parts = ["요청하신 브리핑 요약입니다."]
+            if chip_prod_id:
+                parts.append(f"추천 기종={chip_prod_id}")
+            if reference_lot:
+                parts.append(f"레퍼런스 LOT={reference_lot}")
+            if candidate_total is not None:
+                parts.append(f"후보군={candidate_total}건")
+            if defect_rate is not None:
+                try:
+                    defect_value = float(defect_rate)
+                except (TypeError, ValueError):
+                    defect_value = None
+                if defect_value is not None:
+                    parts.append(f"평균 불량률={defect_value:.4f}")
+            response = " ".join(str(part) for part in parts)
+        process_chart_payload = _build_defect_chart_payload(
+            normalize_reference_rules(load_reference_rules()),
+            payload,
+            "공정",
+            DEFECT_CHART_TABLE,
+        )
+        if process_chart_payload:
+            response = f"{response}\n\n{INSPECTION_CHART_PROMPT}"
+            pending = {
+                "workflow": "inspection_chart",
+                "input": response,
+                "required_memory": ["events.final_briefing"],
+                "optional_memory": [],
+                "success_criteria": [],
+            }
+            _store_pending_action(
+                session_id, pending, INSPECTION_CHART_PROMPT, None
+            )
+            await _emit_defect_chart(session_id, process_chart_payload)
+        return WorkflowOutcome(response)
 
     context_payload = {
         "final_briefing": payload,
@@ -2707,35 +2777,56 @@ async def _handle_planner_briefing(
         "JSON: "
         f"{json.dumps(context_payload, ensure_ascii=False)}"
     )
-    try:
-        run = await Runner.run(
-            briefing_agent,
-            input=prompt,
-            hooks=WorkflowRunHooks(),
-        )
-    except OutputGuardrailTripwireTriggered as exc:
-        info = exc.guardrail_result.output.output_info or {}
-        response = guardrail_fallback_message(info.get("missing_events"))
-        return WorkflowOutcome(response)
-    except Exception:
-        return WorkflowOutcome("브리핑 생성 중 오류가 발생했습니다.")
+    memory_summary = None
+    if not response:
+        try:
+            run = await Runner.run(
+                briefing_agent,
+                input=prompt,
+                hooks=WorkflowRunHooks(),
+            )
+        except OutputGuardrailTripwireTriggered as exc:
+            info = exc.guardrail_result.output.output_info or {}
+            response = guardrail_fallback_message(info.get("missing_events"))
+            return WorkflowOutcome(response)
+        except Exception:
+            return WorkflowOutcome("브리핑 생성 중 오류가 발생했습니다.")
 
-    response = (run.final_output or "").strip()
-    if response:
-        memory_summary = _build_memory_summary(payload)
-        pipeline_store.update(
-            session_id,
-            briefing_text=response,
-            briefing_text_mode="brief",
-            briefing_text_run_id=simulation_store.get_run_id(session_id),
-            briefing_summary=memory_summary,
-        )
-        pipeline_store.set_pending_memory_summary(
-            session_id, memory_summary, label="final_briefing"
-        )
-        return WorkflowOutcome(response, memory_summary=memory_summary)
+        response = (run.final_output or "").strip()
+        if response:
+            memory_summary = _build_memory_summary(payload)
+            pipeline_store.update(
+                session_id,
+                briefing_text=response,
+                briefing_text_mode="brief",
+                briefing_text_run_id=simulation_store.get_run_id(session_id),
+                briefing_summary=memory_summary,
+            )
+            pipeline_store.set_pending_memory_summary(
+                session_id, memory_summary, label="final_briefing"
+            )
+    if not response:
+        return WorkflowOutcome("브리핑을 생성하지 못했습니다.")
 
-    return WorkflowOutcome("브리핑을 생성하지 못했습니다.")
+    process_chart_payload = _build_defect_chart_payload(
+        normalize_reference_rules(load_reference_rules()),
+        payload,
+        "공정",
+        DEFECT_CHART_TABLE,
+    )
+    if process_chart_payload:
+        response = f"{response}\n\n{INSPECTION_CHART_PROMPT}"
+        pending = {
+            "workflow": "inspection_chart",
+            "input": response,
+            "required_memory": ["events.final_briefing"],
+            "optional_memory": [],
+            "success_criteria": [],
+        }
+        _store_pending_action(session_id, pending, INSPECTION_CHART_PROMPT, None)
+        await _emit_defect_chart(session_id, process_chart_payload)
+
+    return WorkflowOutcome(response, memory_summary=memory_summary)
 
 
 async def _run_planner_step(
@@ -2951,6 +3042,19 @@ async def _maybe_handle_pending_action(
             session_id, message=message, force_mode=mode
         )
         return "briefing", outcome
+    if pending.get("workflow") == "inspection_chart":
+        if _is_rejection(message):
+            _clear_pending_action(session_id)
+            return "chat", WorkflowOutcome("알겠습니다. 필요하면 알려주세요.")
+        if _is_affirmative(message) or _is_inspection_request(message):
+            pipeline_store.update(session_id, dialogue_state="executing")
+            outcome = await _handle_inspection_chart_workflow(
+                message, session_id, {}
+            )
+            _clear_pending_action(session_id)
+            return "inspection_chart", outcome
+        _clear_pending_action(session_id)
+        return None
     if _is_affirmative(message):
         pipeline_store.update(session_id, dialogue_state="executing")
         workflow = pending["workflow"]
@@ -3744,6 +3848,13 @@ def _is_affirmative(message: str) -> bool:
     if lowered in affirmative:
         return True
     return any(token in lowered for token in affirmative)
+
+
+def _is_inspection_request(message: str) -> bool:
+    return _contains_any(
+        message,
+        ("검사", "inspection", "검사불량", "검사 불량", "검사 불량률"),
+    )
 
 
 def _parse_briefing_mode(message: str) -> str | None:
@@ -4735,6 +4846,201 @@ def _build_markdown_table_chunks(
         if table:
             tables.append(table)
     return tables
+
+
+def _get_available_table_columns(
+    connection_id: str, schema_name: str, table_name: str
+) -> list[str]:
+    if not connection_id or not schema_name or not table_name:
+        return []
+    schema_payload = get_schema(connection_id) or {}
+    schemas = schema_payload.get("schemas") if isinstance(schema_payload, dict) else None
+    if not isinstance(schemas, dict):
+        return []
+    tables = schemas.get(schema_name, {}).get("tables", {})
+    if not isinstance(tables, dict):
+        return []
+    table = tables.get(table_name, {})
+    if not isinstance(table, dict):
+        return []
+    columns = table.get("columns", [])
+    if not isinstance(columns, list):
+        return []
+    return [
+        col.get("name")
+        for col in columns
+        if isinstance(col, dict) and col.get("name")
+    ]
+
+
+def _load_defect_columns_from_label_map(
+    rules: dict,
+    defect_type: str,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    db_config = rules.get("db", {}) if isinstance(rules, dict) else {}
+    connection_id = str(db_config.get("connection_id") or "").strip()
+    schema_name = str(db_config.get("schema") or "public")
+    if not connection_id:
+        return [], {}, {}
+    try:
+        result = execute_table_query(
+            connection_id=connection_id,
+            schema_name=schema_name,
+            table_name="column_label_map",
+            columns=["column_name", "label_ko", "value_unit", "unit"],
+            filter_column="defect",
+            filter_operator="=",
+            filter_value=defect_type,
+            limit=5000,
+        )
+    except Exception:
+        try:
+            result = execute_table_query(
+                connection_id=connection_id,
+                schema_name=schema_name,
+                table_name="column_label_map",
+                columns=["column_name", "label_ko"],
+                filter_column="defect",
+                filter_operator="=",
+                filter_value=defect_type,
+                limit=5000,
+            )
+        except Exception:
+            return [], {}, {}
+    rows = result.get("rows") if isinstance(result, dict) else None
+    if not isinstance(rows, list):
+        return [], {}, {}
+    columns: list[str] = []
+    label_map: dict[str, str] = {}
+    unit_map: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("column_name") or "").strip()
+        if not name:
+            continue
+        if name not in columns:
+            columns.append(name)
+        label = str(row.get("label_ko") or "").strip()
+        if label:
+            label_map[name] = label
+        unit = str(row.get("value_unit") or row.get("unit") or "").strip().lower()
+        if unit and unit not in {"none", "null", "-"}:
+            unit_map[name] = unit
+    return columns, label_map, unit_map
+
+
+def _collect_post_grid_lot_ids(summary_payload: dict) -> list[str]:
+    post_grid = summary_payload.get("post_grid_defects")
+    if not isinstance(post_grid, dict):
+        return []
+    items = post_grid.get("items")
+    if not isinstance(items, list):
+        return []
+    lot_ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        lot_rates = item.get("lot_defect_rates")
+        if isinstance(lot_rates, list) and lot_rates:
+            for entry in lot_rates:
+                if not isinstance(entry, dict):
+                    continue
+                lot_id = entry.get("lot_id")
+                if lot_id in (None, ""):
+                    continue
+                lot_ids.append(str(lot_id))
+            continue
+        sample_lots = item.get("sample_lots")
+        if isinstance(sample_lots, list) and sample_lots:
+            for lot_id in sample_lots:
+                if lot_id in (None, ""):
+                    continue
+                lot_ids.append(str(lot_id))
+    return list(dict.fromkeys(lot_ids))
+
+
+def _resolve_value_unit(unit_map: dict[str, str], columns: list[str]) -> str:
+    units = {unit_map.get(column) for column in columns if unit_map.get(column)}
+    if len(units) == 1:
+        return units.pop() or ""
+    return ""
+
+
+def _build_defect_chart_payload(
+    rules: dict,
+    summary_payload: dict,
+    defect_type: str,
+    table_name: str,
+) -> dict | None:
+    lot_ids = _collect_post_grid_lot_ids(summary_payload)
+    if not lot_ids:
+        return None
+    columns, label_map, unit_map = _load_defect_columns_from_label_map(
+        rules, defect_type
+    )
+    if not columns:
+        return None
+    db_config = rules.get("db", {}) if isinstance(rules, dict) else {}
+    connection_id = str(db_config.get("connection_id") or "").strip()
+    schema_name = str(db_config.get("schema") or "public")
+    lot_id_column = db_config.get("lot_id_column") or "lot_id"
+    if not connection_id:
+        return None
+    available = _get_available_table_columns(connection_id, schema_name, table_name)
+    if available:
+        columns = [column for column in columns if column in available]
+    if not columns:
+        return None
+    metrics = [
+        {"column": column, "agg": "avg", "alias": column} for column in columns
+    ]
+    filters = [{"column": lot_id_column, "operator": "in", "value": lot_ids}]
+    try:
+        result = execute_table_query_aggregate(
+            connection_id=connection_id,
+            schema_name=schema_name,
+            table_name=table_name,
+            metrics=metrics,
+            filters=filters,
+        )
+    except Exception:
+        return None
+    rows = result.get("rows") if isinstance(result, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return None
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    lots: list[dict] = []
+    for column in columns:
+        value = row.get(column)
+        if value is None:
+            continue
+        label = label_map.get(column, column)
+        lots.append({"label": label, "defect_rate": value})
+    if not lots:
+        return None
+    metric_label = "공정불량률" if defect_type == "공정" else "검사불량률"
+    value_unit = _resolve_value_unit(unit_map, columns)
+    return {
+        "lots": lots,
+        "metric_label": metric_label,
+        "chart_type": "bar",
+        "bar_orientation": "vertical",
+        "value_unit": value_unit,
+        "source": table_name,
+    }
+
+
+async def _emit_defect_chart(
+    session_id: str, payload: dict | None
+) -> bool:
+    if not payload:
+        return False
+    pipeline_store.set_event(session_id, "defect_rate_chart", payload)
+    await event_bus.broadcast(
+        {"type": "defect_rate_chart", "payload": payload}, session_id=session_id
+    )
+    return True
 
 
 def _parse_briefing_columns(value: object) -> list[str]:
@@ -5737,7 +6043,26 @@ async def _run_reference_pipeline(
         stream_blocks.append({"type": "text", "value": post_grid_step})
     if summary_step:
         stream_blocks.append({"type": "text", "value": summary_step})
+    process_chart_payload = _build_defect_chart_payload(
+        rules,
+        summary_payload,
+        "공정",
+        DEFECT_CHART_TABLE,
+    )
+    if process_chart_payload:
+        message = f"{message}\n\n{INSPECTION_CHART_PROMPT}"
+        stream_blocks.append({"type": "text", "value": INSPECTION_CHART_PROMPT})
+        pending = {
+            "workflow": "inspection_chart",
+            "input": message,
+            "required_memory": ["events.final_briefing"],
+            "optional_memory": [],
+            "success_criteria": [],
+        }
+        _store_pending_action(session_id, pending, INSPECTION_CHART_PROMPT, None)
     streamed = await _stream_briefing_blocks(session_id, stream_blocks)
+    if process_chart_payload:
+        await _emit_defect_chart(session_id, process_chart_payload)
     pipeline_store.update(
         session_id,
         briefing_text=message,
