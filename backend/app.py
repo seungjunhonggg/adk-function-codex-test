@@ -2437,6 +2437,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     )
     briefing_columns = _load_briefing_table_columns(rules)
     detail_override_columns = briefing_columns.get("ref_lot_selected") or []
+    run_id = simulation_store.get_run_id(session_id)
 
     briefing_config = _resolve_final_briefing_config(rules)
     reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
