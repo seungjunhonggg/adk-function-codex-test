@@ -1558,8 +1558,13 @@ async function sendSimulationParams({ run } = { run: false }) {
   if (!simFormStatus) {
     return;
   }
-  setSimStatus("추천 입력 전송 중...");
   const params = collectSimFormParams();
+  if (run) {
+    setSimStatus("추천 실행 요청 전송 중...");
+    await sendChatMessage("추천 실행");
+    return;
+  }
+  setSimStatus("추천 입력 전송 중...");
   const payload = run
     ? { session_id: currentSessionId }
     : { session_id: currentSessionId, ...params };
