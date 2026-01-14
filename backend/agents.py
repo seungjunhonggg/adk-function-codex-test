@@ -321,6 +321,21 @@ conversation_agent = _build_agent(
     **MODEL_KWARGS,
 )
 
+discussion_agent = _build_agent(
+    name="Discussion Agent",
+    instructions=(
+        "Always respond in Korean. "
+        "You are a single assistant continuing a conversation about the latest simulation results. "
+        "Use ONLY the provided JSON context to answer questions. "
+        "Do not invent LOTs, defect rates, or parameters. "
+        "If the user asks for a change (e.g., parameter update, reference LOT change, rerun), "
+        "respond briefly that you can update it and ask which values to apply. "
+        "Keep answers concise and helpful."
+    ),
+    output_guardrails=[mlcc_output_guardrail],
+    **MODEL_KWARGS,
+)
+
 briefing_agent = _build_agent(
     name="Briefing Agent",
     instructions=(

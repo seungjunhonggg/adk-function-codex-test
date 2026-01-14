@@ -747,6 +747,13 @@ async def emit_simulation_form(params: dict, missing: list[str]) -> dict:
     session_id = current_session_id.get()
     simulation_store.activate(session_id)
     run_id = simulation_store.ensure_run_id(session_id)
+    pipeline_store.update(
+        session_id,
+        conversation_mode="execution",
+        conversation_mode_reason="simulation_form",
+        conversation_mode_run_id=run_id,
+        conversation_mode_updated_at=datetime.utcnow().isoformat(),
+    )
     payload = {"params": params, "missing": missing}
     if run_id:
         payload["run_id"] = run_id

@@ -26,6 +26,7 @@ from .agents import (
     briefing_agent,
     chart_agent,
     conversation_agent,
+    discussion_agent,
     db_agent,
     edit_intent_agent,
     planner_agent,
@@ -324,7 +325,9 @@ async def chat(request: ChatRequest) -> dict:
             outcome = await handler(message, request.session_id, route_command)
         if outcome is None:
             if primary_intent == "chat":
-                outcome = await _handle_chat_workflow(message, session)
+                outcome = await _handle_chat_workflow(
+                    message, request.session_id, session
+                )
             else:
                 outcome = await _handle_fallback_workflow(
                     message, request.session_id, session
@@ -756,9 +759,60 @@ async def _handle_db_query_workflow(
     return WorkflowOutcome("DB 조회를 완료했습니다.")
 
 
+def _should_use_discussion_mode(session_id: str) -> bool:
+    if _get_conversation_mode(session_id) != "discussion":
+        return False
+    payload = pipeline_store.get_event(session_id, "final_briefing")
+    return isinstance(payload, dict) and bool(payload)
+
+
 async def _handle_chat_workflow(
-    message: str, session: SQLiteSession
+    message: str, session_id: str, session: SQLiteSession
 ) -> WorkflowOutcome:
+    if _should_use_discussion_mode(session_id):
+        await emit_workflow_log("FLOW", "chat -> discussion_agent")
+        state = pipeline_store.get(session_id)
+        context_payload = {
+            "final_briefing": pipeline_store.get_event(session_id, "final_briefing"),
+            "simulation_result": pipeline_store.get_event(
+                session_id, "simulation_result"
+            ),
+            "defect_rate_chart": pipeline_store.get_event(
+                session_id, "defect_rate_chart"
+            ),
+            "lot_result": pipeline_store.get_event(session_id, "lot_result"),
+            "design_candidates": pipeline_store.get_event(
+                session_id, "design_candidates"
+            ),
+            "db_result": pipeline_store.get_event(session_id, "db_result"),
+            "reference": state.get("reference") if isinstance(state, dict) else None,
+            "grid": state.get("grid") if isinstance(state, dict) else None,
+            "params": simulation_store.get(session_id),
+        }
+        safe_context_payload = _json_safe_dict(context_payload)
+        prompt = (
+            "다음 JSON만 근거로 답하세요. "
+            "모르는 값은 모른다고 말하세요. "
+            "JSON: "
+            f"{json.dumps(safe_context_payload, ensure_ascii=False)}\n"
+            f"User message: {message}"
+        )
+        try:
+            convo = await Runner.run(
+                discussion_agent,
+                input=prompt,
+                session=session,
+                hooks=WorkflowRunHooks(),
+            )
+        except OutputGuardrailTripwireTriggered as exc:
+            info = exc.guardrail_result.output.output_info or {}
+            response = guardrail_fallback_message(info.get("missing_events"))
+            return WorkflowOutcome(response)
+        except Exception:
+            return WorkflowOutcome("응답 생성 중 오류가 발생했습니다.")
+        response = (convo.final_output or "").strip()
+        return WorkflowOutcome(response)
+
     await emit_workflow_log("FLOW", "chat -> conversation_agent")
     try:
         convo = await Runner.run(
@@ -781,6 +835,11 @@ async def _handle_chat_workflow(
 async def _handle_fallback_workflow(
     message: str, session_id: str, session: SQLiteSession
 ) -> WorkflowOutcome:
+    if _should_use_discussion_mode(session_id):
+        outcome = await _handle_chat_workflow(message, session_id, session)
+        await _maybe_update_simulation_from_message(message, session_id)
+        return outcome
+
     await emit_workflow_log("FLOW", "fallback -> conversation_agent")
     try:
         fallback = await Runner.run(
@@ -1456,6 +1515,18 @@ DB_KEYWORDS = (
     "평균",
     "트렌드",
 )
+DB_ACTION_KEYWORDS = (
+    "db",
+    "조회",
+    "데이터",
+    "검색",
+    "테이블",
+    "컬럼",
+    "view",
+    "평균",
+    "트렌드",
+    "기록",
+)
 
 
 def _build_keyword_hints(message: str) -> dict:
@@ -1586,7 +1657,19 @@ def _normalize_stage_resolution(raw: object) -> dict:
     }
 
 
-def _fallback_route(message: str) -> dict:
+def _fallback_route(message: str, session_id: str | None = None) -> dict:
+    if session_id and _get_conversation_mode(session_id) == "discussion":
+        lot_candidate = _extract_lot_id_candidate(message)
+        if lot_candidate and not _contains_any(message, DB_ACTION_KEYWORDS):
+            return {
+                "primary_intent": "simulation_edit",
+                "secondary_intents": [],
+                "stage": "reference",
+                "needs_clarification": False,
+                "clarifying_question": "",
+                "confidence": 0.6,
+                "reason": "discussion_lot_id",
+            }
     if _is_chart_request(message) and _is_db_request(message):
         return {
             "primary_intent": "db_query",
@@ -1821,6 +1904,8 @@ def _build_simulation_summary(session_id: str) -> dict:
     state = pipeline_store.get(session_id)
     events = pipeline_store.get_events(session_id)
     status = pipeline_store.get_status(session_id)
+    conversation_mode = _get_conversation_mode(session_id)
+    briefing_preference = _get_briefing_preference(session_id) or ""
     stage_inputs = pipeline_store.get_stage_inputs(session_id)
     reference = state.get("reference") if isinstance(state, dict) else {}
     if not isinstance(reference, dict):
@@ -1840,6 +1925,8 @@ def _build_simulation_summary(session_id: str) -> dict:
         "recommendation_param_count": rec_param_count,
         "events": list(events.keys()),
         "status": status,
+        "conversation_mode": conversation_mode,
+        "briefing_preference": briefing_preference,
         "last_stage_request": state.get("last_stage_request"),
         "reference_lot_id": reference_lot_id,
         "grid_overrides": grid_overrides,
@@ -1988,6 +2075,8 @@ PLANNER_KNOWN_MEMORY_KEYS = {
     "overrides",
     "chart_config",
     "last_stage_request",
+    "conversation_mode",
+    "briefing_preference",
     "briefing_mode",
     "briefing_mode_run_id",
     "briefing_text",
@@ -2028,6 +2117,8 @@ def _collect_planner_memory_keys(session_id: str) -> set[str]:
         "overrides",
         "chart_config",
         "last_stage_request",
+        "conversation_mode",
+        "briefing_preference",
         "briefing_mode",
         "briefing_mode_run_id",
         "briefing_text",
@@ -2057,6 +2148,8 @@ def _planner_context_payload(session_id: str) -> dict:
     memory_keys = sorted(_collect_planner_memory_keys(session_id))
     sim_params = simulation_store.get(session_id)
     sim_missing = simulation_store.missing(session_id)
+    conversation_mode = _get_conversation_mode(session_id)
+    briefing_preference = _get_briefing_preference(session_id) or ""
     event_keys = sorted(
         {
             key.split("events.", 1)[1]
@@ -2068,6 +2161,8 @@ def _planner_context_payload(session_id: str) -> dict:
         "memory_keys": memory_keys,
         "missing_sim_fields": sim_missing,
         "has_chip_prod_id": bool(sim_params.get("chip_prod_id")),
+        "conversation_mode": conversation_mode,
+        "briefing_preference": briefing_preference,
         "events": event_keys,
     }
 
@@ -2336,6 +2431,14 @@ def _get_briefing_mode(session_id: str) -> str | None:
     return mode
 
 
+def _get_briefing_preference(session_id: str) -> str | None:
+    state = pipeline_store.get(session_id)
+    mode = str(state.get("briefing_preference") or "").strip().lower()
+    if mode in {"brief", "detail"}:
+        return mode
+    return None
+
+
 def _set_briefing_mode(session_id: str, mode: str) -> None:
     normalized = str(mode or "").strip().lower()
     if normalized not in {"brief", "detail"}:
@@ -2344,7 +2447,30 @@ def _set_briefing_mode(session_id: str, mode: str) -> None:
         session_id,
         briefing_mode=normalized,
         briefing_mode_run_id=simulation_store.get_run_id(session_id),
+        briefing_preference=normalized,
+        briefing_preference_updated_at=datetime.utcnow().isoformat(),
     )
+
+
+def _get_conversation_mode(session_id: str) -> str:
+    state = pipeline_store.get(session_id)
+    mode = str(state.get("conversation_mode") or "").strip().lower()
+    return mode if mode in {"discussion", "execution"} else ""
+
+
+def _set_conversation_mode(session_id: str, mode: str, reason: str = "") -> None:
+    normalized = str(mode or "").strip().lower()
+    if normalized not in {"discussion", "execution"}:
+        return
+    pipeline_store.update(
+        session_id,
+        conversation_mode=normalized,
+        conversation_mode_reason=reason,
+        conversation_mode_run_id=simulation_store.get_run_id(session_id),
+        conversation_mode_updated_at=datetime.utcnow().isoformat(),
+    )
+
+
 
 
 async def _generate_briefing_choice_prompt(
@@ -2751,6 +2877,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     pipeline_store.set_pending_memory_summary(
         session_id, memory_summary, label="final_briefing"
     )
+    _set_conversation_mode(session_id, "discussion", reason="briefing_complete")
     return WorkflowOutcome(message, memory_summary=memory_summary, streamed=streamed)
 
 
@@ -2764,7 +2891,19 @@ async def _handle_planner_briefing(
     if mode in {"brief", "detail"}:
         _set_briefing_mode(session_id, mode)
     else:
+        mode = None
+    if not mode and message:
+        parsed = _parse_briefing_mode(message)
+        if parsed:
+            _set_briefing_mode(session_id, parsed)
+            mode = parsed
+    if not mode:
         mode = _get_briefing_mode(session_id)
+    if not mode:
+        preference = _get_briefing_preference(session_id)
+        if preference:
+            _set_briefing_mode(session_id, preference)
+            mode = preference
     if not mode:
         prompt = await _generate_briefing_choice_prompt(session_id, message)
         pending = {
@@ -2911,6 +3050,7 @@ async def _handle_planner_briefing(
         _store_pending_action(session_id, pending, INSPECTION_CHART_PROMPT, None)
         await _emit_defect_chart(session_id, process_chart_payload)
 
+    _set_conversation_mode(session_id, "discussion", reason="briefing_complete")
     return WorkflowOutcome(response, memory_summary=memory_summary)
 
 
@@ -2933,10 +3073,10 @@ async def _run_planner_step(
         if outcome is not None:
             return outcome
         if workflow == "chat":
-            return await _handle_chat_workflow(message, session)
+            return await _handle_chat_workflow(message, session_id, session)
         return await _handle_fallback_workflow(message, session_id, session)
     if workflow == "chat":
-        return await _handle_chat_workflow(message, session)
+        return await _handle_chat_workflow(message, session_id, session)
     if workflow == "briefing":
         return await _handle_planner_briefing(session_id, message)
     return await _handle_fallback_workflow(message, session_id, session)
@@ -3115,10 +3255,17 @@ async def _maybe_handle_pending_action(
             return "chat", WorkflowOutcome("알겠습니다. 필요하면 알려주세요.")
         mode = _parse_briefing_mode(message)
         if not mode:
-            prompt = await _generate_briefing_choice_prompt(
-                session_id, message, retry=True
-            )
-            return "planner", WorkflowOutcome(prompt)
+            preference = _get_briefing_preference(session_id)
+            if preference:
+                pipeline_store.update(session_id, dialogue_state="executing")
+                _set_briefing_mode(session_id, preference)
+                _clear_pending_action(session_id)
+                outcome = await _handle_planner_briefing(
+                    session_id, message=message, force_mode=preference
+                )
+                return "briefing", outcome
+            _clear_pending_action(session_id)
+            return None
         pipeline_store.update(session_id, dialogue_state="executing")
         _set_briefing_mode(session_id, mode)
         _clear_pending_action(session_id)
@@ -3338,7 +3485,19 @@ async def _maybe_handle_planner_message(
 
 async def _route_message(message: str, session_id: str) -> dict:
     if not OPENAI_API_KEY:
-        return _fallback_route(message)
+        return _fallback_route(message, session_id=session_id)
+    if _get_conversation_mode(session_id) == "discussion":
+        lot_candidate = _extract_lot_id_candidate(message)
+        if lot_candidate and not _contains_any(message, DB_ACTION_KEYWORDS):
+            return {
+                "primary_intent": "simulation_edit",
+                "secondary_intents": [],
+                "stage": "reference",
+                "needs_clarification": False,
+                "clarifying_question": "",
+                "confidence": 0.65,
+                "reason": "discussion_lot_id",
+            }
     summary = _build_route_summary(session_id)
     keyword_hints = _build_keyword_hints(message)
     meta = {
@@ -3378,7 +3537,7 @@ async def _route_message(message: str, session_id: str) -> dict:
         )
         return _normalize_route_command(run.final_output)
     except Exception:
-        return _fallback_route(message)
+        return _fallback_route(message, session_id=session_id)
 
 
 async def _heuristic_chart_update(message: str, session_id: str) -> str:
@@ -3891,6 +4050,35 @@ def _extract_lot_id(message: str) -> str | None:
         return None
     raw = match.group(1)
     return raw.upper().replace("_", "-").replace(" ", "")
+
+
+def _extract_lot_id_candidate(message: str) -> str | None:
+    text = (message or "").strip()
+    if not text:
+        return None
+    lot_id = _extract_lot_id(text)
+    if lot_id:
+        return lot_id
+    tokens = re.findall(r"[A-Za-z0-9-]{5,20}", text)
+    if not tokens:
+        return None
+    has_keyword = _contains_any(text, ("lot", "로트", "LOT"))
+    def _valid_token(token: str, require_digit: bool) -> bool:
+        has_alpha = re.search(r"[A-Za-z]", token) is not None
+        has_digit = re.search(r"\d", token) is not None
+        if require_digit and not has_digit:
+            return False
+        return has_alpha or has_digit
+    candidates = [
+        token
+        for token in tokens
+        if _valid_token(token, require_digit=not has_keyword)
+    ]
+    if not candidates:
+        return None
+    if has_keyword or (len(tokens) == 1 and len(text.split()) == 1):
+        return candidates[0].upper().replace("_", "-")
+    return None
 
 
 def _is_affirmative(message: str) -> bool:
@@ -6217,6 +6405,7 @@ async def _run_reference_pipeline(
     pipeline_store.set_pending_memory_summary(
         session_id, memory_summary, label="final_briefing"
     )
+    _set_conversation_mode(session_id, "discussion", reason="briefing_complete")
     response = {"message": message, "simulation_result": simulation_result}
     if streamed:
         response["streamed"] = True
@@ -6232,8 +6421,14 @@ async def _handle_pipeline_edit_message(
 
     grid_overrides = _extract_grid_overrides(message)
     reference_override = None
-    lot_id = _extract_lot_id(message)
+    lot_id = _extract_lot_id_candidate(message)
     if lot_id and _contains_any(message, ("기준", "레퍼런스", "reference")):
+        reference_override = lot_id
+    elif (
+        lot_id
+        and _get_conversation_mode(session_id) == "discussion"
+        and not _contains_any(message, DB_ACTION_KEYWORDS)
+    ):
         reference_override = lot_id
 
     if not grid_overrides and not reference_override and not _should_rerun_grid(message):

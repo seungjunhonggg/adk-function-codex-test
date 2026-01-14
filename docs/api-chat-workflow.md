@@ -11,7 +11,7 @@ flowchart TD
   API --> Policy[pending_action policy]
   Policy -->|confirmed| Handler{workflow handler}
   Policy --> Route[route_agent]
-  Route -->|primary_intent=chat/unknown| Chat[conversation_agent]
+  Route -->|primary_intent=chat/unknown| Chat[conversation_agent / discussion_agent]
   Route -->|primary_intent!=chat| Planner[planner_agent]
   Planner -->|run_step| Handler{workflow handler}
   Planner -->|no plan/chat-only| Handler{workflow handler}
@@ -35,6 +35,7 @@ flowchart TD
 2) pending_action이 확인되면 해당 워크플로우를 즉시 실행하고 응답합니다.  
 3) pending_action이 없으면 먼저 `route_agent`로 의도를 분기합니다.  
 4) primary_intent가 `chat/unknown`이면 바로 대화 흐름으로 처리합니다.  
+   - `conversation_mode=discussion`이고 `final_briefing` 이벤트가 있으면 `discussion_agent`로 전환합니다.
 5) 그 외 intent면 `planner_agent`로 단계화를 시도합니다.  
    - planner context JSON에는 `memory_keys`, `missing_sim_fields`, `has_chip_prod_id`, `events`에 더해  
      `keyword_hints`, `simulation_active`, `route_hint`가 포함됩니다.
@@ -43,6 +44,7 @@ flowchart TD
 6) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
 7) planner 경로에서는 `briefing` step 직전에 상세/간단 브리핑 선택을 확인합니다.  
    - 확인 질문은 모델이 직접 생성하며, `pending_action=briefing_choice`로 다음 입력을 받습니다.  
+   - 사용자가 다른 의도로 응답하면 `pending_action`을 해제하고 일반 라우팅으로 진행합니다.  
 8) 선택 결과가 `간단`이면 `briefing_agent` 요약, `상세`면 최종 브리핑 스트리밍을 출력합니다.  
    - planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 선택 이후에 브리핑을 출력합니다.  
 추가: planner가 `next_action=confirm`을 반환하면 `pending_action`에 저장하고 확인 질문을 출력합니다.
@@ -51,6 +53,8 @@ flowchart TD
 라우터/플래너를 거치지 않고 백엔드에서 파라미터를 확정해 바로 파이프라인을 실행합니다.  
 이때 백엔드는 `collect_simulation_params`로 입력값을 갱신하고 `emit_simulation_form`을 송신한 뒤,
 `_run_reference_pipeline(emit_briefing=false)`로 이벤트를 저장하고, 이후 브리핑 선택 질문만 출력합니다.
+추가: `emit_simulation_form`은 `conversation_mode=execution`으로 전환합니다.  
+최종 브리핑이 출력되면 `conversation_mode=discussion`으로 전환합니다.
 
 주요 intent:
 - `simulation_run` / `simulation_edit`
@@ -176,7 +180,8 @@ flowchart TD
 - `briefing_text`/`briefing_summary`: 최종 브리핑 출력과 요약 캐시
 - `briefing_text_mode`/`briefing_text_run_id`: 브리핑 출력 종류(간단/상세)와 run_id 캐시
 - `briefing_mode`/`briefing_mode_run_id`: 사용자가 선택한 브리핑 유형과 run_id
-- `pending_action`/`pending_plan`/`pending_inputs`/`dialogue_state`: 제안→확인→실행 상태 관리
+- `conversation_mode`/`briefing_preference`: 실행/토론 모드 및 브리핑 선호도 기록
+- `pending_action`/`pending_plan`/`pending_inputs`/`dialogue_state`: 제안→확인→실행 상태 관리 (briefing_choice는 미응답 시 해제)
 - 이벤트 패널 재현에 필요한 payload를 저장
 - 단계별 진행 로그용 `stage_tables`(reference/grid 표 목록)도 이벤트로 저장
 - `stage_inputs`: 단계별 입력 스냅샷(recommendation/reference/grid/selection/chart)과 `run_id`를 저장해
@@ -206,6 +211,7 @@ flowchart TD
 
 ## 가드레일
 - `conversation_agent`: 입력/출력 가드레일로 MLCC 요청을 일반 대화로 처리하지 않도록 차단
+- `discussion_agent`: 출력 가드레일로 브리핑 이후 답변이 근거 없는 수치/LOT를 포함하지 않도록 제어
 - `briefing_agent`: 출력 가드레일로 근거 없는 LOT/불량률/파라미터 언급을 방지
 - 출력 가드레일은 `pipeline_store` 이벤트 유무를 근거로 검사하고, 부족 시 fallback 메시지를 반환
 
