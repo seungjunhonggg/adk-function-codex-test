@@ -2650,9 +2650,6 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
             "5% 증가시켜 설계를 진행하였습니다."
         )
     grid_intro += " Sheet T, LayDown, 층수를 가변하여 최적설계를 진행한 결과는 하기와 같습니다."
-    post_grid_body = _build_post_grid_step(
-        post_grid_defects, include_prefix=False, column_labels=defect_label_map
-    )
     simulation_result = pipeline_store.get_event(session_id, "simulation_result")
     if not isinstance(simulation_result, dict):
         simulation_result = {}
@@ -2667,7 +2664,6 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         f"검색된 LOT {total_lot_count}개 중 가장 적합한 LOT를 선정하였습니다.",
         "2": detail_intro,
         "3": grid_intro,
-        "4": post_grid_body,
         "5": summary_body,
     }
     rewritten = await _maybe_rewrite_briefing_sections(rewrite_sections)
@@ -2699,7 +2695,11 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         grid_step = f"{grid_text}\n\n{grid_table}"
     else:
         grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
-    post_grid_step = f"4) {rewritten.get('4', rewrite_sections['4'])}"
+    post_grid_title = "4) 최근 LOT 불량률 현황"
+    if post_grid_table:
+        post_grid_step = f"{post_grid_title}\n\n{post_grid_table}"
+    else:
+        post_grid_step = f"{post_grid_title}\n\n최근 LOT 불량률 데이터가 없습니다."
     summary_step = f"5) {rewritten.get('5', rewrite_sections['5'])}"
     sections = [
         "브리핑 시작",
@@ -2730,7 +2730,10 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
             stream_blocks.append({"type": "table", "markdown": grid_table})
         else:
             stream_blocks.append({"type": "text", "value": "그리드 결과가 없습니다."})
-    if post_grid_step:
+    if post_grid_table:
+        stream_blocks.append({"type": "text", "value": post_grid_title})
+        stream_blocks.append({"type": "table", "markdown": post_grid_table})
+    elif post_grid_step:
         stream_blocks.append({"type": "text", "value": post_grid_step})
     if summary_step:
         stream_blocks.append({"type": "text", "value": summary_step})
@@ -6121,9 +6124,6 @@ async def _run_reference_pipeline(
             "5% 증가시켜 설계를 진행하였습니다."
         )
     grid_intro += " Sheet T, LayDown, 층수를 가변하여 최적설계를 진행한 결과는 하기와 같습니다."
-    post_grid_body = _build_post_grid_step(
-        post_grid_defects, include_prefix=False, column_labels=defect_label_map
-    )
     summary_body = (
         f"최종 요약: {_format_simulation_result(simulation_result.get('result'))}. "
         "상위 후보를 확인해 주세요."
@@ -6135,7 +6135,6 @@ async def _run_reference_pipeline(
         f"검색된 LOT {total_lot_count}개 중 가장 적합한 LOT를 선정하였습니다.",
         "2": detail_intro,
         "3": grid_intro,
-        "4": post_grid_body,
         "5": summary_body,
     }
     rewritten = await _maybe_rewrite_briefing_sections(rewrite_sections)
@@ -6167,7 +6166,11 @@ async def _run_reference_pipeline(
         grid_step = f"{grid_text}\n\n{grid_table}"
     else:
         grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
-    post_grid_step = f"4) {rewritten.get('4', rewrite_sections['4'])}"
+    post_grid_title = "4) 최근 LOT 불량률 현황"
+    if post_grid_table:
+        post_grid_step = f"{post_grid_title}\n\n{post_grid_table}"
+    else:
+        post_grid_step = f"{post_grid_title}\n\n최근 LOT 불량률 데이터가 없습니다."
     summary_step = f"5) {rewritten.get('5', rewrite_sections['5'])}"
     sections = [
         "브리핑 시작",
@@ -6200,7 +6203,10 @@ async def _run_reference_pipeline(
             stream_blocks.append({"type": "table", "markdown": grid_table})
         else:
             stream_blocks.append({"type": "text", "value": "그리드 결과가 없습니다."})
-    if post_grid_step:
+    if post_grid_table:
+        stream_blocks.append({"type": "text", "value": post_grid_title})
+        stream_blocks.append({"type": "table", "markdown": post_grid_table})
+    elif post_grid_step:
         stream_blocks.append({"type": "text", "value": post_grid_step})
     if summary_step:
         stream_blocks.append({"type": "text", "value": summary_step})
