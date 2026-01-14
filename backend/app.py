@@ -5787,6 +5787,7 @@ async def _run_reference_pipeline(
 
     reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
     detail_chunk_size = briefing_config.get("reference_detail_chunk_size", 6)
+    briefing_columns = _load_briefing_table_columns(rules)
 
     safe_reference_rows = _json_safe_rows(reference_rows)
     reference_table_columns = _resolve_briefing_columns(
