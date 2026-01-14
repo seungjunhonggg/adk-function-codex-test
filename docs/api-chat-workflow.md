@@ -50,9 +50,9 @@ flowchart TD
 추가: planner가 `next_action=confirm`을 반환하면 `pending_action`에 저장하고 확인 질문을 출력합니다.
 
 추가: `/api/chat`는 `intent=simulation_run` + `params`를 받으면,
-프론트에 표시되지 않는 내부 메시지를 생성해 동일한 플로우로 실행합니다.  
+라우터/플래너를 거치지 않고 백엔드에서 파라미터를 확정해 바로 파이프라인을 실행합니다.  
 이때 백엔드는 `collect_simulation_params`로 입력값을 갱신하고 `emit_simulation_form`을 송신한 뒤,
-`"현재 파라미터로 시뮬레이션을 실행해줘"` 형태의 메시지로 라우팅/플래너를 진행합니다.
+`_run_reference_pipeline(emit_briefing=false)`로 이벤트를 저장하고, 이후 브리핑 선택 질문만 출력합니다.
 
 주요 intent:
 - `simulation_run` / `simulation_edit`

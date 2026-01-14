@@ -211,21 +211,64 @@ async def chat(request: ChatRequest) -> dict:
     try:
         message = request.message or ""
         if request.intent == "simulation_run":
+            _clear_pending_action(request.session_id)
             params_payload = _normalize_simulation_params_payload(request.params)
-            params_for_message = {}
             if params_payload:
                 update_result = collect_simulation_params(**params_payload)
-                await emit_simulation_form(
-                    update_result.get("params", {}), update_result.get("missing", [])
-                )
-                params_for_message = update_result.get("params", {}) or params_payload
             else:
-                params_for_message = simulation_store.get(request.session_id)
-                if params_for_message:
-                    await emit_simulation_form(
-                        params_for_message, simulation_store.missing(request.session_id)
-                    )
+                update_result = {
+                    "params": simulation_store.get(request.session_id),
+                    "missing": simulation_store.missing(request.session_id),
+                }
+            params_for_message = update_result.get("params", {}) or {}
+            missing = update_result.get("missing", []) or []
+            form_payload = await emit_simulation_form(params_for_message, missing)
             message = _build_simulation_run_message(params_for_message)
+            chip_prod_override = params_for_message.get("chip_prod_id")
+            if missing and not chip_prod_override:
+                auto_message = await _generate_simulation_auto_message(
+                    params_for_message, missing, None
+                )
+                outcome = WorkflowOutcome(
+                    auto_message,
+                    ui_event={"type": "simulation_form", "payload": form_payload},
+                )
+                return await _record_workflow_outcome(
+                    request.session_id, message, "simulation_run", outcome
+                )
+            pipeline_store.update(
+                request.session_id,
+                briefing_mode=None,
+                briefing_mode_run_id=None,
+            )
+            pipeline_result = await _run_reference_pipeline(
+                request.session_id,
+                params_for_message,
+                chip_prod_override=chip_prod_override,
+                reference_override=_get_reference_override(request.session_id),
+                grid_overrides=_get_grid_overrides(request.session_id),
+                selection_overrides=_get_selection_overrides(request.session_id),
+                emit_briefing=False,
+            )
+            if not isinstance(pipeline_result, dict) or not pipeline_result.get(
+                "simulation_result"
+            ):
+                error_text = (
+                    pipeline_result.get("message")
+                    if isinstance(pipeline_result, dict)
+                    else None
+                )
+                outcome = WorkflowOutcome(
+                    error_text
+                    or "추천 실행에 실패했습니다. 입력값을 확인해 주세요."
+                )
+                return await _record_workflow_outcome(
+                    request.session_id, message, "simulation_run", outcome
+                )
+            outcome = await _handle_planner_briefing(request.session_id, message)
+            return await _record_workflow_outcome(
+                request.session_id, message, "briefing", outcome
+            )
 
         pending_result = await _maybe_handle_pending_action(
             message, request.session_id, session
