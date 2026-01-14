@@ -83,20 +83,6 @@ from .tools import (
     show_simulation_stage_impl,
     STAGE_EVENT_MAP,
 )
-from .workflow import (
-    apply_saved_workflow,
-    delete_saved_workflow,
-    ensure_workflow,
-    ensure_workflow_store,
-    execute_workflow,
-    list_saved_workflows,
-    load_workflow,
-    normalize_workflow,
-    preview_workflow,
-    save_workflow_entry,
-    save_workflow,
-    validate_workflow,
-)
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -138,15 +124,6 @@ class TestRequest(BaseModel):
     params: dict | None = None
 
 
-class WorkflowRequest(BaseModel):
-    workflow: dict
-
-
-class WorkflowPreviewRequest(BaseModel):
-    workflow: dict
-    message: str
-
-
 class DBConnectRequest(BaseModel):
     name: str
     db_type: str
@@ -179,8 +156,6 @@ class RecommendationParamsRequest(BaseModel):
 @app.on_event("startup")
 async def startup() -> None:
     init_db()
-    ensure_workflow()
-    ensure_workflow_store()
     set_tracing_disabled(not TRACING_ENABLED)
     for connection in list_connections():
         connection_id = connection.get("id")
@@ -198,11 +173,6 @@ async def startup() -> None:
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "index.html")
-
-
-@app.get("/builder")
-async def builder() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "builder.html")
 
 
 @app.post("/api/chat")
@@ -6615,71 +6585,6 @@ async def trigger_test(request: TestRequest) -> dict:
         current_session_id.reset(token)
 
     return {"status": "ok", "simulation": result}
-
-
-@app.get("/api/workflow")
-async def get_workflow() -> dict:
-    return load_workflow()
-
-
-@app.post("/api/workflow")
-async def set_workflow(request: WorkflowRequest) -> dict:
-    normalized = normalize_workflow(request.workflow)
-    valid, errors = validate_workflow(normalized)
-    if not valid:
-        raise HTTPException(status_code=400, detail={"errors": errors})
-    return save_workflow(normalized)
-
-
-@app.get("/api/workflows")
-async def list_workflows() -> dict:
-    return list_saved_workflows()
-
-
-@app.post("/api/workflows")
-async def save_workflow_catalog(request: WorkflowRequest) -> dict:
-    normalized = normalize_workflow(request.workflow)
-    valid, errors = validate_workflow(normalized)
-    if not valid:
-        raise HTTPException(status_code=400, detail={"errors": errors})
-    return save_workflow_entry(normalized)
-
-
-@app.post("/api/workflows/{workflow_id}/apply")
-async def apply_workflow(workflow_id: str) -> dict:
-    result = apply_saved_workflow(workflow_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail={"error": "워크플로우를 찾을 수 없습니다."})
-    return {"status": "ok", "active_id": result.get("active_id"), "workflow": result.get("workflow")}
-
-
-@app.delete("/api/workflows/{workflow_id}")
-async def remove_workflow(workflow_id: str) -> dict:
-    deleted = delete_saved_workflow(workflow_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail={"error": "워크플로우를 찾을 수 없습니다."})
-    return {"status": "ok"}
-
-
-@app.post("/api/workflow/validate")
-async def validate_workflow_route(request: WorkflowRequest) -> dict:
-    normalized = normalize_workflow(request.workflow)
-    valid, errors = validate_workflow(normalized)
-    return {"valid": valid, "errors": errors}
-
-
-@app.post("/api/workflow/preview")
-async def preview_workflow_route(request: WorkflowPreviewRequest) -> dict:
-    normalized = normalize_workflow(request.workflow)
-    valid, errors = validate_workflow(normalized)
-    if not valid:
-        raise HTTPException(status_code=400, detail={"errors": errors})
-    preview = preview_workflow(normalized, request.message)
-    if preview is None:
-        raise HTTPException(
-            status_code=400, detail={"errors": ["경로를 찾지 못했습니다."]}
-        )
-    return preview
 
 
 @app.post("/api/simulation/params")

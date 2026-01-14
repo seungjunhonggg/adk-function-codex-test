@@ -38,7 +38,6 @@ uvicorn backend.app:app --reload
 - `SIM_API_URL` : 외부 시뮬레이션 API가 있을 때 POST 대상
 - `SESSION_DB_PATH` : 에이전트 세션 저장용 SQLite (기본값: sessions.db)
 - `DB_PATH` : 공정 데이터 SQLite (기본값: process_data.db)
-- `WORKFLOW_PATH` : 워크플로우 JSON 저장 경로 (기본값: workflow.json)
 
 ## 간이 테스트 (API 키 없이)
 
@@ -56,27 +55,6 @@ curl -X POST http://localhost:8000/api/test/trigger ^
   -d \"{\\\"session_id\\\":\\\"demo\\\"}\"
 ```
 
-## 워크플로우 빌더 페이지
-
-`http://localhost:8000/builder` 에서 노드 기반 빌더를 사용할 수 있습니다.
-- 블록 타입 3종: 사용자 요청 / 에이전트 / 함수
-- 에이전트 세부 타입: 오케스트레이터, DB 에이전트, 시뮬레이션 에이전트
-- 함수 세부 타입: DB 함수, API 함수, Frontend Trigger
-- 에이전트 실행 방식: handoff(인계) / as_tool(부하 에이전트 호출)
-- 키워드/입력/출력 포맷 설정
-- 워크플로우 검증 및 라우팅 미리보기
-- 저장하면 `/api/chat` 라우팅에 즉시 반영
-
-### 워크플로우 API
-- `GET /api/workflow` : 현재 활성 워크플로우 조회
-- `POST /api/workflow` : 워크플로우 저장 및 적용
-- `POST /api/workflow/validate` : 워크플로우 검증
-- `POST /api/workflow/preview` : 메시지 기반 라우팅 미리보기
-
-### 설계 규칙
-- 함수 노드는 에이전트 뒤에 연결해야 합니다.
-- `as_tool` 에이전트는 상위 에이전트에 연결해야 합니다.
-
 ## 폴더 구조
 
 ```
@@ -87,14 +65,10 @@ backend/
   db.py            # SQLite 스키마 및 샘플 데이터
   simulation.py    # 시뮬레이션 스토어 + 로컬 스텁
   config.py        # 환경 변수 설정
-  workflow.py      # 워크플로우 저장/검증/실행
 frontend/
   index.html       # ChatGPT 스타일 UI
   styles.css       # 공통 스타일
   app.js           # 프론트 동작 및 WebSocket 처리
-  builder.html     # 워크플로우 빌더 페이지
-  builder.css      # 빌더 전용 스타일
-  builder.js       # 빌더 인터랙션
 ```
 
 ## 참고
