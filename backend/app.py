@@ -5178,6 +5178,7 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
         )
         return columns_map
     schema_name = str(db_config.get("schema") or "public")
+    limit = 100
     for step in steps:
         try:
             result = execute_table_query(
@@ -5188,7 +5189,7 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
                 filter_column="step",
                 filter_operator="=",
                 filter_value=step,
-                limit=1,
+                limit=limit,
             )
         except Exception:
             logger.warning(
@@ -5199,15 +5200,34 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
         if not rows:
             logger.info("Briefing columns empty: step=%s", step)
             continue
-        columns_value = rows[0].get("columns") if isinstance(rows[0], dict) else None
-        parsed = _parse_briefing_columns(columns_value)
-        if parsed:
-            columns_map[step] = parsed
+        parsed_columns: list[str] = []
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            columns_value = row.get("columns")
+            parsed = _parse_briefing_columns(columns_value)
+            if not parsed:
+                continue
+            for column in parsed:
+                if column in seen:
+                    continue
+                seen.add(column)
+                parsed_columns.append(column)
+        if parsed_columns:
+            columns_map[step] = parsed_columns
             logger.info(
-                "Briefing columns loaded: step=%s columns=%s", step, parsed
+                "Briefing columns loaded: step=%s rows=%s columns=%s",
+                step,
+                len(rows),
+                parsed_columns,
             )
         else:
-            logger.info("Briefing columns empty after parse: step=%s", step)
+            logger.info(
+                "Briefing columns empty after parse: step=%s rows=%s",
+                step,
+                len(rows),
+            )
     return columns_map
 
 
