@@ -43,8 +43,10 @@ flowchart TD
    - planner가 plan을 반환하지 않거나 chat-only plan이면 라우터의 primary_intent 핸들러로 fallback합니다.
    - 필수 입력이 누락된 경우에는 confirmation 대신 입력 요청(예: `simulation_form`)을 우선합니다.
 6) planner는 한 턴에 여러 step을 연속 실행하며, 누락/에러가 발생하면 해당 step에서 멈춥니다.  
-7) planner 경로에서는 `briefing` step에서만 최종 브리핑을 출력합니다.  
-8) planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 마지막 `briefing` step에서 `briefing_agent`가 pipeline_store를 기반으로 요약합니다.  
+7) planner 경로에서는 `briefing` step 직전에 상세/간단 브리핑 선택을 확인합니다.  
+   - 확인 질문은 모델이 직접 생성하며, `pending_action=briefing_choice`로 다음 입력을 받습니다.  
+8) 선택 결과가 `간단`이면 `briefing_agent` 요약, `상세`면 최종 브리핑 스트리밍을 출력합니다.  
+   - planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 선택 이후에 브리핑을 출력합니다.  
 추가: planner가 `next_action=confirm`을 반환하면 `pending_action`에 저장하고 확인 질문을 출력합니다.
 
 주요 intent:
@@ -112,12 +114,13 @@ flowchart TD
       - `design_blocks` 포함
       - OPENAI_API_KEY가 있으면 서술부 문장만 LLM으로 다듬고(표/숫자 고정),
         검증 실패 시 템플릿을 그대로 사용
-      - WebSocket이 연결된 경우 브리핑 텍스트를 `chat_stream_*`로 델타 스트리밍하고,
-        표는 `briefing_table`로 분리 전송
-        (응답에는 `streamed=true`가 포함되어 HTTP 응답의 중복 출력 방지)
-      - 섹션 간 딜레이는 `BRIEFING_STREAM_DELAY_SECONDS`로 조정 가능 (기본 0.03s)
-      - 가짜 스트리밍 모드: 텍스트는 `chat_stream_*` 델타로 흘리고,
-        표는 `briefing_table` 이벤트로 분리 전송해 애니메이션 표시
+    - WebSocket이 연결된 경우 브리핑 텍스트를 `chat_stream_*`로 델타 스트리밍하고,
+      표는 `briefing_table`로 분리 전송
+      (응답에는 `streamed=true`가 포함되어 HTTP 응답의 중복 출력 방지)
+    - 섹션 간 딜레이는 `BRIEFING_STREAM_DELAY_SECONDS`로 조정 가능 (기본 0.03s)
+    - 가짜 스트리밍 모드: 텍스트는 `chat_stream_*` 델타로 흘리고,
+      표는 `briefing_table` 이벤트로 분리 전송해 애니메이션 표시
+    - planner 경로에서는 브리핑 전에 상세/간단 선택을 확인한 뒤 출력
 
 4) 이벤트 스트리밍  
    - `event_bus.broadcast`로 프론트 카드 업데이트  
@@ -173,6 +176,8 @@ flowchart TD
 - `planner_batch`: planner 루프 동안 true로 표시해 브리핑 스트리밍을 억제
 - `planner_state`/`planner_goal`: planner 단계/의존성/다음 액션 스냅샷 저장
 - `briefing_text`/`briefing_summary`: 최종 브리핑 출력과 요약 캐시
+- `briefing_text_mode`/`briefing_text_run_id`: 브리핑 출력 종류(간단/상세)와 run_id 캐시
+- `briefing_mode`/`briefing_mode_run_id`: 사용자가 선택한 브리핑 유형과 run_id
 - `pending_action`/`pending_plan`/`pending_inputs`/`dialogue_state`: 제안→확인→실행 상태 관리
 - 이벤트 패널 재현에 필요한 payload를 저장
 - 단계별 진행 로그용 `stage_tables`(reference/grid 표 목록)도 이벤트로 저장

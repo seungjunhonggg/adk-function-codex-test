@@ -341,6 +341,18 @@ briefing_agent = _build_agent(
     **MODEL_KWARGS,
 )
 
+briefing_choice_agent = _build_agent(
+    name="Briefing Choice Agent",
+    instructions=(
+        "Ask the user to choose between a detailed briefing and a brief summary. "
+        "Write in Korean, 1-2 sentences. "
+        "Always include the words '상세' and '간단'. "
+        "You may include numbered options like '1) 상세, 2) 간단'. "
+        "Do not mention tools, routing, or system logs."
+    ),
+    **MODEL_KWARGS,
+)
+
 
 
 db_agent = _build_agent(

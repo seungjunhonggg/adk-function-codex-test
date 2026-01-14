@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from .agents import (
     auto_message_agent,
+    briefing_choice_agent,
     briefing_agent,
     chart_agent,
     conversation_agent,
@@ -1851,6 +1852,11 @@ PLANNER_WORKFLOW_CONFIG: dict[str, dict[str, list[str]]] = {
         ],
         "success_criteria": ["last_stage_request"],
     },
+    "briefing_choice": {
+        "required_memory": ["events.final_briefing"],
+        "optional_memory": ["briefing_mode"],
+        "success_criteria": ["briefing_mode"],
+    },
     "briefing": {
         "required_memory": ["events.final_briefing"],
         "optional_memory": [
@@ -1881,7 +1887,11 @@ PLANNER_KNOWN_MEMORY_KEYS = {
     "overrides",
     "chart_config",
     "last_stage_request",
+    "briefing_mode",
+    "briefing_mode_run_id",
     "briefing_text",
+    "briefing_text_mode",
+    "briefing_text_run_id",
     "briefing_summary",
     "recommendation",
     "recommendation.params",
@@ -1917,7 +1927,11 @@ def _collect_planner_memory_keys(session_id: str) -> set[str]:
         "overrides",
         "chart_config",
         "last_stage_request",
+        "briefing_mode",
+        "briefing_mode_run_id",
         "briefing_text",
+        "briefing_text_mode",
+        "briefing_text_run_id",
         "briefing_summary",
         "workflow_id",
     ):
@@ -2209,11 +2223,421 @@ async def _emit_planner_status(
     message = f"Planner {step_index}/{total_steps} {workflow} {status}"
     await _emit_pipeline_status("planner", message, done=done)
 
-
-async def _handle_planner_briefing(session_id: str) -> WorkflowOutcome:
+def _get_briefing_mode(session_id: str) -> str | None:
     state = pipeline_store.get(session_id)
+    mode = str(state.get("briefing_mode") or "").strip().lower()
+    if mode not in {"brief", "detail"}:
+        return None
+    run_id = str(state.get("briefing_mode_run_id") or "").strip()
+    current_run_id = simulation_store.get_run_id(session_id)
+    if current_run_id and run_id and run_id != current_run_id:
+        return None
+    return mode
+
+
+def _set_briefing_mode(session_id: str, mode: str) -> None:
+    normalized = str(mode or "").strip().lower()
+    if normalized not in {"brief", "detail"}:
+        return
+    pipeline_store.update(
+        session_id,
+        briefing_mode=normalized,
+        briefing_mode_run_id=simulation_store.get_run_id(session_id),
+    )
+
+
+async def _generate_briefing_choice_prompt(
+    session_id: str,
+    message: str | None = None,
+    retry: bool = False,
+) -> str:
+    fallback = "브리핑을 상세로 볼까요, 간단 요약으로 볼까요?"
+    if not OPENAI_API_KEY:
+        return fallback
+    summary_payload = pipeline_store.get_event(session_id, "final_briefing")
+    context_payload = {
+        "chip_prod_id": summary_payload.get("chip_prod_id")
+        if isinstance(summary_payload, dict)
+        else None,
+        "reference_lot": summary_payload.get("reference_lot")
+        if isinstance(summary_payload, dict)
+        else None,
+        "candidate_total": summary_payload.get("candidate_total")
+        if isinstance(summary_payload, dict)
+        else None,
+        "retry": retry,
+    }
+    prompt = (
+        "사용자에게 브리핑 선택을 요청하세요. "
+        "조건: 한국어 1~2문장, '상세'와 '간단'을 반드시 포함. "
+        "도구/라우팅/시스템 언급 금지. "
+        f"Context JSON: {json.dumps(context_payload, ensure_ascii=False)}\n"
+        f"User message: {message or ''}"
+    )
+    try:
+        run = await Runner.run(
+            briefing_choice_agent,
+            input=prompt,
+            hooks=WorkflowRunHooks(),
+        )
+    except Exception:
+        return fallback
+    response = (run.final_output or "").strip()
+    if not response:
+        return fallback
+    if "상세" not in response or "간단" not in response:
+        return fallback
+    return response
+
+
+async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
+    summary_payload = pipeline_store.get_event(session_id, "final_briefing")
+    if not isinstance(summary_payload, dict) or not summary_payload:
+        return WorkflowOutcome("브리핑할 데이터가 아직 없습니다.")
+    state = pipeline_store.get(session_id)
+    reference_payload = state.get("reference")
+    if not isinstance(reference_payload, dict) or not reference_payload:
+        return WorkflowOutcome("레퍼런스 정보가 없어 상세 브리핑을 생성할 수 없습니다.")
+    grid_state = state.get("grid")
+    if not isinstance(grid_state, dict):
+        grid_state = {}
+
+    rules = normalize_reference_rules(load_reference_rules())
+    db_config = rules.get("db", {})
+    label_connection_id = db_config.get("connection_id") or ""
+    label_schema = db_config.get("schema") or "public"
+    column_label_map = get_column_label_map(label_connection_id, label_schema)
+    defect_source = rules.get("defect_rate_source") or {}
+    defect_connection_id = defect_source.get("connection_id") or label_connection_id
+    defect_schema = defect_source.get("schema") or label_schema
+    defect_label_map = (
+        get_column_label_map(defect_connection_id, defect_schema)
+        if defect_connection_id and defect_connection_id != label_connection_id
+        else column_label_map
+    )
+
+    briefing_config = _resolve_final_briefing_config(rules)
+    reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
+    detail_chunk_size = briefing_config.get("reference_detail_chunk_size", 6)
+
+    reference_columns = reference_payload.get("reference_columns") or []
+    reference_rows = reference_payload.get("reference_rows") or []
+    if not isinstance(reference_columns, list):
+        reference_columns = []
+    if not isinstance(reference_rows, list):
+        reference_rows = []
+    reference_column_labels = reference_payload.get("reference_column_labels")
+    if not isinstance(reference_column_labels, dict):
+        reference_column_labels = build_column_label_map(
+            reference_columns, column_label_map
+        )
+    selected_row = reference_payload.get("row")
+    if not isinstance(selected_row, dict):
+        selected_row = {}
+    selected_lot_id = reference_payload.get("lot_id") or summary_payload.get("reference_lot") or ""
+    if not selected_lot_id:
+        selected_lot_id = str(_row_value(selected_row, db_config.get("lot_id_column") or "lot_id") or "")
+
+    safe_reference_rows = _json_safe_rows(reference_rows)
+    reference_table = _build_markdown_table(
+        reference_columns,
+        safe_reference_rows,
+        row_limit=reference_table_limit,
+        column_labels=reference_column_labels,
+    )
+    reference_table_label = ""
+    reference_table_note = ""
+    if reference_table:
+        display_count = min(len(reference_rows), reference_table_limit)
+        reference_table_label = f"레퍼런스 LOT 후보 표 (상위 {display_count}개):"
+        if len(reference_rows) > reference_table_limit:
+            reference_table_note = f"※ 상위 {reference_table_limit}개만 표시"
+    else:
+        reference_table_label = "레퍼런스 LOT 후보 표를 생성하지 못했습니다."
+
+    detail_result = (
+        get_lot_detail_by_id(selected_lot_id, use_available_columns=True)
+        if selected_lot_id
+        else {}
+    )
+    detail_row = detail_result.get("row") if detail_result.get("status") == "ok" else None
+    if not isinstance(detail_row, dict):
+        detail_row = selected_row if isinstance(selected_row, dict) else {}
+    detail_columns = detail_result.get("columns") if detail_result.get("status") == "ok" else None
+    if not isinstance(detail_columns, list) or not detail_columns:
+        detail_columns = list(detail_row.keys()) if isinstance(detail_row, dict) else []
+    detail_columns = [str(column) for column in detail_columns if column]
+    if not detail_columns and isinstance(detail_row, dict):
+        detail_columns = [str(column) for column in detail_row.keys() if column]
+    detail_column_labels = build_column_label_map(detail_columns, column_label_map)
+    detail_row_safe = _json_safe_dict(detail_row) if isinstance(detail_row, dict) else {}
+    detail_tables = _build_markdown_table_chunks(
+        detail_columns,
+        detail_row_safe,
+        detail_chunk_size,
+        column_labels=detail_column_labels,
+    )
+    detail_table_text = (
+        "\n\n".join(detail_tables) if detail_tables else "상세 정보를 찾지 못했습니다."
+    )
+    detail_note = ""
+    if len(detail_tables) > 1:
+        detail_note = "컬럼이 많아 표를 여러 개로 나눴습니다."
+
+    top_candidates = grid_state.get("top")
+    if not isinstance(top_candidates, list):
+        top_candidates = []
+    grid_rows = []
+    for index, candidate in enumerate(top_candidates[:3], start=1):
+        if not isinstance(candidate, dict):
+            continue
+        design = candidate.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        grid_rows.append(
+            {
+                "rank": candidate.get("rank") or index,
+                "electrode_c_avg": _resolve_design_value(
+                    design, selected_row, ("electrode_c_avg",)
+                ),
+                "grinding_t_avg": _resolve_design_value(
+                    design, selected_row, ("grinding_t_avg", "grinding_t_size")
+                ),
+                "active_layer": _resolve_design_value(
+                    design, selected_row, ("active_layer",)
+                ),
+                "cast_dsgn_thk": _resolve_design_value(
+                    design, selected_row, ("cast_dsgn_thk",)
+                ),
+                "ldn_avr_value": _resolve_design_value(
+                    design, selected_row, ("ldn_avr_value",)
+                ),
+            }
+        )
+    grid_columns = [
+        "rank",
+        "electrode_c_avg",
+        "grinding_t_avg",
+        "active_layer",
+        "cast_dsgn_thk",
+        "ldn_avr_value",
+    ]
+    grid_column_labels = build_column_label_map(grid_columns, column_label_map)
+    grid_table = _build_markdown_table(
+        grid_columns,
+        _json_safe_rows(grid_rows),
+        column_labels=grid_column_labels,
+    )
+
+    reference_tables: list[dict] = []
+    reference_notes: list[str] = []
+    if reference_table:
+        reference_tables.append(
+            {
+                "title": reference_table_label or "레퍼런스 LOT 후보 표",
+                "markdown": reference_table,
+            }
+        )
+        if reference_table_note:
+            reference_notes.append(reference_table_note)
+    else:
+        if reference_table_label:
+            reference_notes.append(reference_table_label)
+    if detail_tables:
+        total_tables = len(detail_tables)
+        for idx, table in enumerate(detail_tables, start=1):
+            title = "레퍼런스 LOT 상세"
+            if total_tables > 1:
+                title = f"{title} ({idx}/{total_tables})"
+            reference_tables.append({"title": title, "markdown": table})
+        if detail_note:
+            reference_notes.append(detail_note)
+    elif detail_table_text:
+        reference_notes.append(detail_table_text)
+    if reference_tables or reference_notes:
+        await _emit_pipeline_stage_tables(
+            "reference", reference_tables, reference_notes, session_id=session_id
+        )
+
+    grid_tables: list[dict] = []
+    grid_notes: list[str] = []
+    if grid_table:
+        grid_tables.append({"title": "그리드 서치 결과", "markdown": grid_table})
+    else:
+        grid_notes.append("그리드 결과가 없습니다.")
+    await _emit_pipeline_stage_tables(
+        "grid", grid_tables, grid_notes, session_id=session_id
+    )
+
+    params = simulation_store.get(session_id)
+    input_summary = _format_input_conditions(params)
+    condition_summary = _format_defect_condition_summary(rules, defect_label_map)
+    sort_summary = _format_sort_summary(rules, column_label_map)
+    intro_parts = [input_summary]
+    if condition_summary:
+        intro_parts.append(f"해당 조건으로 {condition_summary} 조건을 필터링하였으며")
+    if sort_summary:
+        intro_parts.append(f"정렬 우선순위는 {sort_summary} 입니다.")
+    reference_intro = " ".join(intro_parts).strip()
+    total_lot_count = len(reference_rows)
+    ref_label = selected_lot_id or "Ref LOT"
+    detail_intro = f"선택된 Ref는 {ref_label} 으로 정보는 하기와 같습니다."
+    if detail_note:
+        detail_intro = f"{detail_intro}\n{detail_note}"
+
+    electrode_ref_value = _row_value(selected_row, "electrode_c_avg")
+    electrode_ref_text = _format_brief_value(electrode_ref_value)
+    grid_intro = (
+        "Ref LOT의 모재/첨가제가 동일하다는 조건 하에 S/T, L/D, 층수를 변경하여 "
+        "최적 설계를 진행하였습니다."
+    )
+    if electrode_ref_value not in (None, ""):
+        grid_intro += (
+            f" 최적설계는 {ref_label}의 연마용량인 {electrode_ref_text}로부터 "
+            "5% 증가시켜 설계를 진행하였습니다."
+        )
+    grid_intro += " Sheet T, LayDown, 층수를 가변하여 최적설계를 진행한 결과는 하기와 같습니다."
+    post_grid_defects = summary_payload.get("post_grid_defects")
+    post_grid_body = _build_post_grid_step(
+        post_grid_defects, include_prefix=False, column_labels=defect_label_map
+    )
+    simulation_result = pipeline_store.get_event(session_id, "simulation_result")
+    if not isinstance(simulation_result, dict):
+        simulation_result = {}
+    summary_body = (
+        f"최종 요약: {_format_simulation_result(simulation_result.get('result'))}. "
+        "상위 후보를 확인해 주세요."
+        if simulation_result and simulation_result.get("result")
+        else "최종 요약: 추천 결과를 확인해 주세요."
+    )
+    rewrite_sections = {
+        "1": f"{reference_intro} 나온 LOT는 총 {total_lot_count}개입니다. "
+        f"검색된 LOT {total_lot_count}개 중 가장 적합한 LOT를 선정하였습니다.",
+        "2": detail_intro,
+        "3": grid_intro,
+        "4": post_grid_body,
+        "5": summary_body,
+    }
+    rewritten = await _maybe_rewrite_briefing_sections(rewrite_sections)
+
+    reference_step_text = (
+        "1) 레퍼 LOT 추천 결과\n"
+        f"{rewritten.get('1', rewrite_sections['1'])}"
+    )
+    if reference_table_label:
+        reference_step_text = f"{reference_step_text}\n\n{reference_table_label}"
+    reference_step = reference_step_text
+    if reference_table:
+        reference_step = f"{reference_step}\n\n{reference_table}"
+    if reference_table_note:
+        reference_step = f"{reference_step}\n\n{reference_table_note}"
+
+    reference_detail_text = (
+        "2) 레퍼 정보 제공\n"
+        f"{rewritten.get('2', rewrite_sections['2'])}"
+    )
+    reference_detail_step = reference_detail_text
+    reference_detail_step = f"{reference_detail_step}\n\n{detail_table_text}"
+
+    grid_text = (
+        "3) 그리드 서치 결과 제공\n"
+        f"{rewritten.get('3', rewrite_sections['3'])}"
+    )
+    if grid_table:
+        grid_step = f"{grid_text}\n\n{grid_table}"
+    else:
+        grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
+    post_grid_step = f"4) {rewritten.get('4', rewrite_sections['4'])}"
+    summary_step = f"5) {rewritten.get('5', rewrite_sections['5'])}"
+    sections = [
+        "브리핑 시작",
+        reference_step,
+        reference_detail_step,
+        grid_step,
+        post_grid_step,
+        summary_step,
+    ]
+    message = "\n\n".join(sections)
+    stream_blocks: list[dict] = [{"type": "text", "value": "브리핑 시작"}]
+    if reference_step_text:
+        stream_blocks.append({"type": "text", "value": reference_step_text})
+    if reference_table:
+        stream_blocks.append({"type": "table", "markdown": reference_table})
+        if reference_table_note:
+            stream_blocks.append({"type": "text", "value": reference_table_note})
+    if reference_detail_text:
+        if detail_tables:
+            stream_blocks.append({"type": "text", "value": reference_detail_text})
+            for table in detail_tables:
+                stream_blocks.append({"type": "table", "markdown": table})
+        else:
+            stream_blocks.append({"type": "text", "value": reference_detail_step})
+    if grid_text:
+        stream_blocks.append({"type": "text", "value": grid_text})
+        if grid_table:
+            stream_blocks.append({"type": "table", "markdown": grid_table})
+        else:
+            stream_blocks.append({"type": "text", "value": "그리드 결과가 없습니다."})
+    if post_grid_step:
+        stream_blocks.append({"type": "text", "value": post_grid_step})
+    if summary_step:
+        stream_blocks.append({"type": "text", "value": summary_step})
+    streamed = await _stream_briefing_blocks(session_id, stream_blocks)
+    memory_summary = _build_memory_summary(summary_payload)
+    pipeline_store.update(
+        session_id,
+        briefing_text=message,
+        briefing_text_mode="detail",
+        briefing_text_run_id=simulation_store.get_run_id(session_id),
+        briefing_summary=memory_summary,
+    )
+    pipeline_store.set_pending_memory_summary(
+        session_id, memory_summary, label="final_briefing"
+    )
+    return WorkflowOutcome(message, memory_summary=memory_summary, streamed=streamed)
+
+
+async def _handle_planner_briefing(
+    session_id: str,
+    message: str | None = None,
+    force_mode: str | None = None,
+) -> WorkflowOutcome:
+    state = pipeline_store.get(session_id)
+    mode = str(force_mode or "").strip().lower() if force_mode else None
+    if mode in {"brief", "detail"}:
+        _set_briefing_mode(session_id, mode)
+    else:
+        mode = _get_briefing_mode(session_id)
+    if not mode:
+        prompt = await _generate_briefing_choice_prompt(session_id, message)
+        pending = {
+            "workflow": "briefing_choice",
+            "input": message or "",
+            "required_memory": ["events.final_briefing"],
+            "optional_memory": [],
+            "success_criteria": [],
+        }
+        plan_state = state.get("planner_state") if isinstance(state, dict) else None
+        _store_pending_action(
+            session_id,
+            pending,
+            prompt,
+            plan_state if isinstance(plan_state, dict) else None,
+        )
+        return WorkflowOutcome(prompt)
+    if mode == "detail":
+        return await _handle_detailed_briefing(session_id)
+
     briefing_text = state.get("briefing_text") if isinstance(state, dict) else ""
-    if isinstance(briefing_text, str) and briefing_text.strip():
+    briefing_text_mode = str(state.get("briefing_text_mode") or "").strip().lower()
+    briefing_text_run_id = str(state.get("briefing_text_run_id") or "").strip()
+    current_run_id = simulation_store.get_run_id(session_id)
+    if (
+        isinstance(briefing_text, str)
+        and briefing_text.strip()
+        and briefing_text_mode == "brief"
+        and (not current_run_id or not briefing_text_run_id or briefing_text_run_id == current_run_id)
+    ):
         return WorkflowOutcome(briefing_text)
 
     payload = pipeline_store.get_event(session_id, "final_briefing")
@@ -2277,6 +2701,8 @@ async def _handle_planner_briefing(session_id: str) -> WorkflowOutcome:
         pipeline_store.update(
             session_id,
             briefing_text=response,
+            briefing_text_mode="brief",
+            briefing_text_run_id=simulation_store.get_run_id(session_id),
             briefing_summary=memory_summary,
         )
         pipeline_store.set_pending_memory_summary(
@@ -2311,7 +2737,7 @@ async def _run_planner_step(
     if workflow == "chat":
         return await _handle_chat_workflow(message, session)
     if workflow == "briefing":
-        return await _handle_planner_briefing(session_id)
+        return await _handle_planner_briefing(session_id, message)
     return await _handle_fallback_workflow(message, session_id, session)
 
 
@@ -2483,6 +2909,23 @@ async def _maybe_handle_pending_action(
     pending = _normalize_pending_action(session_id)
     if not pending:
         return None
+    if pending.get("workflow") == "briefing_choice":
+        if _is_rejection(message):
+            _clear_pending_action(session_id)
+            return "chat", WorkflowOutcome("알겠습니다. 필요하면 알려주세요.")
+        mode = _parse_briefing_mode(message)
+        if not mode:
+            prompt = await _generate_briefing_choice_prompt(
+                session_id, message, retry=True
+            )
+            return "planner", WorkflowOutcome(prompt)
+        pipeline_store.update(session_id, dialogue_state="executing")
+        _set_briefing_mode(session_id, mode)
+        _clear_pending_action(session_id)
+        outcome = await _handle_planner_briefing(
+            session_id, message=message, force_mode=mode
+        )
+        return "briefing", outcome
     if _is_affirmative(message):
         pipeline_store.update(session_id, dialogue_state="executing")
         workflow = pending["workflow"]
@@ -2556,6 +2999,16 @@ async def _maybe_handle_planner_message(
             return None
 
     decision = _ensure_briefing_step(decision)
+    if any(
+        step.get("workflow") == "briefing"
+        for step in decision.get("steps", [])
+        if isinstance(step, dict)
+    ):
+        pipeline_store.update(
+            session_id,
+            briefing_mode=None,
+            briefing_mode_run_id=None,
+        )
     memory_keys = _collect_planner_memory_keys(session_id)
     decision = _apply_planner_defaults(decision, memory_keys)
     plan_notes = _format_planner_notes(decision)
@@ -3266,6 +3719,52 @@ def _is_affirmative(message: str) -> bool:
     if lowered in affirmative:
         return True
     return any(token in lowered for token in affirmative)
+
+
+def _parse_briefing_mode(message: str) -> str | None:
+    text = (message or "").strip().lower()
+    if not text:
+        return None
+    numeric_map = {
+        "1": "detail",
+        "1번": "detail",
+        "1.": "detail",
+        "첫번째": "detail",
+        "첫 번째": "detail",
+        "2": "brief",
+        "2번": "brief",
+        "2.": "brief",
+        "두번째": "brief",
+        "두 번째": "brief",
+    }
+    if text in numeric_map:
+        return numeric_map[text]
+    detail_tokens = (
+        "상세",
+        "자세",
+        "디테일",
+        "길게",
+        "전체",
+        "전부",
+        "full",
+        "long",
+    )
+    brief_tokens = (
+        "간단",
+        "요약",
+        "짧게",
+        "brief",
+        "요약만",
+        "핵심",
+        "빠르게",
+    )
+    detail_hit = any(token in text for token in detail_tokens)
+    brief_hit = any(token in text for token in brief_tokens)
+    if detail_hit and not brief_hit:
+        return "detail"
+    if brief_hit and not detail_hit:
+        return "brief"
+    return None
 
 
 def _is_recommendation_intent(message: str) -> bool:
@@ -5039,6 +5538,8 @@ async def _run_reference_pipeline(
     pipeline_store.update(
         session_id,
         briefing_text=message,
+        briefing_text_mode="detail",
+        briefing_text_run_id=run_id,
         briefing_summary=memory_summary,
     )
     pipeline_store.set_pending_memory_summary(
