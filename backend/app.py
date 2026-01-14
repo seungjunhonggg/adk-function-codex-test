@@ -41,7 +41,13 @@ from .config import (
 )
 from .column_labels import build_column_label_map, get_column_label_map
 from .context import current_session_id
-from .db_connections import connect_and_save, get_schema, list_connections, preload_schema
+from .db_connections import (
+    connect_and_save,
+    execute_table_query,
+    get_schema,
+    list_connections,
+    preload_schema,
+)
 from .db import init_db
 from .events import event_bus
 from .guardrails import guardrail_fallback_message
@@ -2301,6 +2307,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     grid_state = state.get("grid")
     if not isinstance(grid_state, dict):
         grid_state = {}
+    post_grid_defects = summary_payload.get("post_grid_defects")
 
     rules = normalize_reference_rules(load_reference_rules())
     db_config = rules.get("db", {})
@@ -2315,6 +2322,8 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         if defect_connection_id and defect_connection_id != label_connection_id
         else column_label_map
     )
+    briefing_columns = _load_briefing_table_columns(rules)
+    briefing_columns = _load_briefing_table_columns(rules)
 
     briefing_config = _resolve_final_briefing_config(rules)
     reference_table_limit = briefing_config.get("reference_table_max_rows", 10)
@@ -2339,11 +2348,20 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         selected_lot_id = str(_row_value(selected_row, db_config.get("lot_id_column") or "lot_id") or "")
 
     safe_reference_rows = _json_safe_rows(reference_rows)
-    reference_table = _build_markdown_table(
+    reference_table_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "ref_lot_candidate",
         reference_columns,
+        available=reference_columns,
+    )
+    reference_table_labels = build_column_label_map(
+        reference_table_columns, column_label_map
+    )
+    reference_table = _build_markdown_table(
+        reference_table_columns,
         safe_reference_rows,
         row_limit=reference_table_limit,
-        column_labels=reference_column_labels,
+        column_labels=reference_table_labels,
     )
     reference_table_label = ""
     reference_table_note = ""
@@ -2369,6 +2387,12 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     detail_columns = [str(column) for column in detail_columns if column]
     if not detail_columns and isinstance(detail_row, dict):
         detail_columns = [str(column) for column in detail_row.keys() if column]
+    detail_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "ref_lot_selected",
+        detail_columns,
+        available=detail_columns,
+    )
     detail_column_labels = build_column_label_map(detail_columns, column_label_map)
     detail_row_safe = _json_safe_dict(detail_row) if isinstance(detail_row, dict) else {}
     detail_tables = _build_markdown_table_chunks(
@@ -2387,34 +2411,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     top_candidates = grid_state.get("top")
     if not isinstance(top_candidates, list):
         top_candidates = []
-    grid_rows = []
-    for index, candidate in enumerate(top_candidates[:3], start=1):
-        if not isinstance(candidate, dict):
-            continue
-        design = candidate.get("design")
-        if not isinstance(design, dict):
-            design = {}
-        grid_rows.append(
-            {
-                "rank": candidate.get("rank") or index,
-                "electrode_c_avg": _resolve_design_value(
-                    design, selected_row, ("electrode_c_avg",)
-                ),
-                "grinding_t_avg": _resolve_design_value(
-                    design, selected_row, ("grinding_t_avg", "grinding_t_size")
-                ),
-                "active_layer": _resolve_design_value(
-                    design, selected_row, ("active_layer",)
-                ),
-                "cast_dsgn_thk": _resolve_design_value(
-                    design, selected_row, ("cast_dsgn_thk",)
-                ),
-                "ldn_avr_value": _resolve_design_value(
-                    design, selected_row, ("ldn_avr_value",)
-                ),
-            }
-        )
-    grid_columns = [
+    grid_columns_default = [
         "rank",
         "electrode_c_avg",
         "grinding_t_avg",
@@ -2422,11 +2419,34 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         "cast_dsgn_thk",
         "ldn_avr_value",
     ]
+    grid_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "grid_search",
+        grid_columns_default,
+    )
+    grid_rows = _build_grid_table_rows(top_candidates, grid_columns, selected_row)
     grid_column_labels = build_column_label_map(grid_columns, column_label_map)
     grid_table = _build_markdown_table(
         grid_columns,
         _json_safe_rows(grid_rows),
         column_labels=grid_column_labels,
+    )
+
+    post_grid_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "post_grid_lot_search",
+        [],
+    )
+    post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
+    post_grid_label_map = dict(column_label_map)
+    post_grid_label_map.update(defect_label_map)
+    post_grid_column_labels = build_column_label_map(
+        post_grid_columns, post_grid_label_map
+    )
+    post_grid_table = _build_markdown_table(
+        post_grid_columns,
+        _json_safe_rows(post_grid_rows),
+        column_labels=post_grid_column_labels,
     )
 
     reference_tables: list[dict] = []
@@ -2465,6 +2485,12 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         grid_tables.append({"title": "그리드 서치 결과", "markdown": grid_table})
     else:
         grid_notes.append("그리드 결과가 없습니다.")
+    if post_grid_table:
+        grid_tables.append(
+            {"title": "최근 LOT 불량률 현황", "markdown": post_grid_table}
+        )
+    elif post_grid_columns:
+        grid_notes.append("최근 LOT 불량률 데이터가 없습니다.")
     await _emit_pipeline_stage_tables(
         "grid", grid_tables, grid_notes, session_id=session_id
     )
@@ -2497,7 +2523,6 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
             "5% 증가시켜 설계를 진행하였습니다."
         )
     grid_intro += " Sheet T, LayDown, 층수를 가변하여 최적설계를 진행한 결과는 하기와 같습니다."
-    post_grid_defects = summary_payload.get("post_grid_defects")
     post_grid_body = _build_post_grid_step(
         post_grid_defects, include_prefix=False, column_labels=defect_label_map
     )
@@ -4712,6 +4737,167 @@ def _build_markdown_table_chunks(
     return tables
 
 
+def _parse_briefing_columns(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, dict):
+        return [str(item).strip() for item in value.values() if str(item).strip()]
+    text = str(value).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    parts = re.split(r"[,\n]", text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
+    steps = (
+        "ref_lot_candidate",
+        "ref_lot_selected",
+        "grid_search",
+        "post_grid_lot_search",
+    )
+    columns_map: dict[str, list[str]] = {step: [] for step in steps}
+    db_config = rules.get("db", {}) if isinstance(rules, dict) else {}
+    connection_id = str(db_config.get("connection_id") or "").strip()
+    if not connection_id:
+        return columns_map
+    schema_name = str(db_config.get("schema") or "public")
+    for step in steps:
+        try:
+            result = execute_table_query(
+                connection_id=connection_id,
+                schema_name=schema_name,
+                table_name="column_briefing_table",
+                columns=["columns"],
+                filter_column="step",
+                filter_operator="=",
+                filter_value=step,
+                limit=1,
+            )
+        except Exception:
+            continue
+        rows = result.get("rows") if isinstance(result, dict) else None
+        if not rows:
+            continue
+        columns_value = rows[0].get("columns") if isinstance(rows[0], dict) else None
+        parsed = _parse_briefing_columns(columns_value)
+        if parsed:
+            columns_map[step] = parsed
+    return columns_map
+
+
+def _resolve_briefing_columns(
+    columns_map: dict[str, list[str]],
+    step: str,
+    fallback: list[str],
+    available: list[str] | None = None,
+) -> list[str]:
+    selected = list(columns_map.get(step) or [])
+    if selected and available:
+        available_set = set(available)
+        filtered = [column for column in selected if column in available_set]
+        if filtered:
+            selected = filtered
+        else:
+            selected = []
+    if selected:
+        return selected
+    return list(fallback)
+
+
+def _build_grid_table_rows(
+    candidates: list[dict],
+    columns: list[str],
+    selected_row: dict | None = None,
+) -> list[dict]:
+    rows: list[dict] = []
+    alias_keys = {
+        "electrode_c_avg": ("electrode_c_avg",),
+        "grinding_t_avg": ("grinding_t_avg", "grinding_t_size"),
+        "active_layer": ("active_layer",),
+        "cast_dsgn_thk": ("cast_dsgn_thk",),
+        "ldn_avr_value": ("ldn_avr_value",),
+    }
+    for index, candidate in enumerate(candidates[:3], start=1):
+        if not isinstance(candidate, dict):
+            continue
+        design = candidate.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        row: dict[str, object] = {}
+        for column in columns:
+            if column in alias_keys:
+                row[column] = _resolve_design_value(
+                    design, selected_row or {}, alias_keys[column]
+                )
+                continue
+            if column in candidate:
+                row[column] = candidate.get(column)
+                continue
+            if column in design:
+                row[column] = design.get(column)
+                continue
+            if selected_row and column in selected_row:
+                row[column] = selected_row.get(column)
+                continue
+            row[column] = None
+        if "rank" in columns and row.get("rank") in (None, ""):
+            row["rank"] = candidate.get("rank") or index
+        rows.append(row)
+    return rows
+
+
+def _build_post_grid_table_rows(
+    post_grid_defects: dict | None,
+    columns: list[str],
+) -> list[dict]:
+    if not isinstance(post_grid_defects, dict):
+        return []
+    items = post_grid_defects.get("items")
+    if not isinstance(items, list) or not items:
+        return []
+    rows: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        design = item.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        base = {
+            "rank": item.get("rank"),
+            "predicted_target": item.get("predicted_target"),
+            "lot_count": item.get("lot_count"),
+            "sample_lots": ", ".join(
+                str(value)
+                for value in (item.get("sample_lots") or [])
+                if value not in (None, "")
+            ),
+        }
+        base.update(design)
+        lot_rates = item.get("lot_defect_rates")
+        if not isinstance(lot_rates, list) or not lot_rates:
+            row = {column: base.get(column) for column in columns}
+            rows.append(row)
+            continue
+        for lot in lot_rates:
+            if not isinstance(lot, dict):
+                continue
+            row = dict(base)
+            row["lot_id"] = lot.get("lot_id")
+            row["defect_rate"] = lot.get("defect_rate")
+            rows.append({column: row.get(column) for column in columns})
+    return rows
+
+
 def _resolve_design_value(
     design: dict, ref_row: dict, keys: tuple[str, ...]
 ) -> object:
@@ -5297,11 +5483,20 @@ async def _run_reference_pipeline(
     detail_chunk_size = briefing_config.get("reference_detail_chunk_size", 6)
 
     safe_reference_rows = _json_safe_rows(reference_rows)
-    reference_table = _build_markdown_table(
+    reference_table_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "ref_lot_candidate",
         reference_columns,
+        available=reference_columns,
+    )
+    reference_table_labels = build_column_label_map(
+        reference_table_columns, column_label_map
+    )
+    reference_table = _build_markdown_table(
+        reference_table_columns,
         safe_reference_rows,
         row_limit=reference_table_limit,
-        column_labels=reference_column_labels,
+        column_labels=reference_table_labels,
     )
     reference_table_label = ""
     reference_table_note = ""
@@ -5327,6 +5522,12 @@ async def _run_reference_pipeline(
     detail_columns = [str(column) for column in detail_columns if column]
     if not detail_columns and isinstance(detail_row, dict):
         detail_columns = [str(column) for column in detail_row.keys() if column]
+    detail_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "ref_lot_selected",
+        detail_columns,
+        available=detail_columns,
+    )
     detail_column_labels = build_column_label_map(detail_columns, column_label_map)
     detail_row_safe = _json_safe_dict(detail_row) if isinstance(detail_row, dict) else {}
     detail_tables = _build_markdown_table_chunks(
@@ -5342,34 +5543,7 @@ async def _run_reference_pipeline(
     if len(detail_tables) > 1:
         detail_note = "컬럼이 많아 표를 여러 개로 나눴습니다."
 
-    grid_rows = []
-    for index, candidate in enumerate(top_candidates[:3], start=1):
-        if not isinstance(candidate, dict):
-            continue
-        design = candidate.get("design")
-        if not isinstance(design, dict):
-            design = {}
-        grid_rows.append(
-            {
-                "rank": candidate.get("rank") or index,
-                "electrode_c_avg": _resolve_design_value(
-                    design, selected_row, ("electrode_c_avg",)
-                ),
-                "grinding_t_avg": _resolve_design_value(
-                    design, selected_row, ("grinding_t_avg", "grinding_t_size")
-                ),
-                "active_layer": _resolve_design_value(
-                    design, selected_row, ("active_layer",)
-                ),
-                "cast_dsgn_thk": _resolve_design_value(
-                    design, selected_row, ("cast_dsgn_thk",)
-                ),
-                "ldn_avr_value": _resolve_design_value(
-                    design, selected_row, ("ldn_avr_value",)
-                ),
-            }
-        )
-    grid_columns = [
+    grid_columns_default = [
         "rank",
         "electrode_c_avg",
         "grinding_t_avg",
@@ -5377,11 +5551,34 @@ async def _run_reference_pipeline(
         "cast_dsgn_thk",
         "ldn_avr_value",
     ]
+    grid_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "grid_search",
+        grid_columns_default,
+    )
+    grid_rows = _build_grid_table_rows(top_candidates, grid_columns, selected_row)
     grid_column_labels = build_column_label_map(grid_columns, column_label_map)
     grid_table = _build_markdown_table(
         grid_columns,
         _json_safe_rows(grid_rows),
         column_labels=grid_column_labels,
+    )
+
+    post_grid_columns = _resolve_briefing_columns(
+        briefing_columns,
+        "post_grid_lot_search",
+        [],
+    )
+    post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
+    post_grid_label_map = dict(column_label_map)
+    post_grid_label_map.update(defect_label_map)
+    post_grid_column_labels = build_column_label_map(
+        post_grid_columns, post_grid_label_map
+    )
+    post_grid_table = _build_markdown_table(
+        post_grid_columns,
+        _json_safe_rows(post_grid_rows),
+        column_labels=post_grid_column_labels,
     )
 
     reference_tables: list[dict] = []
@@ -5420,6 +5617,12 @@ async def _run_reference_pipeline(
         grid_tables.append({"title": "그리드 서치 결과", "markdown": grid_table})
     else:
         grid_notes.append("그리드 결과가 없습니다.")
+    if post_grid_table:
+        grid_tables.append(
+            {"title": "최근 LOT 불량률 현황", "markdown": post_grid_table}
+        )
+    elif post_grid_columns:
+        grid_notes.append("최근 LOT 불량률 데이터가 없습니다.")
     await _emit_pipeline_stage_tables(
         "grid", grid_tables, grid_notes, session_id=session_id
     )
