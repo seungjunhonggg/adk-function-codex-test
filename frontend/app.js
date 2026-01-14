@@ -1561,7 +1561,10 @@ async function sendSimulationParams({ run } = { run: false }) {
   const params = collectSimFormParams();
   if (run) {
     setSimStatus("추천 실행 요청 전송 중...");
-    await sendChatMessage("추천 실행");
+    await sendChatMessage("", {
+      silentUser: true,
+      payload: { intent: "simulation_run", params },
+    });
     return;
   }
   setSimStatus("추천 입력 전송 중...");
@@ -2827,8 +2830,11 @@ function connectWebSocket(sessionId) {
   }, 20000);
 }
 
-async function sendChatMessage(message) {
-  addMessage("user", message);
+async function sendChatMessage(message, options = {}) {
+  const { silentUser = false, payload = null } = options || {};
+  if (!silentUser) {
+    addMessage("user", message);
+  }
   input.value = "";
   input.style.height = "auto";
   const startedAt = performance.now();
@@ -2838,7 +2844,11 @@ async function sendChatMessage(message) {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: currentSessionId, message }),
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        message,
+        ...(payload || {}),
+      }),
     });
 
     if (!response.ok) {

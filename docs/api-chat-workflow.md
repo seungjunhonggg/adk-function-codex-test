@@ -49,6 +49,11 @@ flowchart TD
    - planner 루프 동안 `planner_batch=true`로 표시하고, `_run_reference_pipeline`은 브리핑 스트리밍을 생략한 채 이벤트만 저장합니다. 선택 이후에 브리핑을 출력합니다.  
 추가: planner가 `next_action=confirm`을 반환하면 `pending_action`에 저장하고 확인 질문을 출력합니다.
 
+추가: `/api/chat`는 `intent=simulation_run` + `params`를 받으면,
+프론트에 표시되지 않는 내부 메시지를 생성해 동일한 플로우로 실행합니다.  
+이때 백엔드는 `collect_simulation_params`로 입력값을 갱신하고 `emit_simulation_form`을 송신한 뒤,
+`"현재 파라미터로 시뮬레이션을 실행해줘"` 형태의 메시지로 라우팅/플래너를 진행합니다.
+
 주요 intent:
 - `simulation_run` / `simulation_edit`
 - `db_query`

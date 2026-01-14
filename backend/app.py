@@ -127,6 +127,8 @@ class WorkflowOutcome:
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    intent: str | None = None
+    params: dict | None = None
 
 
 class TestRequest(BaseModel):
@@ -207,15 +209,33 @@ async def chat(request: ChatRequest) -> dict:
     session = SQLiteSession(request.session_id, SESSION_DB_PATH)
     token = current_session_id.set(request.session_id)
     try:
+        message = request.message or ""
+        if request.intent == "simulation_run":
+            params_payload = _normalize_simulation_params_payload(request.params)
+            params_for_message = {}
+            if params_payload:
+                update_result = collect_simulation_params(**params_payload)
+                await emit_simulation_form(
+                    update_result.get("params", {}), update_result.get("missing", [])
+                )
+                params_for_message = update_result.get("params", {}) or params_payload
+            else:
+                params_for_message = simulation_store.get(request.session_id)
+                if params_for_message:
+                    await emit_simulation_form(
+                        params_for_message, simulation_store.missing(request.session_id)
+                    )
+            message = _build_simulation_run_message(params_for_message)
+
         pending_result = await _maybe_handle_pending_action(
-            request.message, request.session_id, session
+            message, request.session_id, session
         )
         if pending_result is not None:
             workflow_id, outcome = pending_result
             return await _record_workflow_outcome(
-                request.session_id, request.message, workflow_id, outcome
+                request.session_id, message, workflow_id, outcome
             )
-        route_command = await _route_message(request.message, request.session_id)
+        route_command = await _route_message(message, request.session_id)
         if route_command.get("needs_clarification") and route_command.get("clarifying_question"):
             clarifying = route_command.get("clarifying_question")
             primary_intent = route_command.get("primary_intent") or "unknown"
@@ -231,7 +251,7 @@ async def chat(request: ChatRequest) -> dict:
                 },
             )
             await emit_workflow_log("FLOW", "clarification_requested")
-            await _append_user_message(request.session_id, request.message)
+            await _append_user_message(request.session_id, message)
             await _append_assistant_message(request.session_id, clarifying)
             return {"assistant_message": clarifying}
 
@@ -248,26 +268,26 @@ async def chat(request: ChatRequest) -> dict:
         )
         if primary_intent not in {"chat", "unknown"}:
             planner_result = await _maybe_handle_planner_message(
-                request.message, request.session_id, session, route_command
+                message, request.session_id, session, route_command
             )
             if planner_result is not None:
                 workflow_id, outcome = planner_result
                 return await _record_workflow_outcome(
-                    request.session_id, request.message, workflow_id, outcome
+                    request.session_id, message, workflow_id, outcome
                 )
         handler = WORKFLOW_HANDLERS.get(primary_intent)
         outcome: WorkflowOutcome | None = None
         if handler:
-            outcome = await handler(request.message, request.session_id, route_command)
+            outcome = await handler(message, request.session_id, route_command)
         if outcome is None:
             if primary_intent == "chat":
-                outcome = await _handle_chat_workflow(request.message, session)
+                outcome = await _handle_chat_workflow(message, session)
             else:
                 outcome = await _handle_fallback_workflow(
-                    request.message, request.session_id, session
+                    message, request.session_id, session
                 )
         return await _record_workflow_outcome(
-            request.session_id, request.message, primary_intent, outcome
+            request.session_id, message, primary_intent, outcome
         )
     finally:
         current_session_id.reset(token)
@@ -327,6 +347,27 @@ def _format_simulation_params(params: dict) -> str:
                 value = "개발"
         parts.append(f"{label}={value}")
     return ", ".join(parts) if parts else "입력 없음"
+
+
+def _normalize_simulation_params_payload(params: dict | None) -> dict:
+    if not isinstance(params, dict) or not params:
+        return {}
+    allowed = {
+        "temperature",
+        "voltage",
+        "size",
+        "capacity",
+        "production_mode",
+        "chip_prod_id",
+    }
+    return {key: value for key, value in params.items() if key in allowed}
+
+
+def _build_simulation_run_message(params: dict) -> str:
+    summary = _format_simulation_params(params)
+    if not summary or summary == "입력 없음":
+        summary = "입력값 없음"
+    return f"현재 파라미터로 시뮬레이션을 실행해줘. 입력값: {summary}"
 
 
 def _format_simulation_result(result: dict | None) -> str:
