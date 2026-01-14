@@ -165,6 +165,7 @@ const pipelineStageLabels = {
   reference: "레퍼런스",
   grid: "그리드",
   final: "브리핑",
+  planner: "PLANNER",
 };
 
 let historyEntries = [];
@@ -688,6 +689,9 @@ function renderPipelineStageTables(stage, detailEl) {
   detailEl.innerHTML = "";
   const payload = pipelineStageTables.get(stage);
   if (!payload) {
+    if (stage === "planner") {
+      return;
+    }
     const empty = document.createElement("div");
     empty.className = "pipeline-log-empty";
     empty.textContent = stage === "recommendation" ? "표 없음" : "표 준비 중";
@@ -697,6 +701,9 @@ function renderPipelineStageTables(stage, detailEl) {
   const tables = Array.isArray(payload?.tables) ? payload.tables : [];
   const notes = Array.isArray(payload?.notes) ? payload.notes : [];
   if (!tables.length && !notes.length) {
+    if (stage === "planner") {
+      return;
+    }
     const empty = document.createElement("div");
     empty.className = "pipeline-log-empty";
     empty.textContent = "표 준비 중";

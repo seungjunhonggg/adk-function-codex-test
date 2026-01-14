@@ -337,6 +337,49 @@ def _format_simulation_result(result: dict | None) -> str:
     return ", ".join(parts)
 
 
+def _format_planner_notes(decision: dict) -> list[str]:
+    notes: list[str] = []
+    goal = str(decision.get("goal") or "").strip()
+    if goal:
+        notes.append(f"목표: {goal}")
+    steps = decision.get("steps") if isinstance(decision.get("steps"), list) else []
+    workflow_labels = {
+        "simulation_run": "추천 실행",
+        "simulation_edit": "조건 수정",
+        "db_query": "DB 조회",
+        "chart_edit": "차트 수정",
+        "stage_view": "단계 보기",
+        "briefing": "브리핑",
+        "chat": "대화",
+    }
+    status_labels = {
+        "pending": "대기",
+        "running": "진행",
+        "done": "완료",
+        "blocked": "중단",
+        "failed": "실패",
+    }
+    for index, step in enumerate(steps, start=1):
+        step_data = _as_dict(step)
+        workflow = str(step_data.get("workflow") or "chat").lower()
+        label = workflow_labels.get(workflow, workflow)
+        status = str(step_data.get("status") or "").lower()
+        status_label = status_labels.get(status, "")
+        note = str(step_data.get("notes") or "").strip()
+        parts = [f"{index}. {label}"]
+        if status_label:
+            parts.append(f"({status_label})")
+        if note:
+            parts.append(f"- {note}")
+        notes.append(" ".join(parts))
+    missing_inputs = decision.get("missing_inputs")
+    if isinstance(missing_inputs, list) and missing_inputs:
+        notes.append(
+            f"누락: {', '.join(str(item) for item in missing_inputs if item)}"
+        )
+    return notes
+
+
 MEMORY_SUMMARY_MAX_LEN = 600
 MEMORY_SUMMARY_LONG_THRESHOLD = 420
 SUMMARY_ID_EXCLUDE_PREFIXES = ("param", "lot", "lotid", "lot_id")
@@ -2515,6 +2558,11 @@ async def _maybe_handle_planner_message(
     decision = _ensure_briefing_step(decision)
     memory_keys = _collect_planner_memory_keys(session_id)
     decision = _apply_planner_defaults(decision, memory_keys)
+    plan_notes = _format_planner_notes(decision)
+    if plan_notes:
+        await _emit_pipeline_stage_tables(
+            "planner", [], plan_notes, session_id=session_id
+        )
     open_form_fields = _normalize_sim_form_fields(decision.get("open_form_fields"))
     if open_form_fields:
         _, next_step = _evaluate_planner_decision(decision, memory_keys)
