@@ -39,6 +39,7 @@ from .config import (
     TRACING_ENABLED,
     DEMO_LATENCY_SECONDS,
     BRIEFING_STREAM_DELAY_SECONDS,
+    DEBUG_PRINT,
 )
 from .column_labels import build_column_label_map, get_column_label_map
 from .context import current_session_id
@@ -89,6 +90,34 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="공정 모니터링 데모")
 logger = logging.getLogger(__name__)
+
+DEBUG_PRINT_MAX_LEN = 160
+
+
+def _debug_short(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return f"[{len(value)}]"
+    text = " ".join(str(value).split())
+    if len(text) > DEBUG_PRINT_MAX_LEN:
+        return text[: DEBUG_PRINT_MAX_LEN - 3] + "..."
+    return text
+
+
+def _debug_print(stage: str, **meta: object) -> None:
+    if not DEBUG_PRINT:
+        return
+    parts = []
+    for key, value in meta.items():
+        if value is None or value == "" or value == []:
+            continue
+        parts.append(f"{key}={_debug_short(value)}")
+    suffix = " ".join(parts)
+    line = f"[debug] {stage}"
+    if suffix:
+        line = f"{line} {suffix}"
+    print(line, flush=True)
 
 SIMULATION_EVENT_TYPES = {
     "simulation_form",
@@ -181,6 +210,12 @@ async def chat(request: ChatRequest) -> dict:
     token = current_session_id.set(request.session_id)
     try:
         message = request.message or ""
+        _debug_print(
+            "chat.request",
+            session=request.session_id,
+            intent=request.intent,
+            message=message,
+        )
         if request.intent == "simulation_run":
             _clear_pending_action(request.session_id)
             params_payload = _normalize_simulation_params_payload(request.params)
@@ -250,8 +285,16 @@ async def chat(request: ChatRequest) -> dict:
                 request.session_id, message, workflow_id, outcome
             )
         route_command = await _route_message(message, request.session_id)
+        _debug_print(
+            "route.result",
+            primary=route_command.get("primary_intent"),
+            secondary=route_command.get("secondary_intents"),
+            needs_clarification=route_command.get("needs_clarification"),
+            confidence=route_command.get("confidence"),
+        )
         if route_command.get("needs_clarification") and route_command.get("clarifying_question"):
             clarifying = route_command.get("clarifying_question")
+            _debug_print("route.clarify", question=clarifying)
             primary_intent = route_command.get("primary_intent") or "unknown"
             pipeline_store.update(request.session_id, workflow_id=primary_intent)
             await emit_workflow_log(
@@ -667,6 +710,7 @@ async def _handle_inspection_chart_workflow(
 async def _handle_simulation_edit_workflow(
     message: str, session_id: str, route_command: dict
 ) -> WorkflowOutcome | None:
+    _debug_print("simulation.edit.request", session=session_id, message=message)
     await emit_workflow_log("FLOW", "simulation_edit -> edit_intent")
     edit_response = await _maybe_handle_edit_intent(message, session_id)
     if edit_response is not None:
@@ -685,6 +729,7 @@ async def _handle_simulation_edit_workflow(
 async def _handle_simulation_run_workflow(
     message: str, session_id: str, route_command: dict
 ) -> WorkflowOutcome | None:
+    _debug_print("simulation.run.request", session=session_id, message=message)
     await emit_workflow_log("FLOW", "simulation_run -> edit_intent")
     edit_response = await _maybe_handle_edit_intent(message, session_id)
     if edit_response is not None:
@@ -707,6 +752,7 @@ async def _handle_db_query_workflow(
     if not OPENAI_API_KEY:
         return WorkflowOutcome("DB 조회 기능이 비활성화되어 있습니다.")
     session = SQLiteSession(session_id, SESSION_DB_PATH)
+    _debug_print("db.query", session=session_id, message=message)
     try:
         run = await Runner.run(
             db_agent,
@@ -720,6 +766,12 @@ async def _handle_db_query_workflow(
     status = result.get("status")
     summary = result.get("summary") or ""
     next_question = result.get("next") or ""
+    _debug_print(
+        "db.result",
+        status=status,
+        missing=result.get("missing"),
+        summary=summary,
+    )
     if status == "missing" and next_question and next_question != "none":
         return WorkflowOutcome(next_question)
     if status == "error":
@@ -760,6 +812,13 @@ async def _handle_chat_workflow(
             "params": simulation_store.get(session_id),
         }
         safe_context_payload = _json_safe_dict(context_payload)
+        context_size = len(json.dumps(safe_context_payload, ensure_ascii=False))
+        _debug_print(
+            "discussion.context",
+            session=session_id,
+            keys=list(safe_context_payload.keys()),
+            size=context_size,
+        )
         prompt = (
             "다음 JSON만 근거로 답하세요. "
             "모르는 값은 모른다고 말하세요. "
@@ -778,7 +837,9 @@ async def _handle_chat_workflow(
             info = exc.guardrail_result.output.output_info or {}
             response = guardrail_fallback_message(info.get("missing_events"))
             return WorkflowOutcome(response)
-        except Exception:
+        except Exception as exc:
+            _debug_print("discussion.error", session=session_id, error=str(exc))
+            logger.exception("Discussion agent failed")
             return WorkflowOutcome("응답 생성 중 오류가 발생했습니다.")
         response = (convo.final_output or "").strip()
         return WorkflowOutcome(response)
@@ -3318,6 +3379,13 @@ async def _maybe_handle_planner_message(
     except Exception:
         return None
     decision = _normalize_planner_decision(run.final_output)
+    _debug_print(
+        "planner.decision",
+        steps=len(decision.get("steps", [])),
+        next_action=decision.get("next_action"),
+        missing=decision.get("missing_inputs"),
+        open_form_fields=decision.get("open_form_fields"),
+    )
     if not decision.get("steps"):
         return None
     if _planner_is_chat_only(decision):
@@ -3475,6 +3543,12 @@ async def _route_message(message: str, session_id: str) -> dict:
         "summary": summary,
         "keyword_hints": keyword_hints,
     }
+    _debug_print(
+        "route.hints",
+        session=session_id,
+        simulation_active=meta.get("simulation_active"),
+        keyword_hints=keyword_hints,
+    )
     prompt = (
         "Return JSON only. Decide the primary intent and any secondary intents. "
         "Output keys: primary_intent, secondary_intents, needs_clarification, clarifying_question, confidence, reason. "
@@ -5668,6 +5742,14 @@ async def _run_reference_pipeline(
     chip_prod_column = db_config.get("chip_prod_id_column") or "chip_prod_id"
     lot_id_column = db_config.get("lot_id_column") or "lot_id"
     run_id = simulation_store.ensure_run_id(session_id)
+    _debug_print(
+        "pipeline.start",
+        session=session_id,
+        run_id=run_id,
+        params=_format_simulation_params(params),
+        chip_prod_override=chip_prod_override,
+        reference_override=reference_override,
+    )
     pipeline_store.set_stage_inputs(
         session_id,
         "recommendation",
@@ -5746,6 +5828,13 @@ async def _run_reference_pipeline(
                 "error": "레퍼런스 LOT 정보를 찾지 못했습니다.",
             }
 
+    _debug_print(
+        "reference.result",
+        status=reference_result.get("status"),
+        selected_lot=reference_result.get("selected_lot_id"),
+        selected_chip=reference_result.get("selected_chip_prod_id"),
+        error=reference_result.get("error"),
+    )
     if reference_result.get("status") != "ok":
         await _emit_pipeline_status(
             "reference", "레퍼런스 LOT을 찾지 못했습니다.", done=True
@@ -6401,8 +6490,16 @@ async def _handle_pipeline_edit_message(
     ):
         reference_override = lot_id
 
-    if not grid_overrides and not reference_override and not _should_rerun_grid(message):
+    should_rerun = _should_rerun_grid(message)
+    if not grid_overrides and not reference_override and not should_rerun:
         return None
+    _debug_print(
+        "simulation.edit.overrides",
+        session=session_id,
+        grid_overrides=grid_overrides,
+        reference_override=reference_override,
+        rerun=should_rerun,
+    )
 
     params = simulation_store.get(session_id)
     chip_prod_override = params.get("chip_prod_id")
@@ -6429,6 +6526,14 @@ async def _handle_pipeline_run_message(
         params.pop(key, None)
     has_params = bool(params)
     intent = _is_recommendation_intent(message)
+    _debug_print(
+        "simulation.parse",
+        session=session_id,
+        params=params,
+        conflicts=conflicts,
+        intent=intent,
+        active=simulation_store.is_active(session_id),
+    )
     if simulation_store.is_active(session_id) and not (has_params or intent):
         if _is_affirmative(message):
             stored_params = simulation_store.get(session_id)
@@ -6476,6 +6581,13 @@ async def _handle_pipeline_run_message(
 
     chip_prod_override = update_result.get("params", {}).get("chip_prod_id")
     missing = update_result.get("missing", [])
+    _debug_print(
+        "simulation.params",
+        session=session_id,
+        params=update_result.get("params", {}),
+        missing=missing,
+        chip_prod_override=chip_prod_override,
+    )
     if missing and not chip_prod_override:
         message_text = await _generate_simulation_auto_message(
             update_result.get("params", {}), missing, None
@@ -6537,18 +6649,22 @@ async def _maybe_handle_simulation_message(
     message: str, session_id: str
 ) -> str | dict | None:
     if _is_reset_request(message):
+        _debug_print("simulation.reset", session=session_id, message=message)
         await reset_simulation_state_impl(reason=message)
         missing = simulation_store.missing(session_id)
         await emit_simulation_form({}, missing)
         return "Simulation reset. Please enter parameters again."
 
     if _is_progress_request(message):
+        _debug_print("simulation.progress", session=session_id, message=message)
         await get_simulation_progress_impl()
         return "Progress history is shown in the event log."
 
     edit_message = await _handle_pipeline_edit_message(message, session_id)
     if edit_message is not None:
+        _debug_print("simulation.edit.apply", session=session_id)
         return edit_message
+    _debug_print("simulation.run.apply", session=session_id)
     return await _handle_pipeline_run_message(message, session_id)
 
 

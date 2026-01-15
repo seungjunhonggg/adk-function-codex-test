@@ -13,6 +13,7 @@ if OPENAI_API_KEY and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5-nano")
 TRACING_ENABLED = _env_bool("OPENAI_AGENTS_TRACING_ENABLED", False)
+DEBUG_PRINT = _env_bool("DEBUG_PRINT", True)
 SIM_API_URL = os.getenv("SIM_API_URL", "")
 PREDICT_API_URL = os.getenv("PREDICT_API_URL", "")
 GRID_SEARCH_API_URL = os.getenv(
