@@ -2690,14 +2690,22 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     )
 
     post_grid_available = None
+    post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
+    missing_post_grid_columns: list[str] = []
     if isinstance(post_grid_defects, dict):
         available_columns = post_grid_defects.get("available_columns")
         if isinstance(available_columns, list) and available_columns:
             post_grid_available = available_columns
+    if post_grid_available and post_grid_requested:
+        missing_post_grid_columns = [
+            column
+            for column in post_grid_requested
+            if column not in post_grid_available
+        ]
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
         "post_grid_lot_search",
-        _fallback_post_grid_columns(post_grid_defects),
+        [],
         available=post_grid_available,
     )
     logger.info(
@@ -2720,6 +2728,9 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         post_grid_columns,
         _json_safe_rows(post_grid_rows),
         column_labels=post_grid_column_labels,
+    )
+    post_grid_diagnostic = _format_post_grid_diagnostics(
+        post_grid_defects, post_grid_label_map
     )
 
     reference_tables: list[dict] = []
@@ -2762,8 +2773,17 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         grid_tables.append(
             {"title": "최근 LOT 불량률 현황", "markdown": post_grid_table}
         )
-    elif post_grid_columns:
-        grid_notes.append("최근 LOT 불량률 데이터가 없습니다.")
+    else:
+        if not post_grid_columns:
+            grid_notes.append("post_grid_lot_search 컬럼 설정이 없습니다.")
+            if missing_post_grid_columns:
+                grid_notes.append(
+                    "요청 컬럼 누락: " + ", ".join(missing_post_grid_columns)
+                )
+        else:
+            grid_notes.append("최근 LOT 불량률 데이터가 없습니다.")
+        if post_grid_diagnostic:
+            grid_notes.append(f"매칭 진단: {post_grid_diagnostic}")
     await _emit_pipeline_stage_tables(
         "grid", grid_tables, grid_notes, session_id=session_id
     )
@@ -2840,12 +2860,22 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     if grid_table:
         grid_step = f"{grid_text}\n\n{grid_table}"
     else:
-        grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
+    grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
     post_grid_title = "4) 최근 LOT 불량률 현황"
     if post_grid_table:
         post_grid_step = f"{post_grid_title}\n\n{post_grid_table}"
     else:
-        post_grid_step = f"{post_grid_title}\n\n최근 LOT 불량률 데이터가 없습니다."
+        post_grid_note = "최근 LOT 불량률 데이터가 없습니다."
+        if not post_grid_columns:
+            post_grid_note = "post_grid_lot_search 컬럼 설정이 없습니다."
+            if missing_post_grid_columns:
+                post_grid_note = (
+                    f"{post_grid_note}\n요청 컬럼 누락: "
+                    f"{', '.join(missing_post_grid_columns)}"
+                )
+        if post_grid_diagnostic:
+            post_grid_note = f"{post_grid_note}\n{post_grid_diagnostic}"
+        post_grid_step = f"{post_grid_title}\n\n{post_grid_note}"
     summary_step = f"5) {rewritten.get('5', rewrite_sections['5'])}"
     sections = [
         "브리핑 시작",
@@ -5458,16 +5488,6 @@ def _resolve_briefing_columns(
     return list(fallback)
 
 
-def _fallback_post_grid_columns(post_grid_defects: dict | None) -> list[str]:
-    if not isinstance(post_grid_defects, dict):
-        return []
-    columns: list[str] = ["rank", "lot_id", "defect_rate"]
-    defect_columns = post_grid_defects.get("columns")
-    if isinstance(defect_columns, list):
-        columns.extend(str(column) for column in defect_columns if column)
-    return list(dict.fromkeys(columns))
-
-
 def _build_grid_table_rows(
     candidates: list[dict],
     columns: list[str],
@@ -5568,6 +5588,61 @@ def _build_post_grid_label_map(
         label_map.update(defect_label_map)
     label_map.update(POST_GRID_LABEL_FALLBACKS)
     return label_map
+
+
+def _format_post_grid_diagnostics(
+    post_grid_defects: dict | None,
+    column_labels: dict | None = None,
+    limit: int = 3,
+) -> str:
+    if not isinstance(post_grid_defects, dict):
+        return ""
+    diagnostics = post_grid_defects.get("diagnostics")
+    if not isinstance(diagnostics, list) or not diagnostics:
+        return ""
+    reason_map = {
+        "design_missing": "설계값 없음",
+        "no_design_filters": "설계값 필터 없음",
+        "no_rows": "매칭 LOT 없음",
+        "no_recent_rows": "최근 기간 LOT 없음",
+    }
+    messages: list[str] = []
+    for index, item in enumerate(diagnostics[:limit], start=1):
+        if not isinstance(item, dict):
+            continue
+        rank = item.get("rank") or index
+        parts: list[str] = []
+        missing_columns = item.get("missing_columns") or []
+        missing_values = item.get("missing_values") or []
+        filter_columns = item.get("filter_columns") or []
+        row_count = item.get("row_count")
+        recent_count = item.get("recent_row_count")
+        reason = item.get("reason")
+        if missing_columns:
+            labels = [
+                _resolve_column_label(column, column_labels) for column in missing_columns
+            ]
+            parts.append(f"누락 컬럼: {', '.join(labels)}")
+        if missing_values:
+            labels = [
+                _resolve_column_label(column, column_labels) for column in missing_values
+            ]
+            parts.append(f"값 없음: {', '.join(labels)}")
+        if filter_columns:
+            labels = [
+                _resolve_column_label(column, column_labels) for column in filter_columns
+            ]
+            parts.append(f"필터: {', '.join(labels)}")
+        if row_count is not None:
+            if recent_count is not None:
+                parts.append(f"조회 {row_count}건/최근 {recent_count}건")
+            else:
+                parts.append(f"조회 {row_count}건")
+        if reason and reason != "ok":
+            parts.append(reason_map.get(reason, str(reason)))
+        if parts:
+            messages.append(f"TOP{rank} - " + "; ".join(parts))
+    return " / ".join(messages)
 
 
 def _resolve_design_value(
@@ -6274,14 +6349,22 @@ async def _run_reference_pipeline(
     )
 
     post_grid_available = None
+    post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
+    missing_post_grid_columns: list[str] = []
     if isinstance(post_grid_defects, dict):
         available_columns = post_grid_defects.get("available_columns")
         if isinstance(available_columns, list) and available_columns:
             post_grid_available = available_columns
+    if post_grid_available and post_grid_requested:
+        missing_post_grid_columns = [
+            column
+            for column in post_grid_requested
+            if column not in post_grid_available
+        ]
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
         "post_grid_lot_search",
-        _fallback_post_grid_columns(post_grid_defects),
+        [],
         available=post_grid_available,
     )
     logger.info(
@@ -6304,6 +6387,9 @@ async def _run_reference_pipeline(
         post_grid_columns,
         _json_safe_rows(post_grid_rows),
         column_labels=post_grid_column_labels,
+    )
+    post_grid_diagnostic = _format_post_grid_diagnostics(
+        post_grid_defects, post_grid_label_map
     )
 
     reference_tables: list[dict] = []
@@ -6346,8 +6432,17 @@ async def _run_reference_pipeline(
         grid_tables.append(
             {"title": "최근 LOT 불량률 현황", "markdown": post_grid_table}
         )
-    elif post_grid_columns:
-        grid_notes.append("최근 LOT 불량률 데이터가 없습니다.")
+    else:
+        if not post_grid_columns:
+            grid_notes.append("post_grid_lot_search 컬럼 설정이 없습니다.")
+            if missing_post_grid_columns:
+                grid_notes.append(
+                    "요청 컬럼 누락: " + ", ".join(missing_post_grid_columns)
+                )
+        else:
+            grid_notes.append("최근 LOT 불량률 데이터가 없습니다.")
+        if post_grid_diagnostic:
+            grid_notes.append(f"매칭 진단: {post_grid_diagnostic}")
     await _emit_pipeline_stage_tables(
         "grid", grid_tables, grid_notes, session_id=session_id
     )
@@ -6425,7 +6520,17 @@ async def _run_reference_pipeline(
     if post_grid_table:
         post_grid_step = f"{post_grid_title}\n\n{post_grid_table}"
     else:
-        post_grid_step = f"{post_grid_title}\n\n최근 LOT 불량률 데이터가 없습니다."
+        post_grid_note = "최근 LOT 불량률 데이터가 없습니다."
+        if not post_grid_columns:
+            post_grid_note = "post_grid_lot_search 컬럼 설정이 없습니다."
+            if missing_post_grid_columns:
+                post_grid_note = (
+                    f"{post_grid_note}\n요청 컬럼 누락: "
+                    f"{', '.join(missing_post_grid_columns)}"
+                )
+        if post_grid_diagnostic:
+            post_grid_note = f"{post_grid_note}\n{post_grid_diagnostic}"
+        post_grid_step = f"{post_grid_title}\n\n{post_grid_note}"
     summary_step = f"5) {rewritten.get('5', rewrite_sections['5'])}"
     sections = [
         "브리핑 시작",

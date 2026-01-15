@@ -7,8 +7,36 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .config import REFERENCE_RULES_PATH
+from .config import DEBUG_PRINT, REFERENCE_RULES_PATH
 from .db_connections import execute_table_query_multi, get_schema
+
+DEBUG_PRINT_MAX_LEN = 160
+
+
+def _debug_short(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return f"[{len(value)}]"
+    text = " ".join(str(value).split())
+    if len(text) > DEBUG_PRINT_MAX_LEN:
+        return text[: DEBUG_PRINT_MAX_LEN - 3] + "..."
+    return text
+
+
+def _debug_print(stage: str, **meta: object) -> None:
+    if not DEBUG_PRINT:
+        return
+    parts = []
+    for key, value in meta.items():
+        if value is None or value == "" or value == []:
+            continue
+        parts.append(f"{key}={_debug_short(value)}")
+    suffix = " ".join(parts)
+    line = f"[debug] {stage}"
+    if suffix:
+        line = f"{line} {suffix}"
+    print(line, flush=True)
 
 
 def load_reference_rules() -> dict:
@@ -1918,11 +1946,19 @@ def collect_post_grid_defects(
     row_limit = max_candidates if isinstance(max_candidates, int) and max_candidates > 0 else 0
 
     items = []
+    diagnostics: list[dict] = []
     for candidate in design_candidates[:3]:
         if not isinstance(candidate, dict):
             continue
         design = candidate.get("design")
+        rank = candidate.get("rank")
         if not isinstance(design, dict) or not design:
+            diagnostics.append(
+                {
+                    "rank": rank,
+                    "reason": "design_missing",
+                }
+            )
             continue
         filters = []
         if chip_prod_id:
@@ -1934,6 +1970,18 @@ def collect_post_grid_defects(
                 }
             )
         design_columns = []
+        design_filter_columns: list[str] = []
+        missing_columns: list[str] = []
+        missing_values: list[str] = []
+        if allowed_design_keys:
+            for key in sorted(allowed_design_keys):
+                column = factor_map.get(key) or key
+                if key not in design:
+                    missing_columns.append(column)
+                    continue
+                value = design.get(key)
+                if value in (None, ""):
+                    missing_values.append(column)
         for key, value in design.items():
             if allowed_design_keys and key not in allowed_design_keys:
                 continue
@@ -1944,7 +1992,26 @@ def collect_post_grid_defects(
             if value is None or value == "":
                 continue
             filters.append({"column": column, "operator": "=", "value": value})
-        if not filters:
+            design_filter_columns.append(column)
+        design_filter_columns = list(dict.fromkeys(design_filter_columns))
+        if not design_filter_columns:
+            diagnostics.append(
+                {
+                    "rank": rank,
+                    "reason": "no_design_filters",
+                    "missing_columns": missing_columns,
+                    "missing_values": missing_values,
+                    "filter_columns": design_filter_columns,
+                    "row_count": 0,
+                    "recent_row_count": 0,
+                }
+            )
+            _debug_print(
+                "post_grid.skip",
+                rank=rank,
+                missing_columns=missing_columns,
+                missing_values=missing_values,
+            )
             continue
 
         if connection_id:
@@ -1965,7 +2032,21 @@ def collect_post_grid_defects(
             row_limit,
             table_name=lot_search_table,
         )
+        _debug_print(
+            "post_grid.query",
+            rank=rank,
+            filters=filters,
+            limit=row_limit,
+        )
+        rows_count = len(rows)
         rows = _filter_rows_by_recent_months(rows, date_column, recent_months)
+        recent_rows = len(rows)
+        _debug_print(
+            "post_grid.rows",
+            rank=rank,
+            rows=rows_count,
+            recent=recent_rows,
+        )
         display_rows: list[dict] = []
         if display_columns:
             for row in rows:
@@ -2016,6 +2097,22 @@ def collect_post_grid_defects(
         lot_defect_rates.sort(
             key=lambda item: item.get("defect_rate", 0), reverse=True
         )
+        reason = None
+        if rows_count == 0:
+            reason = "no_rows"
+        elif recent_rows == 0:
+            reason = "no_recent_rows"
+        diagnostics.append(
+            {
+                "rank": rank,
+                "reason": reason or "ok",
+                "missing_columns": missing_columns,
+                "missing_values": missing_values,
+                "filter_columns": design_filter_columns,
+                "row_count": rows_count,
+                "recent_row_count": recent_rows,
+            }
+        )
         items.append(
             {
                 "rank": candidate.get("rank"),
@@ -2036,6 +2133,7 @@ def collect_post_grid_defects(
         "recent_months": recent_months,
         "value_unit": output_unit,
         "available_columns": available_columns or [],
+        "diagnostics": diagnostics,
     }
 
 
