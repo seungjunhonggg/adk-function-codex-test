@@ -19,7 +19,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .agents import (
-    auto_message_agent,
     conversation_agent,
     orchestrator_agent,
     simulation_flow_agent,
@@ -155,15 +154,6 @@ class SimulationParamsRequest(BaseModel):
     capacity: float | None = None
     production_mode: str | None = None
     chip_prod_id: str | None = None
-
-
-class SimulationRunRequest(BaseModel):
-    session_id: str
-
-
-class RecommendationParamsRequest(BaseModel):
-    session_id: str
-    params: dict[str, float | str] | None = None
 
 
 @app.on_event("startup")
@@ -825,51 +815,6 @@ async def _emit_pipeline_stage_tables(
     stored[stage] = payload
     pipeline_store.set_event(session, "stage_tables", stored)
     await event_bus.broadcast({"type": "pipeline_stage_tables", "payload": payload}, session_id=session)
-
-
-async def _generate_simulation_auto_message(
-    params: dict, missing: list[str], result: dict | None
-) -> str:
-    if not OPENAI_API_KEY:
-        if missing:
-            missing_text = _format_missing_fields(missing)
-            return f"추천을 실행하려면 {missing_text} 값을 알려주세요."
-        if result:
-            return (
-                f"인접기종 추천 결과가 나왔습니다. {_format_simulation_result(result)}. "
-                "예측 시뮬레이션도 진행할까요?"
-            )
-        return "추천 입력을 확인해 주세요."
-
-    payload = {
-        "params": params,
-        "missing_fields": missing,
-        "result": result or {},
-    }
-    prompt = (
-        "Compose a short Korean assistant message based on the JSON below. "
-        "Rules: 1-2 sentences, no mention of tools/routing. "
-        "If missing_fields is not empty, ask for those fields in one question. "
-        "If result is present, summarize recommended_chip_prod_id, representative_lot, "
-        "and the count of params, then ask whether to run a prediction simulation. "
-        f"JSON: {json.dumps(payload, ensure_ascii=False)}"
-    )
-    try:
-        run = await Runner.run(auto_message_agent, input=prompt)
-        message = (run.final_output or "").strip()
-    except Exception:
-        message = ""
-    if message:
-        return message
-    if missing:
-        missing_text = _format_missing_fields(missing)
-        return f"추천을 실행하려면 {missing_text} 값을 알려주세요."
-    if result:
-        return (
-            f"인접기종 추천 결과가 나왔습니다. {_format_simulation_result(result)}. "
-            "예측 시뮬레이션도 진행할까요?"
-        )
-    return "추천 입력을 확인해 주세요."
 
 
 POST_GRID_LABEL_FALLBACKS = {
@@ -3775,98 +3720,6 @@ async def update_simulation_params_route(request: SimulationParamsRequest) -> di
             "params": update_result["params"],
             "missing": [],
         }
-    finally:
-        current_session_id.reset(token)
-
-
-@app.post("/api/simulation/run")
-async def run_simulation_route(request: SimulationRunRequest) -> dict:
-    token = current_session_id.set(request.session_id)
-    try:
-        params = simulation_store.get(request.session_id)
-        missing = simulation_store.missing(request.session_id)
-        await emit_simulation_form(params, missing)
-        params_summary = _format_simulation_params(params)
-        missing_text = ", ".join(missing) if missing else "없음"
-        await _append_system_note(
-            request.session_id,
-            f"추천 실행 요청(패널): {params_summary}. 누락: {missing_text}.",
-        )
-        chip_prod_override = params.get("chip_prod_id")
-        if missing and not chip_prod_override:
-            auto_message = await _generate_simulation_auto_message(params, missing, None)
-            await _emit_chat_message(request.session_id, auto_message)
-            return {"status": "missing", "missing": missing, "params": params}
-        pipeline_result = await _run_reference_pipeline(
-            request.session_id,
-            params,
-            chip_prod_override=chip_prod_override,
-            reference_override=_get_reference_override(request.session_id),
-            grid_overrides=_get_grid_overrides(request.session_id),
-            selection_overrides=_get_selection_overrides(request.session_id),
-        )
-        await _append_system_note(
-            request.session_id, "추천 파이프라인 실행 완료."
-        )
-        message = pipeline_result.get("message")
-        if message:
-            if pipeline_result.get("streamed"):
-                await _append_assistant_message(request.session_id, message)
-            else:
-                await _emit_chat_message(request.session_id, message)
-        simulation_result = pipeline_result.get("simulation_result") or {}
-        inner = simulation_result.get("result") if isinstance(simulation_result, dict) else {}
-        return {
-            "status": simulation_result.get("status") or "ok",
-            "params": params,
-            "result": inner,
-        }
-    finally:
-        current_session_id.reset(token)
-
-
-@app.post("/api/recommendation/params")
-async def update_recommendation_params_route(
-    request: RecommendationParamsRequest,
-) -> dict:
-    token = current_session_id.set(request.session_id)
-    try:
-        current = recommendation_store.get(request.session_id)
-        if not current:
-            await _append_system_note(
-                request.session_id, "추천 파라미터 업데이트 실패: 추천 결과 없음."
-            )
-            return {"status": "missing", "missing": ["recommendation"]}
-        params = request.params or {}
-        updated = recommendation_store.update_params(request.session_id, params)
-        if not updated or not isinstance(updated.get("params"), dict):
-            await _append_system_note(
-                request.session_id, "추천 파라미터 업데이트 실패: 파라미터 없음."
-            )
-            return {"status": "missing", "missing": ["params"]}
-        result_payload = {
-            "recommended_chip_prod_id": updated.get("recommended_chip_prod_id"),
-            "representative_lot": updated.get("representative_lot"),
-            "params": updated.get("params"),
-        }
-        run_id = simulation_store.ensure_run_id(request.session_id)
-        payload = {
-            "params": updated.get("input_params") or {},
-            "result": result_payload,
-        }
-        if run_id:
-            payload["run_id"] = run_id
-        await event_bus.broadcast({"type": "simulation_result", "payload": payload})
-        pipeline_store.set_event(request.session_id, "simulation_result", payload)
-        await _append_system_note(
-            request.session_id,
-            f"추천 파라미터 업데이트: {len(result_payload.get('params', {}))}개.",
-        )
-        auto_message = await _generate_simulation_auto_message(
-            payload.get("params", {}), [], payload.get("result")
-        )
-        await _emit_chat_message(request.session_id, auto_message)
-        return {"status": "ok", **payload}
     finally:
         current_session_id.reset(token)
 

@@ -39,13 +39,12 @@
 `temperature`, `voltage`, `size`, `capacity`, `production_mode`
 
 입력 경로:
-- **대화 입력**: `update_simulation_params(message=...)`가 텍스트에서 값 추출
-- **UI 입력**: `/api/simulation/params`로 값 반영 (실행은 하지 않음)
+- **대화 입력**: `/api/chat` 텍스트에서 값 추출
+- **UI 입력(폼 전용)**: `/api/simulation/params`로 값 반영 (실행은 하지 않음)
 
 ### 4) 추천 실행
 실행 트리거:
-- UI에서 “추천 실행” 버튼 클릭 → `/api/simulation/run`
-- 또는 에이전트가 `run_simulation` 호출
+- UI에서 실행 요청 → `/api/chat` 통해 시뮬레이션 에이전트가 처리
 
 내부 동작:
 1) `execute_simulation` 호출  
@@ -57,13 +56,6 @@
    - `recommended_chip_prod_id`, `representative_lot`, `params(param1~param30)`
 4) `simulation_result` 이벤트로 UI 갱신  
 5) 자동 브리핑 생성(`auto_message_agent`) → `chat_message`
-
-## 추천 결과 파라미터 수정
-추천 결과의 30개 파라미터는 UI에서 수정 가능:
-- UI “파라미터 반영” 버튼 → `/api/recommendation/params`
-- `recommendation_store.update_params`로 저장
-- 다시 `simulation_result` 이벤트를 보내 UI를 최신 상태로 갱신
-- 예측은 자동 실행되지 않음
 
 ## 예측 단계 상세
 ### 1) 예측 실행 조건
