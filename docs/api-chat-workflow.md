@@ -108,6 +108,7 @@ flowchart TD
       - 응답 형식: result.datas.sim 순서대로 TOP 후보 설계값 (0=1순위)
       - 후보 설계값에서 active_powder_base/active_powder_additives/ldn_avr_value/cast_dsgn_thk 추출
       - mdh_base_view_total에서 설계값 동일 + design_input_date 최근 6개월 조건으로 매칭 LOT 조회
+        - 현재는 ldn_avr_value(레이다운 평균값), cast_dsgn_thk(캐스팅 설계 두께), active_layer(활성층) 3개 컬럼으로만 강제 매칭
         - 조회는 전체 컬럼(SELECT *) 기준으로 수행
         - 브리핑 표는 `column_briefing_table`의 `post_grid_lot_search` 컬럼만 표시
         - 매칭 진단 정보(`post_grid_defects.diagnostics`)를 함께 남김

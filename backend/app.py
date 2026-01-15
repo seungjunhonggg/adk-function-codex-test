@@ -3060,7 +3060,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     if grid_table:
         grid_step = f"{grid_text}\n\n{grid_table}"
     else:
-    grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
+        grid_step = f"{grid_text}\n\n그리드 결과가 없습니다."
     post_grid_title = "4) 최근 LOT 불량률 현황"
     if post_grid_table:
         post_grid_step = f"{post_grid_title}\n\n{post_grid_table}"

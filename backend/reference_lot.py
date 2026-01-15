@@ -39,6 +39,22 @@ def _debug_print(stage: str, **meta: object) -> None:
     print(line, flush=True)
 
 
+def _debug_print_full(stage: str, payload: object, **meta: object) -> None:
+    if not DEBUG_PRINT:
+        return
+    parts = []
+    for key, value in meta.items():
+        if value is None or value == "" or value == []:
+            continue
+        parts.append(f"{key}={_debug_short(value)}")
+    suffix = " ".join(parts)
+    line = f"[debug] {stage}"
+    if suffix:
+        line = f"{line} {suffix}"
+    payload_text = json.dumps(_json_safe_value(payload), ensure_ascii=False)
+    print(f"{line} payload={payload_text}", flush=True)
+
+
 def load_reference_rules() -> dict:
     path = Path(REFERENCE_RULES_PATH)
     if not path.exists():
@@ -1941,7 +1957,10 @@ def collect_post_grid_defects(
             ]
 
     factor_map = _grid_factor_column_map(normalized)
-    allowed_design_keys = set(factor_map.keys())
+    forced_design_columns = ["ldn_avr_value", "cast_dsgn_thk", "active_layer"]
+    reverse_factor_map = {
+        column: key for key, column in factor_map.items() if key and column
+    }
     max_candidates = normalized.get("selection", {}).get("max_candidates", 0)
     row_limit = max_candidates if isinstance(max_candidates, int) and max_candidates > 0 else 0
 
@@ -1973,23 +1992,17 @@ def collect_post_grid_defects(
         design_filter_columns: list[str] = []
         missing_columns: list[str] = []
         missing_values: list[str] = []
-        if allowed_design_keys:
-            for key in sorted(allowed_design_keys):
-                column = factor_map.get(key) or key
-                if key not in design:
-                    missing_columns.append(column)
-                    continue
-                value = design.get(key)
-                if value in (None, ""):
-                    missing_values.append(column)
-        for key, value in design.items():
-            if allowed_design_keys and key not in allowed_design_keys:
-                continue
-            column = factor_map.get(key) or key
-            if not column:
-                continue
+        for column in forced_design_columns:
             design_columns.append(column)
-            if value is None or value == "":
+            value = design.get(column)
+            alias_key = reverse_factor_map.get(column)
+            if value in (None, "") and alias_key:
+                value = design.get(alias_key)
+            if value in (None, ""):
+                if column not in design and (not alias_key or alias_key not in design):
+                    missing_columns.append(column)
+                else:
+                    missing_values.append(column)
                 continue
             filters.append({"column": column, "operator": "=", "value": value})
             design_filter_columns.append(column)
@@ -2039,6 +2052,7 @@ def collect_post_grid_defects(
             limit=row_limit,
         )
         rows_count = len(rows)
+        _debug_print_full("post_grid.rows_full", rows, rank=rank, count=rows_count)
         rows = _filter_rows_by_recent_months(rows, date_column, recent_months)
         recent_rows = len(rows)
         _debug_print(
