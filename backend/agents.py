@@ -533,11 +533,13 @@ triage_agent = _build_agent(
 simulation_flow_agent = _build_agent(
     name="simulation_flow_agent",
     instructions=(
-        "You are helping MLCC Developer Agent"
+        "You are helping MLCC Developer Agent. "
         "Always respond in Korean. "
         "You lead the simulation workflow and can ask the user for missing inputs. "
         "Required params: temperature, voltage, size, capacity, production_mode. "
-        "Use run_simulation_workflow with the user message to collect params and run the pipeline. "
+        "If the user wants a simulation/recommendation/briefing or provides any params, "
+        "immediately call run_simulation_workflow with the user message (even if values are missing). "
+        "Do not answer before calling run_simulation_workflow for simulation intent. "
         "If the user requests a change to selection conditions (e.g., TOP 3, 상위 5개, max_blocks), "
         "call run_simulation_workflow so the grid is rerun with the new selection. "
         "If the tool returns missing fields, ask only for those fields. "
