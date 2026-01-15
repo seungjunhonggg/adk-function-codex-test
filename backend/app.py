@@ -504,6 +504,190 @@ MEMORY_SUMMARY_SKIP_KEYS = {
     "design_blocks",
 }
 BRIEFING_STREAM_CHUNK_SIZE = 80
+DISCUSSION_GRID_TOP_K = 3
+
+
+def _resolve_post_grid_design_keys(rules: dict) -> list[str]:
+    grid = rules.get("grid_search", {}) if isinstance(rules, dict) else {}
+    keys: list[str] = []
+    if isinstance(grid, dict):
+        for factor in grid.get("factors", []):
+            if not isinstance(factor, dict):
+                continue
+            name = factor.get("name")
+            column = factor.get("column")
+            if name:
+                keys.append(str(name))
+            if column:
+                keys.append(str(column))
+    return list(dict.fromkeys(keys))
+
+
+def _compact_design_fields(design: dict, allowed_keys: list[str]) -> dict:
+    if not isinstance(design, dict) or not design:
+        return {}
+    if not allowed_keys:
+        return dict(design)
+    compact = {}
+    for key in allowed_keys:
+        if key in design:
+            compact[key] = design.get(key)
+    return compact
+
+
+def _compact_grid_candidates(
+    candidates: list[dict],
+    allowed_keys: list[str],
+    limit: int,
+) -> list[dict]:
+    if not isinstance(candidates, list):
+        return []
+    compact: list[dict] = []
+    for candidate in candidates[:limit]:
+        if not isinstance(candidate, dict):
+            continue
+        design = candidate.get("design")
+        if not isinstance(design, dict):
+            design = {}
+        compact.append(
+            {
+                "rank": candidate.get("rank"),
+                "predicted_target": candidate.get("predicted_target"),
+                "design": _compact_design_fields(design, allowed_keys),
+            }
+        )
+    return compact
+
+
+def _compact_post_grid_defects(
+    post_grid_defects: dict | None,
+    allowed_keys: list[str],
+    limit: int,
+) -> dict | None:
+    if not isinstance(post_grid_defects, dict):
+        return None
+    items = post_grid_defects.get("items")
+    compact_items: list[dict] = []
+    ranks: set[object] = set()
+    if isinstance(items, list):
+        for item in items[:limit]:
+            if not isinstance(item, dict):
+                continue
+            rank = item.get("rank")
+            ranks.add(rank)
+            design = item.get("design")
+            if not isinstance(design, dict):
+                design = {}
+            compact_items.append(
+                {
+                    "rank": rank,
+                    "predicted_target": item.get("predicted_target"),
+                    "design": _compact_design_fields(design, allowed_keys),
+                    "lot_count": item.get("lot_count"),
+                    "defect_stats": item.get("defect_stats"),
+                    "sample_lots": item.get("sample_lots"),
+                    "source": item.get("source"),
+                }
+            )
+    diagnostics = post_grid_defects.get("diagnostics")
+    compact_diagnostics = None
+    if isinstance(diagnostics, list) and diagnostics:
+        compact_diagnostics = [
+            item
+            for item in diagnostics
+            if not ranks or item.get("rank") in ranks
+        ][:limit]
+    compact = {
+        "columns": post_grid_defects.get("columns"),
+        "recent_months": post_grid_defects.get("recent_months"),
+        "value_unit": post_grid_defects.get("value_unit"),
+        "items": compact_items,
+    }
+    if compact_diagnostics:
+        compact["diagnostics"] = compact_diagnostics
+    return compact
+
+
+def _compact_final_briefing_payload(
+    payload: dict | None,
+    allowed_keys: list[str],
+    limit: int,
+) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    compact: dict[str, object] = {
+        "chip_prod_id": payload.get("chip_prod_id"),
+        "reference_lot": payload.get("reference_lot"),
+        "candidate_total": payload.get("candidate_total"),
+        "defect_stats": payload.get("defect_stats"),
+        "defect_rate_overall": payload.get("defect_rate_overall"),
+        "source": payload.get("source"),
+    }
+    top_candidates = _compact_grid_candidates(
+        payload.get("top_candidates") or [],
+        allowed_keys,
+        limit,
+    )
+    if top_candidates:
+        compact["top_candidates"] = top_candidates
+    post_grid_defects = _compact_post_grid_defects(
+        payload.get("post_grid_defects"),
+        allowed_keys,
+        limit,
+    )
+    if post_grid_defects:
+        compact["post_grid_defects"] = post_grid_defects
+    return compact
+
+
+def _compact_grid_state(
+    grid_state: dict | None,
+    allowed_keys: list[str],
+    limit: int,
+) -> dict | None:
+    if not isinstance(grid_state, dict):
+        return None
+    top_candidates = _compact_grid_candidates(
+        grid_state.get("top") or [],
+        allowed_keys,
+        limit,
+    )
+    compact = {
+        "run_id": grid_state.get("run_id"),
+        "chip_prod_id": grid_state.get("chip_prod_id"),
+        "lot_id": grid_state.get("lot_id"),
+        "overrides": grid_state.get("overrides"),
+        "top": top_candidates,
+    }
+    return {key: value for key, value in compact.items() if value not in (None, [], {}, "")}
+
+
+def _compact_design_candidates_event(
+    payload: dict | None,
+    allowed_keys: list[str],
+    limit: int,
+) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    candidates = _compact_grid_candidates(
+        payload.get("candidates") or [],
+        allowed_keys,
+        limit,
+    )
+    design_labels = payload.get("design_labels")
+    if isinstance(design_labels, dict) and allowed_keys:
+        design_labels = {
+            key: value for key, value in design_labels.items() if key in allowed_keys
+        }
+    compact = {
+        "candidates": candidates,
+        "total": payload.get("total"),
+        "offset": payload.get("offset"),
+        "limit": len(candidates),
+        "target": payload.get("target"),
+        "design_labels": design_labels,
+    }
+    return {key: value for key, value in compact.items() if value not in (None, [], {}, "")}
 
 
 def _summary_token(value: object) -> str | None:
@@ -794,8 +978,26 @@ async def _handle_chat_workflow(
     if _should_use_discussion_mode(session_id):
         await emit_workflow_log("FLOW", "chat -> discussion_agent")
         state = pipeline_store.get(session_id)
+        rules = normalize_reference_rules(load_reference_rules())
+        allowed_design_keys = _resolve_post_grid_design_keys(rules)
+        grid_limit = DISCUSSION_GRID_TOP_K
+        final_briefing = _compact_final_briefing_payload(
+            pipeline_store.get_event(session_id, "final_briefing"),
+            allowed_design_keys,
+            grid_limit,
+        )
+        design_candidates = _compact_design_candidates_event(
+            pipeline_store.get_event(session_id, "design_candidates"),
+            allowed_design_keys,
+            grid_limit,
+        )
+        grid_state = _compact_grid_state(
+            state.get("grid") if isinstance(state, dict) else None,
+            allowed_design_keys,
+            grid_limit,
+        )
         context_payload = {
-            "final_briefing": pipeline_store.get_event(session_id, "final_briefing"),
+            "final_briefing": final_briefing,
             "simulation_result": pipeline_store.get_event(
                 session_id, "simulation_result"
             ),
@@ -803,12 +1005,10 @@ async def _handle_chat_workflow(
                 session_id, "defect_rate_chart"
             ),
             "lot_result": pipeline_store.get_event(session_id, "lot_result"),
-            "design_candidates": pipeline_store.get_event(
-                session_id, "design_candidates"
-            ),
+            "design_candidates": design_candidates,
             "db_result": pipeline_store.get_event(session_id, "db_result"),
             "reference": state.get("reference") if isinstance(state, dict) else None,
-            "grid": state.get("grid") if isinstance(state, dict) else None,
+            "grid": grid_state,
             "params": simulation_store.get(session_id),
         }
         safe_context_payload = _json_safe_dict(context_payload)

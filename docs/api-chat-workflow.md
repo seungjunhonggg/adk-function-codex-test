@@ -108,11 +108,14 @@ flowchart TD
       - 응답 형식: result.datas.sim 순서대로 TOP 후보 설계값 (0=1순위)
       - 후보 설계값에서 active_powder_base/active_powder_additives/ldn_avr_value/cast_dsgn_thk 추출
       - mdh_base_view_total에서 설계값 동일 + design_input_date 최근 6개월 조건으로 매칭 LOT 조회
+        - 조회는 전체 컬럼(SELECT *) 기준으로 수행
+        - 브리핑 표는 `column_briefing_table`의 `post_grid_lot_search` 컬럼만 표시
+        - 매칭 진단 정보(`post_grid_defects.diagnostics`)를 함께 남김
       - 후보별 불량 인자 평균( `grid_defect_columns` 또는 `post_grid_defect_columns` 설정값 )을
         막대그래프 이벤트(`defect_rate_chart`, bar_orientation=vertical)로 송신
       - 데모 환경에서도 포스트그리드 불량 인자를 보이려면 해당 컬럼 리스트를
         `grid_defect_columns`/`post_grid_defect_columns`에 명시해야 함
-    - TOP3 설계안의 최근 3개월 LOT 불량률 통계 조회
+    - TOP3 설계안의 최근 6개월 LOT 불량률 통계 조회
     - 최종 브리핑 이벤트/메시지 송신
       - 순차 브리핑 구성: 1) 레퍼 LOT 후보 요약+표(상위 10개) →
         2) 선택 Ref LOT 상세 표(컬럼 다수는 분할 표) →
@@ -190,6 +193,9 @@ flowchart TD
   서버 재시작 시에도 세션별 이벤트 복원이 가능하도록 함
 - `reference` 페이로드에는 최종 브리핑 표 생성을 위한
   `reference_columns`/`reference_rows`(LOT_ID + defect_conditions) 포함
+- `discussion_agent` 입력 컨텍스트는 grid 관련 payload를 축약해 전달
+  - TOP3 후보만 유지하고 `grid_search.factors`의 설계조건 키/컬럼만 포함
+  - `final_briefing`/`grid`/`design_candidates`에서 불필요한 상세 컬럼은 제외
 
 ### 3) 시뮬레이션 파라미터 메모리
 - `simulation_store`: 온도/전압/사이즈/용량/양산 여부 + chip_prod_id
