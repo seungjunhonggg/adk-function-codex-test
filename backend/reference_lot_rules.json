@@ -90,7 +90,7 @@
     "sum_8585_ppm",
     "fail_halt_ppm"
   ],
-  "post_grid_recent_months": 3,
+  "post_grid_recent_months": 6,
   "post_grid_defect_value_unit": "",
   "grid_match_fields": [
     "active_powder_base",

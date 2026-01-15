@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from functools import cmp_to_key
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -179,6 +180,20 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    return str(value)
 
 
 def _normalize_defect_rate_value(value: Any, value_unit: str) -> float | None:
@@ -1852,6 +1867,9 @@ def collect_post_grid_defects(
 ) -> dict:
     normalized = normalize_reference_rules(rules)
     defect_columns = _resolve_post_grid_defect_columns(normalized)
+    display_columns: list[str] = []
+    if extra_columns:
+        display_columns = [str(column) for column in extra_columns if column]
     if extra_columns:
         defect_columns = list(
             dict.fromkeys(
@@ -1872,6 +1890,8 @@ def collect_post_grid_defects(
         }
 
     db = normalized.get("db", {})
+    connection_id = db.get("connection_id") or ""
+    schema_name = db.get("schema") or "public"
     lot_search_table = _resolve_table_name(normalized, "lot_search")
     lot_id_column = db.get("lot_id_column") or "lot_id"
     date_column = db.get("input_date_column") or ""
@@ -1879,6 +1899,18 @@ def collect_post_grid_defects(
         defect_source = normalized.get("defect_rate_source", {})
         if isinstance(defect_source, dict):
             date_column = defect_source.get("update_date_column") or ""
+    available_columns = None
+    if connection_id and lot_search_table:
+        available_columns = _get_available_columns(
+            connection_id, schema_name, lot_search_table
+        )
+    if available_columns:
+        available_set = set(available_columns)
+        defect_columns = [column for column in defect_columns if column in available_set]
+        if display_columns:
+            display_columns = [
+                column for column in display_columns if column in available_set
+            ]
 
     factor_map = _grid_factor_column_map(normalized)
     allowed_design_keys = set(factor_map.keys())
@@ -1915,14 +1947,17 @@ def collect_post_grid_defects(
         if not filters:
             continue
 
-        query_columns = list(
-            dict.fromkeys(
-                [lot_id_column]
-                + design_columns
-                + ([date_column] if date_column else [])
-                + defect_columns
+        if connection_id:
+            query_columns: list[str] = []
+        else:
+            query_columns = list(
+                dict.fromkeys(
+                    [lot_id_column]
+                    + design_columns
+                    + ([date_column] if date_column else [])
+                    + defect_columns
+                )
             )
-        )
         source, rows = _query_rows_for_filters(
             normalized,
             filters,
@@ -1931,6 +1966,17 @@ def collect_post_grid_defects(
             table_name=lot_search_table,
         )
         rows = _filter_rows_by_recent_months(rows, date_column, recent_months)
+        display_rows: list[dict] = []
+        if display_columns:
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                display_rows.append(
+                    {
+                        column: _json_safe_value(_get_value(row, column))
+                        for column in display_columns
+                    }
+                )
         stats = _summarize_post_grid_defects(rows, defect_columns, input_unit)
         lot_rates: dict[str, list[float]] = {}
         lot_column_rates: dict[str, dict[str, list[float]]] = {}
@@ -1978,6 +2024,7 @@ def collect_post_grid_defects(
                 "lot_count": len(lot_defect_rates),
                 "defect_stats": stats,
                 "lot_defect_rates": lot_defect_rates,
+                "lot_rows": display_rows,
                 "sample_lots": [item.get("lot_id") for item in lot_defect_rates[:5]],
                 "source": source,
             }
@@ -1988,6 +2035,7 @@ def collect_post_grid_defects(
         "items": items,
         "recent_months": recent_months,
         "value_unit": output_unit,
+        "available_columns": available_columns or [],
     }
 
 

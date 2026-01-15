@@ -47,6 +47,11 @@ Notes:
 - If a preferred skill exists but is not invoked automatically, explicitly invoke it (CLI: type `$skill-name`).
 - If a rule in this file conflicts with a skill, follow the more specific instruction for the current directory/module.
 
+## 작업시 참고사항.   
+데이터베이스가에서 한글컬럼명을 관리하는 테이블명 : column_label_map, 
+브리핑시 단계별 사용해야할 컬럼명 관리 테이블명 : column_briefing_table, 
+모든 LOT 관련 데이터 조회시 사용하는 테이블 : mdh_base_view_total_4
+
 ## Maintenance notes
 - Planner changes: keep `backend/app.py` `PLANNER_WORKFLOW_CONFIG` aligned with actual memory keys/events.
 - Planner outputs or `/api/chat` flow changes: update `docs/api-chat-workflow.md` (planner_agent, planner_state).

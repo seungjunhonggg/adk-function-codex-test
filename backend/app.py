@@ -2689,10 +2689,16 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         column_labels=grid_column_labels,
     )
 
+    post_grid_available = None
+    if isinstance(post_grid_defects, dict):
+        available_columns = post_grid_defects.get("available_columns")
+        if isinstance(available_columns, list) and available_columns:
+            post_grid_available = available_columns
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
         "post_grid_lot_search",
-        [],
+        _fallback_post_grid_columns(post_grid_defects),
+        available=post_grid_available,
     )
     logger.info(
         "Briefing columns resolved: session=%s run=%s ref_candidate=%s ref_selected=%s grid=%s post_grid=%s",
@@ -5452,6 +5458,16 @@ def _resolve_briefing_columns(
     return list(fallback)
 
 
+def _fallback_post_grid_columns(post_grid_defects: dict | None) -> list[str]:
+    if not isinstance(post_grid_defects, dict):
+        return []
+    columns: list[str] = ["rank", "lot_id", "defect_rate"]
+    defect_columns = post_grid_defects.get("columns")
+    if isinstance(defect_columns, list):
+        columns.extend(str(column) for column in defect_columns if column)
+    return list(dict.fromkeys(columns))
+
+
 def _build_grid_table_rows(
     candidates: list[dict],
     columns: list[str],
@@ -5521,6 +5537,15 @@ def _build_post_grid_table_rows(
             ),
         }
         base.update(design)
+        display_rows = item.get("lot_rows")
+        if isinstance(display_rows, list) and display_rows:
+            for lot_row in display_rows:
+                if not isinstance(lot_row, dict):
+                    continue
+                row = dict(base)
+                row.update(lot_row)
+                rows.append({column: row.get(column) for column in columns})
+            continue
         lot_rates = item.get("lot_defect_rates")
         if not isinstance(lot_rates, list) or not lot_rates:
             row = {column: base.get(column) for column in columns}
@@ -6248,10 +6273,16 @@ async def _run_reference_pipeline(
         column_labels=grid_column_labels,
     )
 
+    post_grid_available = None
+    if isinstance(post_grid_defects, dict):
+        available_columns = post_grid_defects.get("available_columns")
+        if isinstance(available_columns, list) and available_columns:
+            post_grid_available = available_columns
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
         "post_grid_lot_search",
-        [],
+        _fallback_post_grid_columns(post_grid_defects),
+        available=post_grid_available,
     )
     logger.info(
         "Briefing columns resolved (detail): session=%s run=%s ref_candidate=%s ref_selected=%s grid=%s post_grid=%s",

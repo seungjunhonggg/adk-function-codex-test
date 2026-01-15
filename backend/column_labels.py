@@ -24,6 +24,36 @@ def _resolve_label_schema(connection_id: str, schema_name: str | None) -> str:
     return str(connection.get("schema") or "public")
 
 
+def _load_label_map(
+    connection_id: str,
+    schema: str,
+    table: str,
+    name_column: str,
+    label_column: str,
+) -> dict:
+    try:
+        result = execute_table_query_multi(
+            connection_id=connection_id,
+            schema_name=schema,
+            table_name=table,
+            columns=[name_column, label_column],
+            filters=[],
+            limit=5000,
+        )
+    except ValueError:
+        return {}
+    rows = result.get("rows") or []
+    mapping: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get(name_column) or "").strip()
+        label = str(row.get(label_column) or "").strip()
+        if name and label:
+            mapping[name] = label
+    return mapping
+
+
 def get_column_label_map(
     connection_id: str,
     schema_name: str | None = None,
@@ -43,26 +73,15 @@ def get_column_label_map(
         cached_ts = _COLUMN_LABEL_CACHE_TS.get(cache_key, 0.0)
         if cached and (now - cached_ts) < COLUMN_LABEL_CACHE_TTL_SECONDS:
             return cached
-    try:
-        result = execute_table_query_multi(
-            connection_id=connection_id,
-            schema_name=schema,
-            table_name=table,
-            columns=["column_name", "label_ko"],
-            filters=[],
-            limit=5000,
+
+    mapping = _load_label_map(connection_id, schema, table, "column_name", "label_ko")
+    if not mapping and table != "column_catalog":
+        fallback = _load_label_map(
+            connection_id, schema, "column_catalog", "column_name", "display_ko"
         )
-    except ValueError:
-        return {}
-    rows = result.get("rows") or []
-    mapping: dict[str, str] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        name = str(row.get("column_name") or "").strip()
-        label = str(row.get("label_ko") or "").strip()
-        if name and label:
-            mapping[name] = label
+        if fallback:
+            mapping = fallback
+
     _COLUMN_LABEL_CACHE[cache_key] = mapping
     _COLUMN_LABEL_CACHE_TS[cache_key] = now
     return mapping

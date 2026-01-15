@@ -106,7 +106,7 @@ post_grid_defect_columns:
   - "sum_burn_ppm"
   - "sum_8585_ppm"
   - "fail_halt_ppm"
-post_grid_recent_months: 3
+post_grid_recent_months: 6
 post_grid_defect_value_unit: ""
 
 # 그리드 후보와 동일 설계 LOT 매칭에 사용하는 필드
