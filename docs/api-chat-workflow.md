@@ -8,7 +8,7 @@ MLCC 개발자용 플랫폼에서 `/api/chat`이 처리하는 전체 흐름을 �
 ```mermaid
 flowchart TD
   U[User] -->|POST /api/chat| API[FastAPI /api/chat]
-  API -->|intent=simulation_run or simulation_active or params/keywords| SimAgent[시뮬레이션 에이전트]
+  API -->|intent=simulation_run or simulation_active| SimAgent[시뮬레이션 에이전트]
   API -->|else| Orchestrator[오케스트레이터]
   Orchestrator -->|handoff| SimAgent
 
@@ -28,7 +28,7 @@ flowchart TD
 
 ## 라우팅 로직 요약
 1) `/api/chat`는 메시지 수신 후 `request.params`가 있으면 `PARAMS_JSON: {...}` 라인을 붙입니다.  
-2) `intent=simulation_run`, `simulation_store.is_active`, `request.params` 존재, 또는 메시지에 시뮬레이션 키워드가 포함되면 시뮬레이션 에이전트를 바로 실행합니다.  
+2) `intent=simulation_run` 또는 `simulation_store.is_active`면 시뮬레이션 에이전트를 바로 실행합니다.  
 3) 그 외는 오케스트레이터가 일반 대화를 처리합니다.  
 4) 오케스트레이터는 시뮬레이션/차트/브리핑 요청 시 handoff로 시뮬레이션 에이전트를 호출합니다.  
 5) 시뮬레이션 에이전트는 `run_simulation_workflow`로 입력 수집과 파이프라인 실행을 처리합니다.  

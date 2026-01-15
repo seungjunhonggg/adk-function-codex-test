@@ -102,23 +102,6 @@ def _debug_print(stage: str, **meta: object) -> None:
         line = f"{line} {suffix}"
     print(line, flush=True)
 
-SIMULATION_INTENT_KEYWORDS = (
-    "시뮬",
-    "simulation",
-    "추천",
-    "인접",
-    "그리드",
-    "브리핑",
-    "차트",
-)
-
-
-def _looks_like_simulation_intent(message: str) -> bool:
-    if not message:
-        return False
-    lowered = message.lower()
-    return any(token in lowered for token in SIMULATION_INTENT_KEYWORDS)
-
 SIMULATION_EVENT_TYPES = {
     "simulation_form",
     "simulation_result",
@@ -201,19 +184,11 @@ async def chat(request: ChatRequest) -> dict:
     token = current_session_id.set(request.session_id)
     try:
         message = request.message or ""
-        has_params = bool(request.params)
         if request.params:
             params_line = f"PARAMS_JSON: {json.dumps(request.params, ensure_ascii=False)}"
             message = f"{params_line}\n{message}" if message else params_line
 
-        intent = (request.intent or "").strip().lower()
-        looks_like_simulation = _looks_like_simulation_intent(message)
-        if (
-            intent == "simulation_run"
-            or simulation_store.is_active(request.session_id)
-            or has_params
-            or (not intent and looks_like_simulation)
-        ):
+        if request.intent == "simulation_run" or simulation_store.is_active(request.session_id):
             entry_agent = simulation_flow_agent
             workflow_id = "simulation"
         else:
