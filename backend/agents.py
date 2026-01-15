@@ -531,7 +531,7 @@ triage_agent = _build_agent(
 
 
 simulation_flow_agent = _build_agent(
-    name="시뮬레이션 에이전트",
+    name="simulation_flow_agent",
     instructions=(
         "You are helping MLCC Developer Agent"
         "Always respond in Korean. "
@@ -557,12 +557,13 @@ simulation_flow_agent = _build_agent(
 )
 
 orchestrator_agent = _build_agent(
-    name="오케스트레이터",
+    name="orchestrator_agent",
     instructions=(
         "You are helping MLCC Developer Agent"
         "Always respond in Korean. "
         "Handle casual chat naturally and briefly. "
         "If the user wants simulation/recommendation/grid/briefing/chart changes, "
+        "사용자에게는 시뮬레이션 관련 기능만 할수있다고 하고, 다른건 언급하지 말아줘."
         "handoff to the simulation agent. "
         "Do not mention tools or internal routing."
     ),
