@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -7,7 +8,19 @@ from agents import RunHooks
 
 from .events import event_bus
 
-LOG_LABEL_ALLOWLIST = {"ROUTE", "INTENT", "FLOW", "PROGRESS", "STATE"}
+LOG_LABEL_ALLOWLIST = {
+    "ROUTE",
+    "INTENT",
+    "FLOW",
+    "PROGRESS",
+    "STATE",
+    "AGENT",
+    "HANDOFF",
+    "TOOL",
+    "LATENCY",
+}
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_name(value: Any, fallback: str) -> str:
@@ -31,11 +44,12 @@ async def emit_workflow_log(
     detail: str,
     meta: dict | None = None,
 ) -> dict:
-    if label not in LOG_LABEL_ALLOWLIST:
-        return {"label": label, "detail": detail, "meta": meta or {}}
     payload = {"label": label, "detail": detail}
     if meta:
         payload["meta"] = meta
+    logger.info("workflow_log %s", payload)
+    if label not in LOG_LABEL_ALLOWLIST:
+        return payload
     await event_bus.broadcast({"type": "workflow_log", "payload": payload})
     return payload
 
@@ -55,6 +69,10 @@ class WorkflowRunHooks(RunHooks):
         agent_name = _safe_name(getattr(agent, "name", None), "Agent")
         starts = self._agent_starts.get(id(agent))
         start = starts.pop() if starts else None
+        output_text = str(output or "").strip()
+        if output_text:
+            preview = output_text[:160]
+            await emit_workflow_log("AGENT", f"{agent_name} output", {"preview": preview})
         elapsed = _elapsed_ms(start)
         if elapsed is not None:
             await emit_workflow_log("LATENCY", f"AGENT {agent_name} {elapsed}ms")

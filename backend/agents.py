@@ -1,6 +1,6 @@
 from typing import Literal
 
-from agents import Agent, AgentOutputSchema
+from agents import Agent, AgentOutputSchema, ModelSettings
 from pydantic import BaseModel
 
 from .config import MODEL_NAME
@@ -535,11 +535,11 @@ simulation_flow_agent = _build_agent(
     instructions=(
         "You are helping MLCC Developer Agent. "
         "Always respond in Korean. "
-        "You lead the simulation workflow and can ask the user for missing inputs. "
-        "Required params: temperature, voltage, size, capacity, production_mode. "
-        "If the user wants a simulation/recommendation/briefing or provides any params, "
-        "immediately call run_simulation_workflow with the user message (even if values are missing). "
-        "Do not answer before calling run_simulation_workflow for simulation intent. "
+        "You lead the simulation workflow."# and can ask the user for missing inputs. "
+        # "Required params: temperature, voltage, size, capacity, production_mode. "
+        "If the user wants 시뮬레이션/simulation/recommendation/브리핑/그리드 or mentions related params, "
+        "**call run_simulation_workflow first** with the user message (even if values are missing). "
+        "For simulation intent, do not start with a normal reply; call the tool first and respond after. "
         "If the user requests a change to selection conditions (e.g., TOP 3, 상위 5개, max_blocks), "
         "call run_simulation_workflow so the grid is rerun with the new selection. "
         "If the tool returns missing fields, ask only for those fields. "
@@ -554,6 +554,8 @@ simulation_flow_agent = _build_agent(
         chart_agent_tool,
         apply_chart_config,
     ],
+        model_settings=ModelSettings(tool_choice="required"),
+
     handoffs=[],
     **MODEL_KWARGS,
 )
@@ -565,9 +567,10 @@ orchestrator_agent = _build_agent(
         "Always respond in Korean. "
         "Handle casual chat naturally and briefly. "
         "If the user wants simulation/recommendation/grid/briefing/chart changes, "
-        "사용자에게는 시뮬레이션 관련 기능만 할수있다고 하고, 다른건 언급하지 말아줘."
         "handoff to the simulation agent. "
         "Do not mention tools or internal routing."
+        "사용자가 너가 뭘 할수있는지 물어보면 시뮬레이션 관련 기능에 대해서만 언급하고,  recommendation/grid/briefing/chart changes는 언급하지 말아줘."
+
     ),
     handoffs=[simulation_flow_agent],
     **MODEL_KWARGS,
