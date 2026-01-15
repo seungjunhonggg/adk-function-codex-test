@@ -21,7 +21,7 @@
  - 코드를 수정하거나 추가 기능을 개발할 시 늘 사용자가 해당 과정에 대해서 변경요ㅓㅇ을 할때에 잘 대응할 수 있을지 고려하여 메모리 구조를 짜야한다.
  - 워크플로우 작성시 모델이 structured output format 을 만들어야 하는 상황이라면, openai 의 adk에 있는 structured output 기능을 이용한다.
  Reference: https://openai.github.io/openai-agents-python/
-<!-- ## 1) Always consider OpenAI Agents SDK first
+## 1) Always consider OpenAI Agents SDK first
 - When implementing anything "agentic" (multi-agent orchestration, handoffs, tool calling, guardrails, tracing),
   always check whether the OpenAI Agents SDK already provides a supported primitive/pattern.
 - Reference: https://openai.github.io/openai-agents-python/
@@ -30,7 +30,7 @@ Practical checklist:
 - Can this be modeled as: Agent + tools + handoffs + Runner?
 - Do we need structured tool schemas, guardrails, or tracing?
 - 안정적인 production을 구축하고자 할때, openai adk보다 코드로 워크플로우를 구성하는게 더 안정적이라면 그렇게 실행해도 된다.
-- If Codex CLI automation is involved, consider MCP-based orchestration patterns. -->
+- If Codex CLI automation is involved, consider MCP-based orchestration patterns.
 
 ## 2) Skill-first policy (Codex Skills)
 - Skills live under: ./.codex/skills/

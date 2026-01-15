@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, timedelta
 
@@ -197,6 +198,53 @@ def _normalize_columns_param(columns: object) -> list[str]:
         cleaned.append(name)
         seen.add(name)
     return cleaned
+
+
+PARAMS_JSON_PREFIX = "PARAMS_JSON:"
+
+
+def _extract_params_json_from_message(message: str | None) -> dict:
+    if not message:
+        return {}
+    for line in message.splitlines():
+        if not line.startswith(PARAMS_JSON_PREFIX):
+            continue
+        raw = line[len(PARAMS_JSON_PREFIX) :].strip()
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _extract_selection_overrides_from_text(message: str | None) -> dict:
+    if not message:
+        return {}
+    overrides: dict[str, int] = {}
+    top_match = re.search(r"(?:상위|top)\s*([0-9]{1,3})", message, re.IGNORECASE)
+    if not top_match:
+        top_match = re.search(r"top[_\s-]*k\s*[:=]?\s*([0-9]{1,3})", message, re.IGNORECASE)
+    if not top_match:
+        top_match = re.search(r"top([0-9]{1,3})", message, re.IGNORECASE)
+    if top_match:
+        try:
+            overrides["top_k"] = int(top_match.group(1))
+        except (TypeError, ValueError):
+            pass
+    block_match = re.search(
+        r"(?:블록|blocks?|max_blocks)\s*[:=]?\s*([0-9]{1,3})",
+        message,
+        re.IGNORECASE,
+    )
+    if block_match:
+        try:
+            overrides["max_blocks"] = int(block_match.group(1))
+        except (TypeError, ValueError):
+            pass
+    return overrides
 
 
 def _merge_columns(primary: list[str], extra: list[str]) -> list[str]:
@@ -1638,6 +1686,128 @@ async def update_simulation_params(
 
 
 @function_tool
+async def run_simulation_workflow(message: str | None = None, params: dict | None = None) -> dict:
+    """Collect params from the message/JSON and run the full simulation pipeline."""
+    session_id = current_session_id.get()
+    current_params = simulation_store.get(session_id)
+    parsed: dict = {}
+    if isinstance(params, dict):
+        parsed.update(params)
+    parsed.update(_extract_params_json_from_message(message))
+    if message:
+        cleaned = "\n".join(
+            line for line in message.splitlines() if not line.startswith(PARAMS_JSON_PREFIX)
+        )
+        extracted, conflicts = await extract_simulation_params_hybrid(cleaned)
+        for key in conflicts:
+            extracted.pop(key, None)
+        parsed.update(extracted)
+
+    selection_overrides = _extract_selection_overrides_from_text(message)
+    if isinstance(params, dict):
+        for key in ("top_k", "max_blocks", "top", "topn", "blocks"):
+            if key in params:
+                selection_overrides[key] = params[key]
+
+    from . import app as app_module
+
+    selection_overrides = app_module._normalize_selection_overrides(
+        selection_overrides or None
+    )
+    grid_overrides = app_module._extract_grid_overrides(message or "")
+    if selection_overrides or grid_overrides:
+        run_id = simulation_store.ensure_run_id(session_id)
+        if selection_overrides:
+            pipeline_store.set_stage_inputs(
+                session_id,
+                "selection",
+                {
+                    "run_id": run_id,
+                    "overrides": selection_overrides,
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            )
+        if grid_overrides:
+            pipeline_store.set_stage_inputs(
+                session_id,
+                "grid",
+                {
+                    "run_id": run_id,
+                    "overrides": grid_overrides,
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            )
+
+    allowed_keys = {
+        "temperature",
+        "voltage",
+        "size",
+        "capacity",
+        "production_mode",
+        "chip_prod_id",
+    }
+    filtered = {
+        key: value
+        for key, value in parsed.items()
+        if key in allowed_keys and value not in (None, "")
+    }
+    param_updates = {
+        key: value
+        for key, value in filtered.items()
+        if current_params.get(key) != value
+    }
+    result = collect_simulation_params(**param_updates)
+    missing = result.get("missing", []) or []
+    should_open_form = bool(missing) or bool(param_updates)
+    if should_open_form:
+        await emit_simulation_form(result.get("params", {}), missing)
+    if missing:
+        return {
+            "status": "missing",
+            "params": result.get("params", {}),
+            "missing": missing,
+            "message": "추천 입력값이 부족합니다.",
+        }
+
+    if not grid_overrides:
+        grid_overrides = app_module._get_grid_overrides(session_id)
+    if not selection_overrides:
+        selection_overrides = app_module._get_selection_overrides(session_id)
+
+    params_payload = result.get("params", {})
+    chip_prod_override = params_payload.get("chip_prod_id")
+    pipeline_result = await app_module._run_reference_pipeline(
+        session_id,
+        params_payload,
+        chip_prod_override=chip_prod_override,
+        reference_override=app_module._get_reference_override(session_id),
+        grid_overrides=grid_overrides,
+        selection_overrides=selection_overrides,
+        emit_briefing=False,
+    )
+    if not isinstance(pipeline_result, dict) or not pipeline_result.get("simulation_result"):
+        error_text = (
+            pipeline_result.get("message")
+            if isinstance(pipeline_result, dict)
+            else None
+        )
+        return {
+            "status": "error",
+            "message": error_text or "추천 실행에 실패했습니다.",
+        }
+
+    summary_payload = pipeline_store.get_event(session_id, "final_briefing")
+    memory_summary = ""
+    if isinstance(summary_payload, dict) and summary_payload:
+        memory_summary = app_module._build_memory_summary(summary_payload)
+    return {
+        "status": "ok",
+        "summary": memory_summary,
+        "message": "추천 결과를 저장했습니다. 필요하면 상세 브리핑을 요청해 주세요.",
+    }
+
+
+@function_tool
 async def run_simulation() -> dict:
     """Open the recommendation form, then run if params are complete."""
     await _log_route("recommendation", "run_simulation")
@@ -1661,6 +1831,26 @@ async def run_simulation() -> dict:
         summary = f"{summary}, chip_prod_id={inner.get('recommended_chip_prod_id')}"
     await _log_tool_result("run_simulation", summary)
     return result
+
+
+@function_tool
+async def run_detailed_briefing() -> dict:
+    """Stream detailed briefing to the UI and return a short summary."""
+    session_id = current_session_id.get()
+    from . import app as app_module
+
+    outcome = await app_module._handle_detailed_briefing(session_id)
+    message = getattr(outcome, "message", "") if outcome else ""
+    memory_summary = getattr(outcome, "memory_summary", "") if outcome else ""
+    if not message:
+        return {"status": "error", "message": "브리핑을 생성하지 못했습니다."}
+    if "없습니다" in message and not memory_summary:
+        return {"status": "missing", "message": message}
+    return {
+        "status": "ok",
+        "summary": memory_summary or "",
+        "message": "상세 브리핑을 표시했습니다.",
+    }
 
 
 @function_tool

@@ -15,6 +15,8 @@ from .tools import (
     run_lot_simulation,
     run_simulation,
     run_prediction_simulation,
+    run_simulation_workflow,
+    run_detailed_briefing,
     filter_lots_by_defect_rate,
     run_design_grid_search,
     get_design_candidates,
@@ -24,6 +26,7 @@ from .tools import (
     get_simulation_progress,
     reset_simulation_state,
     update_simulation_params,
+    apply_chart_config,
     query_view_metrics,
     query_view_table,
 )
@@ -525,3 +528,46 @@ triage_agent = _build_agent(
     tools=[db_agent_tool, simulation_agent_tool, test_simulation_agent_tool, chart_agent_tool],
     **MODEL_KWARGS,
 )
+
+
+simulation_flow_agent = _build_agent(
+    name="시뮬레이션 에이전트",
+    instructions=(
+        "You are helping MLCC Developer Agent"
+        "Always respond in Korean. "
+        "You lead the simulation workflow and can ask the user for missing inputs. "
+        "Required params: temperature, voltage, size, capacity, production_mode. "
+        "Use run_simulation_workflow with the user message to collect params and run the pipeline. "
+        "If the user requests a change to selection conditions (e.g., TOP 3, 상위 5개, max_blocks), "
+        "call run_simulation_workflow so the grid is rerun with the new selection. "
+        "If the tool returns missing fields, ask only for those fields. "
+        "If the user requests a detailed briefing, call run_detailed_briefing. "
+        "If the user asks to change a chart, call chart_agent first, then apply_chart_config "
+        "using the returned fields (chart_type/bins/range_min/range_max/normalize/value_unit/reset). "
+        "If the request is unrelated to simulation/chart, handoff to the orchestrator."
+    ),
+    tools=[
+        run_simulation_workflow,
+        run_detailed_briefing,
+        chart_agent_tool,
+        apply_chart_config,
+    ],
+    handoffs=[],
+    **MODEL_KWARGS,
+)
+
+orchestrator_agent = _build_agent(
+    name="오케스트레이터",
+    instructions=(
+        "You are helping MLCC Developer Agent"
+        "Always respond in Korean. "
+        "Handle casual chat naturally and briefly. "
+        "If the user wants simulation/recommendation/grid/briefing/chart changes, "
+        "handoff to the simulation agent. "
+        "Do not mention tools or internal routing."
+    ),
+    handoffs=[simulation_flow_agent],
+    **MODEL_KWARGS,
+)
+
+simulation_flow_agent.handoffs = [orchestrator_agent]
