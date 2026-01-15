@@ -52,6 +52,8 @@ Notes:
 브리핑시 단계별 사용해야할 컬럼명 관리 테이블명 : column_briefing_table, 
 모든 LOT 관련 데이터 조회시 사용하는 테이블 : mdh_base_view_total_4
 
+** 코드 너무 안정성만을 강요해서 복잡하게 짜지 말것. 그냥 값 받은걸 기준으로 쉽게쉽게 짜야함. 저년차 개발자들도 쉽게 이해할수 있는 코드여야함
+
 ## Maintenance notes
 - Planner changes: keep `backend/app.py` `PLANNER_WORKFLOW_CONFIG` aligned with actual memory keys/events.
 - Planner outputs or `/api/chat` flow changes: update `docs/api-chat-workflow.md` (planner_agent, planner_state).

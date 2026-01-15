@@ -46,6 +46,7 @@ from .context import current_session_id
 from .db_connections import (
     connect_and_save,
     execute_table_query,
+    execute_table_query_multi,
     execute_table_query_aggregate,
     get_schema,
     list_connections,
@@ -57,7 +58,6 @@ from .guardrails import guardrail_fallback_message
 from .observability import WorkflowRunHooks, emit_workflow_log
 from .pipeline_store import pipeline_store
 from .reference_lot import (
-    collect_grid_candidate_matches,
     build_grid_values,
     load_reference_rules,
     normalize_reference_rules,
@@ -2942,6 +2942,22 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         "grid_search",
         grid_columns_default,
     )
+    raw_rules = load_reference_rules()
+    grid_match_fields = raw_rules.get("grid_match_fields")
+    if not isinstance(grid_match_fields, list):
+        grid_match_fields = []
+    grid_match_fields = [
+        str(field).strip() for field in grid_match_fields if str(field).strip()
+    ]
+    grid_extra_columns = list(
+        dict.fromkeys(
+            grid_match_fields
+            + (briefing_columns.get("grid_search") or [])
+            + (briefing_columns.get("post_grid_search") or [])
+        )
+    )
+    if grid_extra_columns:
+        grid_columns = list(dict.fromkeys(grid_columns + grid_extra_columns))
     grid_rows = _build_grid_table_rows(top_candidates, grid_columns, selected_row)
     grid_column_labels = build_column_label_map(grid_columns, column_label_map)
     grid_table = _build_markdown_table(
@@ -2951,7 +2967,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     )
 
     post_grid_available = None
-    post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
+    post_grid_requested = briefing_columns.get("post_grid_search") or []
     missing_post_grid_columns: list[str] = []
     available_columns = _resolve_post_grid_available_columns(post_grid_payload)
     if available_columns:
@@ -2964,7 +2980,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         ]
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
-        "post_grid_lot_search",
+        "post_grid_search",
         [],
         available=post_grid_available,
     )
@@ -3035,7 +3051,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         )
     else:
         if not post_grid_columns:
-            grid_notes.append("post_grid_lot_search 컬럼 설정이 없습니다.")
+            grid_notes.append("post_grid_search 컬럼 설정이 없습니다.")
             if missing_post_grid_columns:
                 grid_notes.append(
                     "요청 컬럼 누락: " + ", ".join(missing_post_grid_columns)
@@ -3127,7 +3143,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     else:
         post_grid_note = "최근 LOT 불량률 데이터가 없습니다."
         if not post_grid_columns:
-            post_grid_note = "post_grid_lot_search 컬럼 설정이 없습니다."
+            post_grid_note = "post_grid_search 컬럼 설정이 없습니다."
             if missing_post_grid_columns:
                 post_grid_note = (
                     f"{post_grid_note}\n요청 컬럼 누락: "
@@ -5692,6 +5708,7 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
         "ref_lot_candidate",
         "ref_lot_selected",
         "grid_search",
+        "post_grid_search",
         "post_grid_lot_search",
     )
     columns_map: dict[str, list[str]] = {step: [] for step in steps}
@@ -5753,6 +5770,12 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
                 step,
                 len(rows),
             )
+    legacy_post_grid = columns_map.get("post_grid_lot_search") or []
+    if legacy_post_grid:
+        merged = list(
+            dict.fromkeys((columns_map.get("post_grid_search") or []) + legacy_post_grid)
+        )
+        columns_map["post_grid_search"] = merged
     return columns_map
 
 
@@ -6495,13 +6518,113 @@ async def _run_reference_pipeline(
                 list(dict.fromkeys(design_keys)), column_label_map
             )
 
-    forced_match_fields = ["ldn_avr_value", "cast_dsgn_thk", "active_layer"]
-    candidate_matches = collect_grid_candidate_matches(
-        top_candidates,
-        rules,
-        chip_prod_id=chip_prod_id,
-        match_fields_override=forced_match_fields,
+    raw_rules = load_reference_rules()
+    raw_db = raw_rules.get("db") if isinstance(raw_rules, dict) else {}
+    grid_match_fields = raw_rules.get("grid_match_fields")
+    if not isinstance(grid_match_fields, list):
+        grid_match_fields = []
+    grid_match_fields = [
+        str(field).strip() for field in grid_match_fields if str(field).strip()
+    ]
+    grid_extra_columns = list(
+        dict.fromkeys(
+            grid_match_fields
+            + (briefing_columns.get("grid_search") or [])
+            + (briefing_columns.get("post_grid_search") or [])
+        )
     )
+    if grid_extra_columns and isinstance(selected_row, dict):
+        for candidate in top_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            design = (
+                candidate.get("design")
+                if isinstance(candidate.get("design"), dict)
+                else {}
+            )
+            for column in grid_extra_columns:
+                if column not in design and column in selected_row:
+                    design[column] = selected_row.get(column)
+            candidate["design"] = design
+    match_recent_months = 6
+    row_limit = 50
+    match_table = "mdh_base_view_total_4"
+    connection_id = str(raw_db.get("connection_id") or db_config.get("connection_id") or "")
+    schema_name = str(raw_db.get("schema") or db_config.get("schema") or "public")
+    all_columns = _get_available_table_columns(
+        connection_id, schema_name, match_table
+    )
+    cutoff = datetime.now() - timedelta(days=match_recent_months * 30)
+    candidate_items: list[dict] = []
+    for index, candidate in enumerate(top_candidates[:top_k], start=1):
+        if not isinstance(candidate, dict):
+            continue
+        design = candidate.get("design") if isinstance(candidate.get("design"), dict) else {}
+        matched_values: dict[str, object] = {}
+        missing_fields: list[str] = []
+        if not grid_match_fields:
+            missing_fields.append("grid_match_fields")
+        for field in grid_match_fields:
+            value = design.get(field)
+            if value in (None, ""):
+                missing_fields.append(field)
+            else:
+                matched_values[field] = value
+        rows: list[dict] = []
+        source = "none"
+        if (
+            connection_id
+            and all_columns
+            and not missing_fields
+            and "design_input_date" in all_columns
+        ):
+            filters = [
+                {"column": field, "operator": "=", "value": value}
+                for field, value in matched_values.items()
+            ]
+            filters.append(
+                {
+                    "column": "design_input_date",
+                    "operator": "between",
+                    "value": [cutoff.isoformat(), datetime.now().isoformat()],
+                }
+            )
+            try:
+                result = execute_table_query_multi(
+                    connection_id=connection_id,
+                    schema_name=schema_name,
+                    table_name=match_table,
+                    columns=all_columns,
+                    filters=filters,
+                    limit=row_limit,
+                )
+                rows = result.get("rows", []) if isinstance(result, dict) else []
+                source = "postgresql"
+            except Exception:
+                rows = []
+                source = "error"
+        candidate_items.append(
+            {
+                "rank": candidate.get("rank") or index,
+                "predicted_target": candidate.get("predicted_target"),
+                "design": design,
+                "match_fields": grid_match_fields,
+                "missing_fields": missing_fields,
+                "matched_values": matched_values,
+                "rows": rows,
+                "columns": all_columns,
+                "row_count": len(rows) if isinstance(rows, list) else 0,
+                "source": source,
+            }
+        )
+    candidate_matches = {
+        "items": candidate_items,
+        "match_fields": grid_match_fields,
+        "recent_months": match_recent_months,
+        "row_limit": row_limit,
+        "columns": all_columns,
+        "table": match_table,
+    }
     design_blocks_override = _build_design_blocks_from_matches(
         candidate_matches, rules, column_label_map
     )
@@ -6674,6 +6797,22 @@ async def _run_reference_pipeline(
         "grid_search",
         grid_columns_default,
     )
+    raw_rules = load_reference_rules()
+    grid_match_fields = raw_rules.get("grid_match_fields")
+    if not isinstance(grid_match_fields, list):
+        grid_match_fields = []
+    grid_match_fields = [
+        str(field).strip() for field in grid_match_fields if str(field).strip()
+    ]
+    grid_extra_columns = list(
+        dict.fromkeys(
+            grid_match_fields
+            + (briefing_columns.get("grid_search") or [])
+            + (briefing_columns.get("post_grid_search") or [])
+        )
+    )
+    if grid_extra_columns:
+        grid_columns = list(dict.fromkeys(grid_columns + grid_extra_columns))
     grid_rows = _build_grid_table_rows(top_candidates, grid_columns, selected_row)
     grid_column_labels = build_column_label_map(grid_columns, column_label_map)
     grid_table = _build_markdown_table(
@@ -6684,7 +6823,7 @@ async def _run_reference_pipeline(
 
     post_grid_payload = _resolve_post_grid_payload(summary_payload)
     post_grid_available = None
-    post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
+    post_grid_requested = briefing_columns.get("post_grid_search") or []
     missing_post_grid_columns: list[str] = []
     available_columns = _resolve_post_grid_available_columns(post_grid_payload)
     if available_columns:
@@ -6697,7 +6836,7 @@ async def _run_reference_pipeline(
         ]
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
-        "post_grid_lot_search",
+        "post_grid_search",
         [],
         available=post_grid_available,
     )
@@ -6768,7 +6907,7 @@ async def _run_reference_pipeline(
         )
     else:
         if not post_grid_columns:
-            grid_notes.append("post_grid_lot_search 컬럼 설정이 없습니다.")
+            grid_notes.append("post_grid_search 컬럼 설정이 없습니다.")
             if missing_post_grid_columns:
                 grid_notes.append(
                     "요청 컬럼 누락: " + ", ".join(missing_post_grid_columns)
@@ -6856,7 +6995,7 @@ async def _run_reference_pipeline(
     else:
         post_grid_note = "최근 LOT 불량률 데이터가 없습니다."
         if not post_grid_columns:
-            post_grid_note = "post_grid_lot_search 컬럼 설정이 없습니다."
+            post_grid_note = "post_grid_search 컬럼 설정이 없습니다."
             if missing_post_grid_columns:
                 post_grid_note = (
                     f"{post_grid_note}\n요청 컬럼 누락: "
