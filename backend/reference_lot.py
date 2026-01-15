@@ -2151,7 +2151,12 @@ def collect_post_grid_defects(
     }
 
 
-def collect_grid_candidate_matches(design_candidates: list[dict], rules: dict) -> dict:
+def collect_grid_candidate_matches(
+    design_candidates: list[dict],
+    rules: dict,
+    chip_prod_id: str | None = None,
+    match_fields_override: list[str] | None = None,
+) -> dict:
     normalized = normalize_reference_rules(rules)
     if not isinstance(design_candidates, list) or not design_candidates:
         return {
@@ -2175,7 +2180,12 @@ def collect_grid_candidate_matches(design_candidates: list[dict], rules: dict) -
     if connection_id and lot_search_table:
         available = _get_available_columns(connection_id, schema_name, lot_search_table)
 
-    match_fields = _resolve_grid_match_fields(normalized)
+    if isinstance(match_fields_override, list) and match_fields_override:
+        match_fields = [
+            str(field) for field in match_fields_override if str(field).strip()
+        ]
+    else:
+        match_fields = _resolve_grid_match_fields(normalized)
     match_aliases = _resolve_grid_match_aliases(normalized)
     defect_columns = _resolve_grid_defect_columns(normalized, available)
     recent_months = normalized.get("grid_match_recent_months", 6)
@@ -2201,6 +2211,15 @@ def collect_grid_candidate_matches(design_candidates: list[dict], rules: dict) -
             field for field in match_fields if field not in match_values
         ]
         filters = []
+        if chip_prod_id:
+            if not available or chip_prod_column in available:
+                filters.append(
+                    {
+                        "column": chip_prod_column,
+                        "operator": "=",
+                        "value": chip_prod_id,
+                    }
+                )
         if match_values:
             for field, value in match_values.items():
                 if available and field not in available:
@@ -2238,7 +2257,7 @@ def collect_grid_candidate_matches(design_candidates: list[dict], rules: dict) -
         query_columns = [
             column
             for column in dict.fromkeys(
-                [lot_id_column, chip_prod_column, date_column]
+                [chip_prod_column, date_column]
                 + list(match_values.keys())
                 + defect_columns
             )

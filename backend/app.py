@@ -57,7 +57,6 @@ from .guardrails import guardrail_fallback_message
 from .observability import WorkflowRunHooks, emit_workflow_log
 from .pipeline_store import pipeline_store
 from .reference_lot import (
-    collect_post_grid_defects,
     collect_grid_candidate_matches,
     build_grid_values,
     load_reference_rules,
@@ -501,6 +500,7 @@ MEMORY_SUMMARY_SKIP_KEYS = {
     "columns",
     "defect_stats",
     "post_grid_defects",
+    "candidate_matches",
     "design_blocks",
 }
 BRIEFING_STREAM_CHUNK_SIZE = 80
@@ -578,13 +578,17 @@ def _compact_post_grid_defects(
             design = item.get("design")
             if not isinstance(design, dict):
                 design = {}
+            lot_count = item.get("lot_count")
+            if lot_count is None:
+                lot_count = item.get("row_count")
             compact_items.append(
                 {
                     "rank": rank,
                     "predicted_target": item.get("predicted_target"),
                     "design": _compact_design_fields(design, allowed_keys),
-                    "lot_count": item.get("lot_count"),
+                    "lot_count": lot_count,
                     "defect_stats": item.get("defect_stats"),
+                    "defect_column_avgs": item.get("defect_column_avgs"),
                     "sample_lots": item.get("sample_lots"),
                     "source": item.get("source"),
                 }
@@ -598,7 +602,9 @@ def _compact_post_grid_defects(
             if not ranks or item.get("rank") in ranks
         ][:limit]
     compact = {
-        "columns": post_grid_defects.get("columns"),
+        "columns": post_grid_defects.get("columns")
+        or post_grid_defects.get("defect_columns")
+        or post_grid_defects.get("match_fields"),
         "recent_months": post_grid_defects.get("recent_months"),
         "value_unit": post_grid_defects.get("value_unit"),
         "items": compact_items,
@@ -630,13 +636,18 @@ def _compact_final_briefing_payload(
     )
     if top_candidates:
         compact["top_candidates"] = top_candidates
+    post_grid_key = "candidate_matches"
+    post_grid_payload = payload.get(post_grid_key)
+    if not isinstance(post_grid_payload, dict):
+        post_grid_key = "post_grid_defects"
+        post_grid_payload = payload.get(post_grid_key)
     post_grid_defects = _compact_post_grid_defects(
-        payload.get("post_grid_defects"),
+        post_grid_payload,
         allowed_keys,
         limit,
     )
     if post_grid_defects:
-        compact["post_grid_defects"] = post_grid_defects
+        compact[post_grid_key] = post_grid_defects
     return compact
 
 
@@ -688,6 +699,52 @@ def _compact_design_candidates_event(
         "design_labels": design_labels,
     }
     return {key: value for key, value in compact.items() if value not in (None, [], {}, "")}
+
+
+def _resolve_post_grid_payload(summary_payload: dict | None) -> dict | None:
+    if not isinstance(summary_payload, dict):
+        return None
+    candidate_matches = summary_payload.get("candidate_matches")
+    if isinstance(candidate_matches, dict):
+        return candidate_matches
+    post_grid_defects = summary_payload.get("post_grid_defects")
+    if isinstance(post_grid_defects, dict):
+        return post_grid_defects
+    return None
+
+
+def _resolve_post_grid_available_columns(post_grid_payload: dict | None) -> list[str]:
+    if not isinstance(post_grid_payload, dict):
+        return []
+    available_columns = post_grid_payload.get("available_columns")
+    if isinstance(available_columns, list) and available_columns:
+        return [str(column) for column in available_columns if column]
+    columns = post_grid_payload.get("columns")
+    if isinstance(columns, list) and columns:
+        return [str(column) for column in columns if column]
+    items = post_grid_payload.get("items")
+    if not isinstance(items, list):
+        return []
+    collected: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_columns = item.get("columns")
+        if isinstance(item_columns, list) and item_columns:
+            collected.extend(str(column) for column in item_columns if column)
+    if collected:
+        return list(dict.fromkeys(collected))
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rows = item.get("rows") or item.get("lot_rows")
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            collected.extend(str(column) for column in row.keys() if column)
+    return list(dict.fromkeys(collected))
 
 
 def _summary_token(value: object) -> str | None:
@@ -744,17 +801,21 @@ def _build_memory_summary(payload: dict, label: str = "final_briefing") -> str:
             if token:
                 items.append((f"defect_{stat_key}", token))
 
-    post_grid_defects = payload.get("post_grid_defects")
-    if isinstance(post_grid_defects, dict):
-        columns = post_grid_defects.get("columns")
+    post_grid_payload = _resolve_post_grid_payload(payload)
+    if isinstance(post_grid_payload, dict):
+        columns = (
+            post_grid_payload.get("columns")
+            or post_grid_payload.get("defect_columns")
+            or post_grid_payload.get("match_fields")
+        )
         if isinstance(columns, list):
             token = _join_summary_tokens(columns)
             if token:
                 items.append(("post_grid_cols", token))
-        pg_items = post_grid_defects.get("items")
+        pg_items = post_grid_payload.get("items")
         if isinstance(pg_items, list):
             items.append(("post_grid_items", str(len(pg_items))))
-        recent = _summary_token(post_grid_defects.get("recent_months"))
+        recent = _summary_token(post_grid_payload.get("recent_months"))
         if recent:
             items.append(("post_grid_recent_months", recent))
 
@@ -2759,7 +2820,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     grid_state = state.get("grid")
     if not isinstance(grid_state, dict):
         grid_state = {}
-    post_grid_defects = summary_payload.get("post_grid_defects")
+    post_grid_payload = _resolve_post_grid_payload(summary_payload)
 
     rules = normalize_reference_rules(load_reference_rules())
     db_config = rules.get("db", {})
@@ -2892,10 +2953,9 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     post_grid_available = None
     post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
     missing_post_grid_columns: list[str] = []
-    if isinstance(post_grid_defects, dict):
-        available_columns = post_grid_defects.get("available_columns")
-        if isinstance(available_columns, list) and available_columns:
-            post_grid_available = available_columns
+    available_columns = _resolve_post_grid_available_columns(post_grid_payload)
+    if available_columns:
+        post_grid_available = available_columns
     if post_grid_available and post_grid_requested:
         missing_post_grid_columns = [
             column
@@ -2917,7 +2977,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         grid_columns,
         post_grid_columns,
     )
-    post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
+    post_grid_rows = _build_post_grid_table_rows(post_grid_payload, post_grid_columns)
     post_grid_label_map = _build_post_grid_label_map(
         column_label_map, defect_label_map
     )
@@ -2930,7 +2990,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         column_labels=post_grid_column_labels,
     )
     post_grid_diagnostic = _format_post_grid_diagnostics(
-        post_grid_defects, post_grid_label_map
+        post_grid_payload, post_grid_label_map
     )
 
     reference_tables: list[dict] = []
@@ -4611,7 +4671,7 @@ def _build_final_briefing_payload(
     top_candidates: list[dict],
     defect_stats: dict,
     rules: dict | None = None,
-    post_grid_defects: dict | None = None,
+    candidate_matches: dict | None = None,
     design_blocks_override: list[dict] | None = None,
     defect_rates: list[dict] | None = None,
     defect_rate_overall: float | None = None,
@@ -4648,11 +4708,12 @@ def _build_final_briefing_payload(
         payload["chip_prod_id_count"] = chip_prod_id_count
     if chip_prod_id_samples is not None:
         payload["chip_prod_id_samples"] = chip_prod_id_samples
-    if post_grid_defects is not None:
-        payload["post_grid_defects"] = post_grid_defects
-        payload["design_blocks"] = _build_design_blocks(
-            post_grid_defects, rules, column_labels
-        )
+    if candidate_matches is not None:
+        payload["candidate_matches"] = candidate_matches
+        if not design_blocks_override:
+            payload["design_blocks"] = _build_design_blocks_from_matches(
+                candidate_matches, rules, column_labels
+            )
     if design_blocks_override:
         payload["design_blocks"] = design_blocks_override
     return payload
@@ -5467,7 +5528,7 @@ def _load_defect_columns_from_label_map(
 
 
 def _collect_post_grid_lot_ids(summary_payload: dict) -> list[str]:
-    post_grid = summary_payload.get("post_grid_defects")
+    post_grid = _resolve_post_grid_payload(summary_payload)
     if not isinstance(post_grid, dict):
         return []
     items = post_grid.get("items")
@@ -5476,6 +5537,32 @@ def _collect_post_grid_lot_ids(summary_payload: dict) -> list[str]:
     lot_ids: list[str] = []
     for item in items:
         if not isinstance(item, dict):
+            continue
+        rows = item.get("rows")
+        if isinstance(rows, list) and rows:
+            lot_id_column = None
+            columns = item.get("columns")
+            if isinstance(columns, list):
+                for column in columns:
+                    lowered = str(column).strip().lower()
+                    if lowered in {"lot_id", "lotid"}:
+                        lot_id_column = str(column)
+                        break
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                lot_id = None
+                if lot_id_column:
+                    lot_id = row.get(lot_id_column)
+                if lot_id in (None, ""):
+                    for key, value in row.items():
+                        lowered = str(key).strip().lower()
+                        if lowered in {"lot_id", "lotid"}:
+                            lot_id = value
+                            break
+                if lot_id in (None, ""):
+                    continue
+                lot_ids.append(str(lot_id))
             continue
         lot_rates = item.get("lot_defect_rates")
         if isinstance(lot_rates, list) and lot_rates:
@@ -5746,18 +5833,34 @@ def _build_post_grid_table_rows(
         design = item.get("design")
         if not isinstance(design, dict):
             design = {}
+        lot_count = item.get("lot_count")
+        if lot_count is None:
+            lot_count = item.get("row_count")
+        sample_lots = item.get("sample_lots") or []
+        if not sample_lots:
+            rows = item.get("rows")
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    lot_id = row.get("lot_id")
+                    if lot_id in (None, ""):
+                        continue
+                    sample_lots.append(str(lot_id))
+                    if len(sample_lots) >= 5:
+                        break
         base = {
             "rank": item.get("rank"),
             "predicted_target": item.get("predicted_target"),
-            "lot_count": item.get("lot_count"),
+            "lot_count": lot_count,
             "sample_lots": ", ".join(
                 str(value)
-                for value in (item.get("sample_lots") or [])
+                for value in sample_lots
                 if value not in (None, "")
             ),
         }
         base.update(design)
-        display_rows = item.get("lot_rows")
+        display_rows = item.get("lot_rows") or item.get("rows")
         if isinstance(display_rows, list) and display_rows:
             for lot_row in display_rows:
                 if not isinstance(lot_row, dict):
@@ -5799,7 +5902,39 @@ def _format_post_grid_diagnostics(
         return ""
     diagnostics = post_grid_defects.get("diagnostics")
     if not isinstance(diagnostics, list) or not diagnostics:
-        return ""
+        items = post_grid_defects.get("items")
+        if not isinstance(items, list) or not items:
+            return ""
+        messages: list[str] = []
+        for index, item in enumerate(items[:limit], start=1):
+            if not isinstance(item, dict):
+                continue
+            rank = item.get("rank") or index
+            parts: list[str] = []
+            missing_fields = item.get("missing_fields") or []
+            matched_values = item.get("matched_values") or {}
+            row_count = item.get("row_count")
+            if missing_fields:
+                labels = [
+                    _resolve_column_label(column, column_labels)
+                    for column in missing_fields
+                ]
+                parts.append(f"누락 컬럼: {', '.join(labels)}")
+            if matched_values:
+                labels = [
+                    _resolve_column_label(column, column_labels)
+                    for column in matched_values.keys()
+                ]
+                parts.append(f"필터: {', '.join(labels)}")
+            if row_count is not None:
+                parts.append(f"조회 {row_count}건")
+                if row_count == 0 and matched_values:
+                    parts.append("매칭 LOT 없음")
+            if not matched_values:
+                parts.append("설계값 필터 없음")
+            if parts:
+                messages.append(f"TOP{rank} - " + "; ".join(parts))
+        return " / ".join(messages)
     reason_map = {
         "design_missing": "설계값 없음",
         "no_design_filters": "설계값 필터 없음",
@@ -6360,16 +6495,15 @@ async def _run_reference_pipeline(
                 list(dict.fromkeys(design_keys)), column_label_map
             )
 
-    candidate_matches = collect_grid_candidate_matches(top_candidates, rules)
-    design_blocks_override = _build_design_blocks_from_matches(
-        candidate_matches, rules, column_label_map
-    )
-
-    post_grid_defects = collect_post_grid_defects(
+    forced_match_fields = ["ldn_avr_value", "cast_dsgn_thk", "active_layer"]
+    candidate_matches = collect_grid_candidate_matches(
         top_candidates,
         rules,
         chip_prod_id=chip_prod_id,
-        extra_columns=briefing_columns.get("post_grid_lot_search") or [],
+        match_fields_override=forced_match_fields,
+    )
+    design_blocks_override = _build_design_blocks_from_matches(
+        candidate_matches, rules, column_label_map
     )
     pipeline_store.set_grid(
         session_id,
@@ -6434,7 +6568,7 @@ async def _run_reference_pipeline(
         top_candidates,
         defect_stats,
         rules=rules,
-        post_grid_defects=post_grid_defects,
+        candidate_matches=candidate_matches,
         design_blocks_override=design_blocks_override or None,
         defect_rates=defect_rates,
         defect_rate_overall=defect_rate_overall,
@@ -6548,13 +6682,13 @@ async def _run_reference_pipeline(
         column_labels=grid_column_labels,
     )
 
+    post_grid_payload = _resolve_post_grid_payload(summary_payload)
     post_grid_available = None
     post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
     missing_post_grid_columns: list[str] = []
-    if isinstance(post_grid_defects, dict):
-        available_columns = post_grid_defects.get("available_columns")
-        if isinstance(available_columns, list) and available_columns:
-            post_grid_available = available_columns
+    available_columns = _resolve_post_grid_available_columns(post_grid_payload)
+    if available_columns:
+        post_grid_available = available_columns
     if post_grid_available and post_grid_requested:
         missing_post_grid_columns = [
             column
@@ -6576,7 +6710,7 @@ async def _run_reference_pipeline(
         grid_columns,
         post_grid_columns,
     )
-    post_grid_rows = _build_post_grid_table_rows(post_grid_defects, post_grid_columns)
+    post_grid_rows = _build_post_grid_table_rows(post_grid_payload, post_grid_columns)
     post_grid_label_map = _build_post_grid_label_map(
         column_label_map, defect_label_map
     )
@@ -6589,7 +6723,7 @@ async def _run_reference_pipeline(
         column_labels=post_grid_column_labels,
     )
     post_grid_diagnostic = _format_post_grid_diagnostics(
-        post_grid_defects, post_grid_label_map
+        post_grid_payload, post_grid_label_map
     )
 
     reference_tables: list[dict] = []
