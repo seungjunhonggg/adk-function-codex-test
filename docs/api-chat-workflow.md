@@ -110,9 +110,9 @@ flowchart TD
       - `mdh_base_view_total_4`에서 동일 설계 LOT 조회
         - 매칭 기준: `grid_match_fields` + design_input_date 최근 6개월
         - 조회는 전체 컬럼(SELECT *) 기준으로 수행
-        - 브리핑 표는 `column_briefing_table`의 `post_grid_search`(또는 `post_grid_lot_search`) 컬럼만 표시
+        - 브리핑 표는 `column_briefing_table`의 `post_grid_lot_search` 컬럼만 표시
         - 매칭 진단은 `candidate_matches` 기반으로 표시
-      - 그리드 결과 표 컬럼은 `grid_match_fields` + `column_briefing_table`의 `grid_search`/`post_grid_lot_search` 컬럼을 합쳐 사용
+      - 그리드 결과 표 컬럼은 `column_briefing_table`의 `grid_search` 컬럼만 사용
       - 후보별 불량 인자 평균( `grid_defect_columns` 또는 `post_grid_defect_columns` 설정값 )을
         막대그래프 이벤트(`defect_rate_chart`, bar_orientation=vertical)로 송신
       - 데모 환경에서도 포스트그리드 불량 인자를 보이려면 해당 컬럼 리스트를
@@ -122,7 +122,7 @@ flowchart TD
       - 순차 브리핑 구성: 1) 레퍼 LOT 후보 요약+표(상위 10개) →
         2) 선택 Ref LOT 상세 표(컬럼 다수는 분할 표) →
         3) 그리드 서치 요약 표(rank/electrode_c_avg/grinding_t_avg/active_layer/cast_dsgn_thk/ldn_avr_value)
-      - `candidate_matches` 포함 (post_grid_search/post_grid_lot_search 표/진단용)
+      - `candidate_matches` 포함 (post_grid_lot_search 표/진단용)
       - `design_blocks` 포함
       - OPENAI_API_KEY가 있으면 서술부 문장만 LLM으로 다듬고(표/숫자 고정),
         검증 실패 시 템플릿을 그대로 사용

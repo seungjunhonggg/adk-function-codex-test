@@ -2942,22 +2942,6 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         "grid_search",
         grid_columns_default,
     )
-    raw_rules = load_reference_rules()
-    grid_match_fields = raw_rules.get("grid_match_fields")
-    if not isinstance(grid_match_fields, list):
-        grid_match_fields = []
-    grid_match_fields = [
-        str(field).strip() for field in grid_match_fields if str(field).strip()
-    ]
-    grid_extra_columns = list(
-        dict.fromkeys(
-            grid_match_fields
-            + (briefing_columns.get("grid_search") or [])
-            + (briefing_columns.get("post_grid_search") or [])
-        )
-    )
-    if grid_extra_columns:
-        grid_columns = list(dict.fromkeys(grid_columns + grid_extra_columns))
     grid_rows = _build_grid_table_rows(top_candidates, grid_columns, selected_row)
     grid_column_labels = build_column_label_map(grid_columns, column_label_map)
     grid_table = _build_markdown_table(
@@ -2967,7 +2951,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     )
 
     post_grid_available = None
-    post_grid_requested = briefing_columns.get("post_grid_search") or []
+    post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
     missing_post_grid_columns: list[str] = []
     available_columns = _resolve_post_grid_available_columns(post_grid_payload)
     if available_columns:
@@ -2980,7 +2964,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         ]
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
-        "post_grid_search",
+        "post_grid_lot_search",
         [],
         available=post_grid_available,
     )
@@ -3051,7 +3035,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
         )
     else:
         if not post_grid_columns:
-            grid_notes.append("post_grid_search 컬럼 설정이 없습니다.")
+            grid_notes.append("post_grid_lot_search 컬럼 설정이 없습니다.")
             if missing_post_grid_columns:
                 grid_notes.append(
                     "요청 컬럼 누락: " + ", ".join(missing_post_grid_columns)
@@ -3143,7 +3127,7 @@ async def _handle_detailed_briefing(session_id: str) -> WorkflowOutcome:
     else:
         post_grid_note = "최근 LOT 불량률 데이터가 없습니다."
         if not post_grid_columns:
-            post_grid_note = "post_grid_search 컬럼 설정이 없습니다."
+            post_grid_note = "post_grid_lot_search 컬럼 설정이 없습니다."
             if missing_post_grid_columns:
                 post_grid_note = (
                     f"{post_grid_note}\n요청 컬럼 누락: "
@@ -5708,7 +5692,6 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
         "ref_lot_candidate",
         "ref_lot_selected",
         "grid_search",
-        "post_grid_search",
         "post_grid_lot_search",
     )
     columns_map: dict[str, list[str]] = {step: [] for step in steps}
@@ -5770,12 +5753,6 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
                 step,
                 len(rows),
             )
-    legacy_post_grid = columns_map.get("post_grid_lot_search") or []
-    if legacy_post_grid:
-        merged = list(
-            dict.fromkeys((columns_map.get("post_grid_search") or []) + legacy_post_grid)
-        )
-        columns_map["post_grid_search"] = merged
     return columns_map
 
 
@@ -6530,7 +6507,7 @@ async def _run_reference_pipeline(
         dict.fromkeys(
             grid_match_fields
             + (briefing_columns.get("grid_search") or [])
-            + (briefing_columns.get("post_grid_search") or [])
+            + (briefing_columns.get("post_grid_lot_search") or [])
         )
     )
     if grid_extra_columns and isinstance(selected_row, dict):
@@ -6797,22 +6774,6 @@ async def _run_reference_pipeline(
         "grid_search",
         grid_columns_default,
     )
-    raw_rules = load_reference_rules()
-    grid_match_fields = raw_rules.get("grid_match_fields")
-    if not isinstance(grid_match_fields, list):
-        grid_match_fields = []
-    grid_match_fields = [
-        str(field).strip() for field in grid_match_fields if str(field).strip()
-    ]
-    grid_extra_columns = list(
-        dict.fromkeys(
-            grid_match_fields
-            + (briefing_columns.get("grid_search") or [])
-            + (briefing_columns.get("post_grid_search") or [])
-        )
-    )
-    if grid_extra_columns:
-        grid_columns = list(dict.fromkeys(grid_columns + grid_extra_columns))
     grid_rows = _build_grid_table_rows(top_candidates, grid_columns, selected_row)
     grid_column_labels = build_column_label_map(grid_columns, column_label_map)
     grid_table = _build_markdown_table(
@@ -6823,7 +6784,7 @@ async def _run_reference_pipeline(
 
     post_grid_payload = _resolve_post_grid_payload(summary_payload)
     post_grid_available = None
-    post_grid_requested = briefing_columns.get("post_grid_search") or []
+    post_grid_requested = briefing_columns.get("post_grid_lot_search") or []
     missing_post_grid_columns: list[str] = []
     available_columns = _resolve_post_grid_available_columns(post_grid_payload)
     if available_columns:
@@ -6836,7 +6797,7 @@ async def _run_reference_pipeline(
         ]
     post_grid_columns = _resolve_briefing_columns(
         briefing_columns,
-        "post_grid_search",
+        "post_grid_lot_search",
         [],
         available=post_grid_available,
     )
@@ -6907,7 +6868,7 @@ async def _run_reference_pipeline(
         )
     else:
         if not post_grid_columns:
-            grid_notes.append("post_grid_search 컬럼 설정이 없습니다.")
+            grid_notes.append("post_grid_lot_search 컬럼 설정이 없습니다.")
             if missing_post_grid_columns:
                 grid_notes.append(
                     "요청 컬럼 누락: " + ", ".join(missing_post_grid_columns)
@@ -6995,7 +6956,7 @@ async def _run_reference_pipeline(
     else:
         post_grid_note = "최근 LOT 불량률 데이터가 없습니다."
         if not post_grid_columns:
-            post_grid_note = "post_grid_search 컬럼 설정이 없습니다."
+            post_grid_note = "post_grid_lot_search 컬럼 설정이 없습니다."
             if missing_post_grid_columns:
                 post_grid_note = (
                     f"{post_grid_note}\n요청 컬럼 누락: "
