@@ -1685,7 +1685,7 @@ async def update_simulation_params(
     return result
 
 
-@function_tool
+@function_tool(strict_mode=False)
 async def run_simulation_workflow(message: str | None = None, params: dict | None = None) -> dict:
     """Collect params from the message/JSON and run the full simulation pipeline."""
     session_id = current_session_id.get()
