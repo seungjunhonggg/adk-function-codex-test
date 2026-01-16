@@ -2410,9 +2410,16 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
     db_config = rules.get("db", {}) if isinstance(rules, dict) else {}
     connection_id = str(db_config.get("connection_id") or "").strip()
     if not connection_id:
-        logger.warning(
-            "Briefing columns not loaded: missing db.connection_id."
-        )
+        columns_map["post_grid_lot_search"] = [
+            "rank",
+            "lot_count",
+            "sample_lots",
+            "active_powder_base",
+            "active_powder_additives",
+            "ldn_avr_value",
+            "cast_dsgn_thk",
+        ]
+        logger.warning("Briefing columns not loaded: missing db.connection_id.")
         return columns_map
     schema_name = str(db_config.get("schema") or "public")
     limit = 100
