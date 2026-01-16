@@ -1614,7 +1614,7 @@ def _build_demo_rows(
     }
 
     chip_prod_id = filter_value or "DEMO-MODEL"
-    total_rows = 1 if filter_column == lot_id_column else 8
+    total_rows = 10
     now = datetime.utcnow()
     rows: list[dict] = []
 
@@ -2032,7 +2032,7 @@ def collect_post_grid_defects(
         else:
             query_columns = list(
                 dict.fromkeys(
-                    [lot_id_column]
+                    [lot_id_column, db.get("chip_prod_id_column") or "chip_prod_id"]
                     + design_columns
                     + ([date_column] if date_column else [])
                     + defect_columns
