@@ -15,6 +15,7 @@ from agents import RunConfig, Runner, SQLiteSession
 from agents.exceptions import OutputGuardrailTripwireTriggered
 from agents.tracing import set_tracing_disabled
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -73,6 +74,13 @@ from .tools import (
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="공정 모니터링 데모")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 logger = logging.getLogger(__name__)
 
 DEBUG_PRINT_MAX_LEN = 160
@@ -113,7 +121,7 @@ SIMULATION_EVENT_TYPES = {
     "final_defect_chart",
 }
 DEFECT_CHART_TABLE = "mdh_base_view_total_4"
-INSPECTION_CHART_PROMPT = "검사불량률도 보여드릴까요?"
+INSPECTION_CHART_PROMPT = "공정불량률 차트를 함께 표시했습니다."
 
 
 @dataclass
@@ -2142,7 +2150,24 @@ def _load_defect_columns_from_label_map(
     connection_id = str(db_config.get("connection_id") or "").strip()
     schema_name = str(db_config.get("schema") or "public")
     if not connection_id:
-        return [], {}, {}
+        if defect_type == "공정":
+            columns = ["tvi_defect_rate_f", "ttm_defect_rate_f"]
+            label_map = {
+                "tvi_defect_rate_f": "공정 TVI 불량률",
+                "ttm_defect_rate_f": "공정 TTM 불량률",
+            }
+        else:
+            columns = [
+                "fr_defect_rate",
+                "gr_short_defect_rate",
+                "tr_short_defect_rate",
+            ]
+            label_map = {
+                "fr_defect_rate": "검사 FR 불량률",
+                "gr_short_defect_rate": "검사 GR 불량률",
+                "tr_short_defect_rate": "검사 TR 불량률",
+            }
+        return columns, label_map, {}
     try:
         result = execute_table_query(
             connection_id=connection_id,
@@ -2273,7 +2298,30 @@ def _build_defect_chart_payload(
     schema_name = str(db_config.get("schema") or "public")
     lot_id_column = db_config.get("lot_id_column") or "lot_id"
     if not connection_id:
-        return None
+        demo_values = {
+            "tvi_defect_rate_f": 0.8,
+            "ttm_defect_rate_f": 1.1,
+            "fr_defect_rate": 0.6,
+            "gr_short_defect_rate": 0.9,
+            "tr_short_defect_rate": 0.7,
+        }
+        lots = [
+            {
+                "label": label_map.get(column, column),
+                "defect_rate": demo_values.get(column, 0.5),
+            }
+            for column in columns
+        ]
+        metric_label = "공정불량률" if defect_type == "공정" else "검사불량률"
+        value_unit = _resolve_value_unit(unit_map, columns)
+        return {
+            "lots": lots,
+            "metric_label": metric_label,
+            "chart_type": "bar",
+            "bar_orientation": "vertical",
+            "value_unit": value_unit,
+            "source": "demo",
+        }
     available = _get_available_table_columns(connection_id, schema_name, table_name)
     if available:
         columns = [column for column in columns if column in available]
@@ -2362,9 +2410,16 @@ def _load_briefing_table_columns(rules: dict) -> dict[str, list[str]]:
     db_config = rules.get("db", {}) if isinstance(rules, dict) else {}
     connection_id = str(db_config.get("connection_id") or "").strip()
     if not connection_id:
-        logger.warning(
-            "Briefing columns not loaded: missing db.connection_id."
-        )
+        columns_map["post_grid_lot_search"] = [
+            "rank",
+            "lot_count",
+            "sample_lots",
+            "active_powder_base",
+            "active_powder_additives",
+            "ldn_avr_value",
+            "cast_dsgn_thk",
+        ]
+        logger.warning("Briefing columns not loaded: missing db.connection_id.")
         return columns_map
     schema_name = str(db_config.get("schema") or "public")
     limit = 100

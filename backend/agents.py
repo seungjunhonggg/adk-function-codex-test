@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from .config import MODEL_NAME
 from .guardrails import (
+    block_json_schema_output,
     block_tool_handoff_json_output,
     mlcc_input_guardrail,
     mlcc_output_guardrail,
@@ -560,7 +561,7 @@ simulation_flow_agent = _build_agent(
     ],
         model_settings=ModelSettings(tool_choice="required"),
 
-    output_guardrails=[block_tool_handoff_json_output],
+    output_guardrails=[block_tool_handoff_json_output, block_json_schema_output],
     handoffs=[],
     **MODEL_KWARGS,
 )
@@ -577,7 +578,7 @@ orchestrator_agent = _build_agent(
         "사용자가 너가 뭘 할수있는지 물어보면 시뮬레이션 관련 기능에 대해서만 언급하고,  recommendation/grid/briefing/chart changes는 언급하지 말아줘."
 
     ),
-    output_guardrails=[block_tool_handoff_json_output],
+    output_guardrails=[block_tool_handoff_json_output, block_json_schema_output],
     handoffs=[simulation_flow_agent],
     **MODEL_KWARGS,
 )

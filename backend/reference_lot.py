@@ -2032,7 +2032,7 @@ def collect_post_grid_defects(
         else:
             query_columns = list(
                 dict.fromkeys(
-                    [lot_id_column]
+                    [lot_id_column, db.get("chip_prod_id_column") or "chip_prod_id"]
                     + design_columns
                     + ([date_column] if date_column else [])
                     + defect_columns
