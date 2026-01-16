@@ -2061,6 +2061,21 @@ def collect_post_grid_defects(
             rows=rows_count,
             recent=recent_rows,
         )
+        if not connection_id and not rows:
+            rows = []
+            for idx in range(10):
+                demo_row = {
+                    lot_id_column: f"DEMO-{chip_prod_id[:8]}-{rank or 1:02d}-{idx + 1:03d}",
+                }
+                if chip_prod_id:
+                    demo_row[db.get("chip_prod_id_column") or "chip_prod_id"] = chip_prod_id
+                for column in design_columns:
+                    demo_row[column] = design.get(column)
+                for idx_col, column in enumerate(defect_columns, start=1):
+                    demo_row[column] = _demo_base_value(idx + idx_col, 0.01)
+                rows.append(demo_row)
+            rows_count = len(rows)
+            recent_rows = len(rows)
         display_rows: list[dict] = []
         if display_columns:
             for row in rows:
