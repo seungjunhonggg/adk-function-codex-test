@@ -4,7 +4,11 @@ from agents import Agent, AgentOutputSchema, ModelSettings
 from pydantic import BaseModel
 
 from .config import MODEL_NAME
-from .guardrails import mlcc_input_guardrail, mlcc_output_guardrail
+from .guardrails import (
+    block_tool_handoff_json_output,
+    mlcc_input_guardrail,
+    mlcc_output_guardrail,
+)
 from .observability import WorkflowRunHooks
 from .db_view_profile import build_db_agent_prompt, load_view_profile, normalize_view_profile
 from .tools import (
@@ -320,7 +324,7 @@ conversation_agent = _build_agent(
         "If the user mentions MLCC/LOT/기종/품번, keep the response aligned with MLCC support."
     ),
     input_guardrails=[mlcc_input_guardrail],
-    output_guardrails=[mlcc_output_guardrail],
+    output_guardrails=[mlcc_output_guardrail, block_tool_handoff_json_output],
     **MODEL_KWARGS,
 )
 
@@ -335,7 +339,7 @@ discussion_agent = _build_agent(
         "respond briefly that you can update it and ask which values to apply. "
         "Keep answers concise and helpful."
     ),
-    output_guardrails=[mlcc_output_guardrail],
+    output_guardrails=[mlcc_output_guardrail, block_tool_handoff_json_output],
     **MODEL_KWARGS,
 )
 
@@ -351,7 +355,7 @@ briefing_agent = _build_agent(
         "If design candidates exist, mention the top-ranked design briefly. "
         "Never mention internal tool names or routing."
     ),
-    output_guardrails=[mlcc_output_guardrail],
+    output_guardrails=[mlcc_output_guardrail, block_tool_handoff_json_output],
     **MODEL_KWARGS,
 )
 
@@ -556,6 +560,7 @@ simulation_flow_agent = _build_agent(
     ],
         model_settings=ModelSettings(tool_choice="required"),
 
+    output_guardrails=[block_tool_handoff_json_output],
     handoffs=[],
     **MODEL_KWARGS,
 )
@@ -572,6 +577,7 @@ orchestrator_agent = _build_agent(
         "사용자가 너가 뭘 할수있는지 물어보면 시뮬레이션 관련 기능에 대해서만 언급하고,  recommendation/grid/briefing/chart changes는 언급하지 말아줘."
 
     ),
+    output_guardrails=[block_tool_handoff_json_output],
     handoffs=[simulation_flow_agent],
     **MODEL_KWARGS,
 )

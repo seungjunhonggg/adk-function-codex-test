@@ -11,7 +11,8 @@ import logging
 import psycopg2
 from psycopg2 import sql
 
-from agents import Runner, SQLiteSession
+from agents import RunConfig, Runner, SQLiteSession
+from agents.exceptions import OutputGuardrailTripwireTriggered
 from agents.tracing import set_tracing_disabled
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -196,6 +197,32 @@ async def chat(request: ChatRequest) -> dict:
             workflow_id = "chat"
 
         pipeline_store.update(request.session_id, workflow_id=workflow_id)
+        def _retry_call_model_input_filter(filter_data):
+            model_data = filter_data.model_data
+            extra = (
+                "중요: tool/handoff/transfer JSON이나 내부 단계 출력은 절대 노출하지 마세요. "
+                "필요하면 내부적으로 tool/handoff만 호출하고 사용자에게는 자연어로만 답변하세요."
+            )
+            if model_data.instructions:
+                model_data.instructions = f"{model_data.instructions}\n{extra}"
+            else:
+                model_data.instructions = extra
+            return model_data
+
+        def _retry_session_input_callback(history, new_items):
+            if history and new_items:
+                last = history[-1]
+                first_new = new_items[0]
+                if (
+                    isinstance(last, dict)
+                    and isinstance(first_new, dict)
+                    and last.get("role") == "user"
+                    and first_new.get("role") == "user"
+                    and (last.get("content") or "") == (first_new.get("content") or "")
+                ):
+                    history = history[:-1]
+            return history + new_items
+
         try:
             run = await Runner.run(
                 entry_agent,
@@ -203,6 +230,23 @@ async def chat(request: ChatRequest) -> dict:
                 session=session,
                 hooks=WorkflowRunHooks(),
             )
+        except OutputGuardrailTripwireTriggered:
+            retry_config = RunConfig(
+                call_model_input_filter=_retry_call_model_input_filter,
+                session_input_callback=_retry_session_input_callback,
+            )
+            try:
+                run = await Runner.run(
+                    entry_agent,
+                    input=message,
+                    session=session,
+                    hooks=WorkflowRunHooks(),
+                    run_config=retry_config,
+                )
+            except OutputGuardrailTripwireTriggered:
+                return {"assistant_message": "내부 처리 단계 노출을 방지하기 위해 다시 요청해 주세요."}
+            except Exception:
+                return {"assistant_message": "응답 생성 중 오류가 발생했습니다."}
         except Exception:
             return {"assistant_message": "응답 생성 중 오류가 발생했습니다."}
 

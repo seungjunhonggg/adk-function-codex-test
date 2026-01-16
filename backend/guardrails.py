@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Iterable
 
@@ -51,6 +52,19 @@ MLCC_OUTPUT_SKIP_TOKENS = (
     "입력",
 )
 LOT_ID_RE = re.compile(r"\bLOT[-_ ]?[A-Z0-9]{2,}\b", re.IGNORECASE)
+RAW_TOOL_JSON_KEYS = {
+    "tool",
+    "tool_name",
+    "tool_call",
+    "tool_calls",
+    "function_call",
+    "arguments",
+    "handoff",
+    "handoffs",
+    "transfer",
+    "next_agent",
+}
+RAW_TOOL_JSON_TYPES = {"tool_call", "tool_calls", "function_call", "handoff", "handoff_call"}
 
 
 def _normalize_text(text: str) -> str:
@@ -73,6 +87,55 @@ def _looks_like_question(text: str) -> bool:
 
 def _has_lot_id(text: str) -> bool:
     return bool(LOT_ID_RE.search(text))
+
+
+def _strip_code_fences(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if len(lines) < 2:
+        return stripped
+    if not lines[-1].strip().startswith("```"):
+        return stripped
+    return "\n".join(lines[1:-1]).strip()
+
+
+def _looks_like_json(text: str) -> bool:
+    stripped = text.lstrip()
+    return stripped.startswith("{") or stripped.startswith("[")
+
+
+def _contains_tool_handoff_json(payload: object, tool_names: set[str] | None = None) -> bool:
+    if isinstance(payload, dict):
+        name_value = payload.get("name")
+        if isinstance(name_value, str) and (
+            "parameters" in payload or "arguments" in payload
+        ):
+            if not tool_names or name_value in tool_names:
+                return True
+        for key, value in payload.items():
+            if key in RAW_TOOL_JSON_KEYS:
+                return True
+            if key == "type" and isinstance(value, str) and value in RAW_TOOL_JSON_TYPES:
+                return True
+            if _contains_tool_handoff_json(value, tool_names):
+                return True
+    elif isinstance(payload, list):
+        return any(_contains_tool_handoff_json(item, tool_names) for item in payload)
+    return False
+
+
+def _extract_agent_tool_names(agent: object) -> set[str]:
+    tool_names: set[str] = set()
+    tools = getattr(agent, "tools", None)
+    if not isinstance(tools, list):
+        return tool_names
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        if isinstance(name, str) and name:
+            tool_names.add(name)
+    return tool_names
 
 
 def _collect_event_keys(session_id: str) -> set[str]:
@@ -144,6 +207,40 @@ def mlcc_output_guardrail(_ctx, _agent, output_value):
     if missing:
         return GuardrailFunctionOutput(
             output_info={"missing_events": missing},
+            tripwire_triggered=True,
+        )
+    return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
+
+
+@output_guardrail(name="block_tool_handoff_json_output")
+def block_tool_handoff_json_output(_ctx, _agent, output_value):
+    text = str(output_value or "")
+    if not text.strip():
+        return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
+    cleaned = _strip_code_fences(text)
+    if not _looks_like_json(cleaned):
+        return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
+    tool_names = _extract_agent_tool_names(_agent)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        if re.search(
+            r'"(tool_call|tool_calls|function_call|tool_name|handoff|handoffs|transfer)"',
+            cleaned,
+        ):
+            return GuardrailFunctionOutput(
+                output_info={"reason": "raw_tool_or_handoff_json"},
+                tripwire_triggered=True,
+            )
+        if tool_names and any(f'"{name}"' in cleaned for name in tool_names):
+            return GuardrailFunctionOutput(
+                output_info={"reason": "raw_tool_or_handoff_json"},
+                tripwire_triggered=True,
+            )
+        return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
+    if _contains_tool_handoff_json(payload, tool_names):
+        return GuardrailFunctionOutput(
+            output_info={"reason": "raw_tool_or_handoff_json"},
             tripwire_triggered=True,
         )
     return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)

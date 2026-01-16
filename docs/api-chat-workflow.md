@@ -167,8 +167,9 @@ flowchart TD
 - 에이전트 응답은 짧은 요약으로 유지해 `sessions.db` 컨텍스트 길이를 제한
 
 ## 가드레일
-현재 `/api/chat` 플로우에서는 가드레일을 사용하지 않습니다.  
-필요 시 각 에이전트에 input/output guardrail을 추가해 확장할 수 있습니다.
+`/api/chat` 플로우에서 일부 에이전트에 output guardrail을 적용합니다.  
+- 툴/핸드오프 JSON 등 내부 단계가 사용자에게 노출되는 경우를 차단
+- output guardrail 트립 시 1회 재실행 후, 재발 시 안내 문구 반환
 
 ## 이벤트 패널 업데이트 규칙
 UI는 `event_bus` 이벤트만 보고 갱신합니다.
