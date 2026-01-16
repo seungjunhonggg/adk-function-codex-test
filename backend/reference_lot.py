@@ -1614,7 +1614,7 @@ def _build_demo_rows(
     }
 
     chip_prod_id = filter_value or "DEMO-MODEL"
-    total_rows = 1 if filter_column == lot_id_column else 8
+    total_rows = 10
     now = datetime.utcnow()
     rows: list[dict] = []
 

@@ -54,6 +54,7 @@ from .reference_lot import (
     load_reference_rules,
     normalize_reference_rules,
     select_reference_from_params,
+    collect_post_grid_defects,
     get_defect_rates_by_lot_id,
     get_lot_detail_by_id,
 )
@@ -77,7 +78,7 @@ app = FastAPI(title="공정 모니터링 데모")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1344,6 +1345,7 @@ def _build_final_briefing_payload(
     defect_stats: dict,
     rules: dict | None = None,
     candidate_matches: dict | None = None,
+    post_grid_defects: dict | None = None,
     design_blocks_override: list[dict] | None = None,
     defect_rates: list[dict] | None = None,
     defect_rate_overall: float | None = None,
@@ -1386,6 +1388,8 @@ def _build_final_briefing_payload(
             payload["design_blocks"] = _build_design_blocks_from_matches(
                 candidate_matches, rules, column_labels
             )
+    if post_grid_defects is not None:
+        payload["post_grid_defects"] = post_grid_defects
     if design_blocks_override:
         payload["design_blocks"] = design_blocks_override
     return payload
@@ -3323,6 +3327,12 @@ async def _run_reference_pipeline(
         "columns": result_columns,
         "table": match_table,
     }
+    post_grid_defects = collect_post_grid_defects(
+        top_candidates,
+        rules,
+        chip_prod_id=chip_prod_id,
+        extra_columns=briefing_columns.get("post_grid_lot_search") or [],
+    )
     design_blocks_override = _build_design_blocks_from_matches(
         candidate_matches, rules, column_label_map
     )
@@ -3390,6 +3400,7 @@ async def _run_reference_pipeline(
         defect_stats,
         rules=rules,
         candidate_matches=candidate_matches,
+        post_grid_defects=post_grid_defects,
         design_blocks_override=design_blocks_override or None,
         defect_rates=defect_rates,
         defect_rate_overall=defect_rate_overall,
