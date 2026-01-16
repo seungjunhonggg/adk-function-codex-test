@@ -244,3 +244,26 @@ def block_tool_handoff_json_output(_ctx, _agent, output_value):
             tripwire_triggered=True,
         )
     return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
+
+
+@output_guardrail(name="block_json_schema_output")
+def block_json_schema_output(_ctx, _agent, output_value):
+    text = str(output_value or "")
+    if not text.strip():
+        return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
+    cleaned = _strip_code_fences(text)
+    if not _looks_like_json(cleaned):
+        return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return GuardrailFunctionOutput(
+            output_info={"reason": "raw_json_output"},
+            tripwire_triggered=True,
+        )
+    if isinstance(payload, (dict, list)):
+        return GuardrailFunctionOutput(
+            output_info={"reason": "raw_json_output"},
+            tripwire_triggered=True,
+        )
+    return GuardrailFunctionOutput(output_info={}, tripwire_triggered=False)
