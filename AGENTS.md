@@ -4,6 +4,8 @@
 - 이 과제의 목적은 MLCC 개발자들이 쓰는 플랫폼에서 행위를 도와주는 에이전트 개발이다.
 - MLCC와 관련된 과제임을 명확히 인지하고 이에 대한 배경지식을 기반으로 프롬프트나 기타 용어 설정할것
 - 워크플로우의 모든단계에서 수정 및 질문 요청에 대응할 수 있도록 구조 및 메모리를 설계해야한다.
+- 과제의 전체적인 플랜은 PLAN.md를 참고하여 늘 개발방향을 여기에 일치시켜야한다.
+- FRONTEND UI는 CHATGPT와 유사한 UI를 추구한다. https://chatgpt.com/ 참고.
 
 ## 0) Prime directive
 - Before doing any work, load and follow these instructions.
@@ -52,7 +54,7 @@ Prefer clarity and linear flow over abstraction, patterns, or defensive scaffold
 - **Linear control flow**: early returns are ok, but avoid deep nesting.
 - **Small functions**: ~20–40 lines per function unless unavoidable.
 - **Minimize indirection**: fewer layers, fewer wrappers, fewer helpers.
-
+-- ** 최대한 코드는 간결하고 컴팩트하게 핵심만 작성할것 !!!!!
 ---
 
 ## 2) What to avoid (do NOT do)
