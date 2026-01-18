@@ -269,17 +269,34 @@ def _build_simulation_stub(
             {"lot_id": "LOT-CAND-009", "chip_type_id": "CT-001", "defect_score": 0.24, "defect_metrics_summary": "ci_def_rate 0.24%, fr_defect_rate 200ppm"},
             {"lot_id": "LOT-CAND-010", "chip_type_id": "CT-001", "defect_score": 0.26, "defect_metrics_summary": "ci_def_rate 0.26%, fr_defect_rate 215ppm"},
         ]
-        # 레퍼런스 LOT 표(최종 선정 1개)를 만든다.
-        tables["reference_lot_table"] = [
-            {
-                "lot_id": "LOT-CAND-001",
-                "chip_type_id": "CT-001",
-                "defect_score": 0.08,
-                "defect_metrics_summary": "ci_def_rate 0.08%, fr_defect_rate 80ppm",
-            }
-        ]
-        # top-k 표를 만든다.
-        tables["top_k_table"] = [
+        # 선택된 칩기종을 후보 표에 반영한다.
+        selected_chip_type_id = selections.get("chip_type_id")
+        if selected_chip_type_id:
+            for row in tables["reference_lot_candidates_table"]:
+                row["chip_type_id"] = selected_chip_type_id
+        # 선택된 레퍼런스 LOT를 최종 표에 반영한다.
+        selected_ref_id = selections.get("reference_lot_id")
+        selected_ref_row = None
+        if selected_ref_id:
+            for row in tables["reference_lot_candidates_table"]:
+                if row.get("lot_id") == selected_ref_id:
+                    selected_ref_row = dict(row)
+                    break
+        if not selected_ref_row:
+            default_row = (
+                tables["reference_lot_candidates_table"][0]
+                if tables["reference_lot_candidates_table"]
+                else {}
+            )
+            selected_ref_row = dict(default_row) if default_row else {}
+            if selected_ref_row and selected_ref_id:
+                selected_ref_row["lot_id"] = selected_ref_id
+            if selected_ref_row and selected_chip_type_id:
+                selected_ref_row["chip_type_id"] = selected_chip_type_id
+        tables["reference_lot_table"] = [selected_ref_row] if selected_ref_row else []
+        # top-k 값을 적용해 표를 만든다.
+        top_k_value = configs.get("top_k") or 5
+        base_top_k_rows = [
             {
                 "rank": 1,
                 "active_powder_base": "A",
@@ -341,6 +358,36 @@ def _build_simulation_stub(
                 "predicted_capacity": 9.7,
             },
         ]
+        top_k_rows = base_top_k_rows[:top_k_value]
+        if top_k_value > len(base_top_k_rows):
+            last_row = top_k_rows[-1] if top_k_rows else {}
+            for _ in range(top_k_value - len(base_top_k_rows)):
+                # 부족한 랭크 데이터를 뒤에 이어서 만든다.
+                rank = len(top_k_rows) + 1
+                prev = last_row or {
+                    "ldn_avr_value": 1.0,
+                    "cast_dsgn_thk": 2.0,
+                    "grinding_l_avg": 0.30,
+                    "grinding_w_avg": 0.28,
+                    "grinding_t_avg": 0.27,
+                    "total_layer": 300,
+                    "predicted_capacity": 10.0,
+                }
+                next_row = {
+                    "rank": rank,
+                    "active_powder_base": chr(ord("A") + (rank - 1) % 26),
+                    "active_powder_additives": f"X{rank}",
+                    "ldn_avr_value": round(prev["ldn_avr_value"] - 0.02, 2),
+                    "cast_dsgn_thk": round(prev["cast_dsgn_thk"] - 0.05, 2),
+                    "grinding_l_avg": round(prev["grinding_l_avg"] - 0.01, 2),
+                    "grinding_w_avg": round(prev["grinding_w_avg"] - 0.01, 2),
+                    "grinding_t_avg": round(prev["grinding_t_avg"] - 0.01, 2),
+                    "total_layer": max(prev["total_layer"] - 5, 1),
+                    "predicted_capacity": round(prev["predicted_capacity"] - 0.2, 2),
+                }
+                top_k_rows.append(next_row)
+                last_row = next_row
+        tables["top_k_table"] = top_k_rows
         # 최근 6개월 유사 설계 표를 만든다.
         tables["recent_similar_table"] = [
             {
@@ -398,7 +445,7 @@ def _build_simulation_stub(
             {"metric": "fail_halt_ppm", "base": 70, "step": 10},
         ]
         defect_rows = []
-        for rank in range(1, 6):
+        for rank in range(1, top_k_value + 1):
             row = {"rank": rank}
             for spec in metric_specs:
                 row[spec["metric"]] = spec["base"] + spec["step"] * (rank - 1)
@@ -415,19 +462,21 @@ def _build_simulation_stub(
             "ttm_defect_rate_f",
         ]
         chart_series = []
-        for metric in chart_metrics:
-            points = [
-                {"x": f"rank_{row['rank']}", "y": row.get(metric, 0)}
-                for row in defect_rows
-            ]
-            chart_series.append({"name": metric, "points": points})
+        for row in defect_rows:
+            rank = row.get("rank")
+            points = []
+            for metric in chart_metrics:
+                points.append(
+                    {"x": metric, "y": row.get(metric, 0), "rank": rank}
+                )
+            chart_series.append({"name": f"rank {rank}", "points": points})
         charts = [
             {
                 "chart_id": "defect_rate_summary",
                 "type": chart_type,
                 "title": "공정불량률",
-                "subtitle": "rank 1~5 기준",
-                "x_label": "rank",
+                "subtitle": f"rank 1~{top_k_value} 기준",
+                "x_label": "불량종류",
                 "y_label": "불량률",
                 "unit": "%",
                 "series": chart_series,

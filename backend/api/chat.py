@@ -108,7 +108,14 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                     session_state["user_prefs"],
                 )
                 if not missing:
-                    blocks = await agents._build_briefing_blocks(tables, charts)
+                    briefing_start = state._pick_briefing_start_stage(dirty_stages)
+                    briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
+                        tables, charts, briefing_start
+                    )
+                    briefing_hint = state._build_briefing_hint(briefing_start)
+                    blocks = await agents._build_briefing_blocks(
+                        briefing_tables, briefing_charts, briefing_hint
+                    )
                 state._update_state(
                     session_state,
                     merged_params,

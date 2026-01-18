@@ -29,6 +29,7 @@ body {
   background: radial-gradient(circle at 20% 20%, #ffffff 0%, var(--bg) 45%),
     linear-gradient(120deg, var(--bg-2), var(--bg));
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 /* 배경 텍스처 */
@@ -308,8 +309,13 @@ body::before {
 }
 
 /* 테이블 스타일 */
+.table-card {
+  overflow-x: auto;
+}
+
 .table-card table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -319,6 +325,7 @@ body::before {
   padding: 8px 10px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   text-align: left;
+  white-space: nowrap;
 }
 
 .table-card th {
@@ -396,10 +403,13 @@ body::before {
 
 .chart-canvas {
   width: 100%;
+  max-width: 100%;
   border-radius: 12px;
   background: #fcfbf7;
   border: 1px solid rgba(0, 0, 0, 0.06);
   display: block;
+  height: auto;
+  aspect-ratio: 16 / 9;
 }
 
 .chart-grid-line {

@@ -612,11 +612,22 @@ function bindChartTooltip(svg, tooltipEl, frameEl) {
 // 데이터 포인트 메타를 설정한다.
 function setPointDataset(element, point, series, seriesIndex, index, unit) {
   const rawX = point.x ?? `#${index + 1}`;
-  const rank = extractRank(rawX, index + 1);
-  element.dataset.series = series.name || `Series ${seriesIndex + 1}`;
+  const seriesName = series.name || `Series ${seriesIndex + 1}`;
+  const rankFromPoint =
+    point && point.rank !== null && point.rank !== undefined ? point.rank : null;
+  const rankFromSeries = extractRank(seriesName, null);
+  const rankFromX = extractRank(rawX, index + 1);
+  let rankValue = rankFromPoint;
+  if (rankValue === null || rankValue === undefined) {
+    rankValue = rankFromSeries;
+  }
+  if (rankValue === null || rankValue === undefined) {
+    rankValue = rankFromX;
+  }
+  element.dataset.series = seriesName;
   element.dataset.xLabel = String(rawX);
   element.dataset.yValue = String(point.y ?? 0);
-  element.dataset.rank = String(rank);
+  element.dataset.rank = String(rankValue);
   element.dataset.unit = unit || "";
 }
 
@@ -642,13 +653,16 @@ function formatChartValue(value) {
 
 // rank 정보를 추출한다.
 function extractRank(rawValue, fallback) {
+  if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+    return rawValue;
+  }
   if (typeof rawValue === "string") {
     const match = rawValue.match(/\d+/);
     if (match) {
       return Number(match[0]);
     }
   }
-  return fallback;
+  return fallback !== undefined ? fallback : null;
 }
 
 // 오버라이드 페이로드를 만든다.

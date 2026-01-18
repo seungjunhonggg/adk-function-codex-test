@@ -346,6 +346,48 @@ def _collect_dirty_stages(fields: list[str]) -> list[str]:
     return sorted(dirty, key=lambda stage: order_map.get(stage, 99))
 
 
+def _pick_briefing_start_stage(dirty_stages: list[str]) -> str | None:
+    # 변경된 단계 중 가장 앞 단계를 고른다.
+    if not dirty_stages:
+        return None
+    return dirty_stages[0]
+
+
+def _collect_stage_range(start_stage: str | None) -> list[str]:
+    # 브리핑 범위에 포함될 단계를 만든다.
+    if not start_stage or start_stage not in STAGE_ORDER:
+        return list(STAGE_ORDER)
+    start_index = STAGE_ORDER.index(start_stage)
+    return STAGE_ORDER[start_index:]
+
+
+def _filter_briefing_outputs(
+    tables: dict[str, Any], charts: list[dict[str, Any]], start_stage: str | None
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    # 브리핑 범위에 맞는 표/차트를 고른다.
+    stages = _collect_stage_range(start_stage)
+    table_keys: list[str] = []
+    chart_ids: list[str] = []
+    for stage in stages:
+        table_keys.extend(_STAGE_TABLE_KEYS.get(stage, []))
+        chart_ids.extend(_STAGE_CHART_IDS.get(stage, []))
+    selected_tables = {key: tables[key] for key in table_keys if key in tables}
+    if not chart_ids:
+        selected_charts = list(charts)
+    else:
+        selected_charts = [
+            chart for chart in charts if chart.get("chart_id") in chart_ids
+        ]
+    return selected_tables, selected_charts, stages
+
+
+def _build_briefing_hint(start_stage: str | None) -> str | None:
+    # 변경 반영 안내 문구를 만든다.
+    if not start_stage:
+        return None
+    return f"{start_stage} 단계 변경사항을 반영했습니다. 첫 문장에서 짧게 언급하세요."
+
+
 def _mark_dirty(state: dict[str, Any], stages: list[str]) -> None:
     # dirty 상태를 기록한다.
     if not stages:

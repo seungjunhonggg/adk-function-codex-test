@@ -190,6 +190,8 @@ briefing_agent = Agent(
         "- block.type은 text|table_ref|chart_ref만 사용\n"
         "- text는 한국어로 작성\n"
         "- 표/차트 값만 인용\n"
+        "- briefing_hint가 있으면 첫 문장에 반영\n"
+        "- 전달된 tables/charts 안에서만 block을 만든다\n"
         "- children 지표는 언급하지 않음\n"
         "- 길이 목표: 500~1k 토큰\n"
         "필수 table_key: input_params_table, chip_type_candidates_table, "
@@ -245,10 +247,15 @@ async def _parse_update_with_llm(message: str) -> UpdateDecision:
 
 
 async def _build_briefing_blocks(
-    tables: dict[str, Any], charts: list[dict[str, Any]]
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+    briefing_hint: str | None = None,
 ) -> list[dict[str, Any]]:
     # 브리핑 입력을 만든다.
-    payload = json.dumps({"tables": tables, "charts": charts}, ensure_ascii=False)
+    payload_obj: dict[str, Any] = {"tables": tables, "charts": charts}
+    if briefing_hint:
+        payload_obj["briefing_hint"] = briefing_hint
+    payload = json.dumps(payload_obj, ensure_ascii=False)
     # LLM으로 브리핑 블록을 만든다.
     result = await Runner.run(briefing_agent, payload)
     # Pydantic 객체를 dict로 변환한다.

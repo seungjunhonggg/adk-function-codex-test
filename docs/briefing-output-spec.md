@@ -9,7 +9,7 @@
 - 목표 길이: 2k~3k 토큰(LLM 서술 텍스트만).
 - 모든 표 데이터는 결정적 처리(LLM은 표 계산 금지).
 - 차트는 데이터만 생성하고 렌더링은 UI에서 처리.
-- 불량률 차트 기본은 막대, 사용자 요청 시 선/스캐터로 변경.
+- 공정불량률 차트 기본은 막대, 사용자 요청 시 선/스캐터로 변경.
 - 브리핑에 노출되는 모든 컬럼 라벨은 한글 매핑 테이블을 사용.
 
 ## 출력 구조
@@ -51,8 +51,10 @@
 - 표: `defect_rate_table`
 - 필드: rank, ci_def_rate, fr_defect_rate, gr_short_defect_rate, tvi_defect_rate_f, tr_short_defect_rate, df_def_rate, soul_defect_rate_f, gm_defect_rate_f, pi_def_rate, mf_def_rate, ttm_defect_rate_f, sum_burn_ppm, sum_8585_ppm, fail_halt_ppm.
 - 값은 평균값만 사용(최소/최대 제외).
+- row: rank 1~5 (rank 개수만큼).
 - 차트: 공정불량률(기본 막대).
 - 차트 지표: ci_def_rate, tvi_defect_rate_f, df_def_rate, pi_def_rate, mf_def_rate, ttm_defect_rate_f.
+- x축: 불량종류(차트 지표), series: rank 1~k.
 - 불량률 지표 목록은 DB 설정으로 관리.
 - children 지표는 기본 브리핑에서 숨기고 요청 시만 확장 표로 제공.
 
@@ -67,21 +69,21 @@ UI는 아래 스키마를 받아 차트를 렌더링한다.
   "chart_id": "defect_rate_summary",
   "type": "bar | line | scatter",
   "title": "공정불량률",
-  "x_label": "rank",
+  "x_label": "불량종류",
   "y_label": "불량률",
   "series": [
     {
-      "name": "ci_def_rate",
+      "name": "rank 1",
       "points": [
-        { "x": "rank_1", "y": 0.12 },
-        { "x": "rank_2", "y": 0.18 }
+        { "x": "ci_def_rate", "y": 0.12, "rank": 1 },
+        { "x": "tvi_defect_rate_f", "y": 0.06, "rank": 1 }
       ]
     },
     {
-      "name": "tvi_defect_rate_f",
+      "name": "rank 2",
       "points": [
-        { "x": "rank_1", "y": 0.06 },
-        { "x": "rank_2", "y": 0.08 }
+        { "x": "ci_def_rate", "y": 0.18, "rank": 2 },
+        { "x": "tvi_defect_rate_f", "y": 0.08, "rank": 2 }
       ]
     }
   ],
