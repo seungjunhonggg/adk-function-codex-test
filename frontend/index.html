@@ -19,33 +19,10 @@
     <!-- 전체 앱 레이아웃 -->
     <div class="app">
       <!-- 좌측 네비게이션 -->
-      <aside class="nav">
-        <div class="nav__brand">
-          <div class="nav__logo">◎</div>
-          <div>
-            <div class="nav__title">MLCC Agent</div>
-            <div class="nav__subtitle">demo workspace</div>
-          </div>
-        </div>
-        <button class="nav__action" type="button">New chat</button>
-        <div class="nav__section">
-          <div class="nav__section-title">Workspace</div>
-          <ul class="nav__list">
-            <li class="nav__item is-active">Agent structure</li>
-            <li class="nav__item">Simulation flow</li>
-            <li class="nav__item">MLCC notes</li>
-            <li class="nav__item">API specs</li>
-            <li class="nav__item">Defect metrics</li>
-          </ul>
-        </div>
-        <div class="nav__section">
-          <div class="nav__section-title">Shortcuts</div>
-          <ul class="nav__list">
-            <li class="nav__item">Open cases</li>
-            <li class="nav__item">Recent runs</li>
-            <li class="nav__item">Evaluation</li>
-          </ul>
-        </div>
+            <aside class="nav">
+        <button class="nav__action" id="newChatButton" type="button">
+          New chat
+        </button>
       </aside>
 
       <!-- 중앙 채팅 영역 -->
@@ -63,17 +40,20 @@
             <button class="ghost-btn" id="clearButton" type="button">
               Clear
             </button>
+            <button
+              class="panel-toggle"
+              id="insightsToggle"
+              type="button"
+              aria-label="Toggle panel"
+            >
+              &gt;
+            </button>
           </div>
         </header>
 
         <!-- 메시지 스레드 -->
         <section class="thread" id="thread">
-          <div class="empty-state" id="emptyState">
-            <div class="empty-state__title">Demo conversation</div>
-            <div class="empty-state__subtitle">
-              Try a simulation request or ask for a briefing.
-            </div>
-          </div>
+          
         </section>
 
         <!-- 입력 영역 -->
@@ -88,10 +68,7 @@
               Send
             </button>
           </div>
-          <div class="composer__hint">
-            Press Enter to send, Shift+Enter for newline
-          </div>
-        </form>
+                  </form>
       </main>
 
       <!-- 우측 상태 패널 -->

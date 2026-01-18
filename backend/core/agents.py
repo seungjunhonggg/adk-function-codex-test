@@ -23,6 +23,80 @@ MODEL_KWARGS = {"model": MODEL_NAME} if MODEL_NAME else {}
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+
+# 단계 카탈로그를 정의한다.
+STAGE_CATALOG = [
+    {
+        "id": "1-1",
+        "name": "입력 수집",
+        "keywords": ["입력", "조건", "파라미터", "스펙", "온도", "전압", "용량", "치수", "분말"],
+    },
+    {
+        "id": "1-2",
+        "name": "칩기종 후보",
+        "keywords": ["칩기종","후보", "매칭", "유사"],
+    },
+    {
+        "id": "1-3",
+        "name": "REF LOT 선정",
+        "keywords": ["ref lot", "레퍼런스", "LOT", "선정", "후보"],
+    },
+    {
+        "id": "1-4",
+        "name": "API payload",
+        "keywords": ["payload", "API", "전송", "요청", "ref", "sim"],
+    },
+    {
+        "id": "1-5",
+        "name": "Top-K",
+        "keywords": ["top-k", "rank", "순위", "예측", "용량", "capacity"],
+    },
+    {
+        "id": "1-6",
+        "name": "최근 유사 LOT",
+        "keywords": ["최근", "유사", "6개월", "match", "대표 LOT"],
+    },
+    {
+        "id": "1-7",
+        "name": "불량률/차트",
+        "keywords": ["불량률", "defect", "차트", "metric", "ppm", "percent"],
+    },
+    {
+        "id": "1-8",
+        "name": "브리핑",
+        "keywords": ["브리핑", "요약", "결론", "설명"],
+    },
+]
+
+
+def _format_stage_catalog() -> str:
+    # 단계 카탈로그를 텍스트로 만든다.
+    lines = []
+    for item in STAGE_CATALOG:
+        keywords = ", ".join(item["keywords"])
+        lines.append(f"{item['id']} - {item['name']} | keywords: {keywords}")
+    return "\n".join(lines)
+
+
+# 단계 카탈로그 텍스트를 준비한다.
+STAGE_CATALOG_TEXT = _format_stage_catalog()
+
+# 커맨드 에이전트 힌트를 정의한다.
+COMMAND_STAGE_HINT = (
+    "\n\n[단계 카탈로그]\n"
+    f"{STAGE_CATALOG_TEXT}\n"
+    "규칙: 사용자 질문에서 단계 의미를 추론해 target_stage를 지정해."
+)
+
+# 업데이트 에이전트 힌트를 정의한다.
+UPDATE_STAGE_HINT = (
+    "\n\n[필드 매핑 힌트]\n"
+    "- ref lot/레퍼런스/LOT 변경 -> selections.reference_lot_id\n"
+    "- 칩기종/칩 타입 변경 -> selections.chip_type_id\n"
+    "- top-k/순위 변경 -> configs.top_k\n"
+    "\n[단계 카탈로그]\n"
+    f"{STAGE_CATALOG_TEXT}"
+)
 # 라우팅 에이전트를 정의한다.
 router_agent = Agent(
     name="RouteAgent",
@@ -48,7 +122,8 @@ command_agent = Agent(
         "단계가 명시되면 target_stage에 1-4 형식으로 넣어.\n"
         "단계가 없으면 target_stage는 null.\n"
         "action과 target_stage만 출력해."
-    ),
+        "ex) 테스트 데이터로 시뮬레이션 해줘 -> run"
+    ) + COMMAND_STAGE_HINT,
     output_type=CommandDecision,
     **MODEL_KWARGS,
 )
@@ -80,7 +155,7 @@ update_agent = Agent(
         "- 변경 의도만 있고 값이 없으면 missing_fields에 해당 키를 넣어.\n"
         "- 값이 있는 항목만 채워. 나머지는 null.\n"
         "missing_fields 포함해서 출력해."
-    ),
+    ) + UPDATE_STAGE_HINT,
     output_type=UpdateDecision,
     **MODEL_KWARGS,
 )
@@ -116,7 +191,7 @@ briefing_agent = Agent(
         "- text는 한국어로 작성\n"
         "- 표/차트 값만 인용\n"
         "- children 지표는 언급하지 않음\n"
-        "- 길이 목표: 2k~3k 토큰\n"
+        "- 길이 목표: 500~1k 토큰\n"
         "필수 table_key: input_params_table, chip_type_candidates_table, "
         "reference_lot_candidates_table, reference_lot_table, top_k_table, "
         "recent_similar_table, defect_rate_table\n"
@@ -158,6 +233,7 @@ async def _decide_command_with_llm(session, message: str) -> CommandDecision:
 
 async def _parse_input_with_llm(message: str) -> InputParams:
     # LLM으로 입력값을 추출한다.
+    print(message)
     result = await Runner.run(input_agent, message)
     return result.final_output
 

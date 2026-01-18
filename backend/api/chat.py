@@ -16,6 +16,7 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
     # 라우트에 맞는 기본 응답을 만든다.
     if route == "simulation":
         command = await agents._decide_command_with_llm(session,request.message)
+        print("route = ", route, "command_action = ",command.action)
         if command.action == "explain_stage":
             # 요청 단계가 없으면 마지막 설명 단계를 재사용한다.
             target_stage = state._normalize_stage(

@@ -17,6 +17,10 @@ const messageInputEl = document.getElementById("messageInput");
 const demoToggleEl = document.getElementById("demoToggle");
 const sessionIdEl = document.getElementById("sessionId");
 const clearButtonEl = document.getElementById("clearButton");
+const newChatButtonEl = document.getElementById("newChatButton");
+const insightsToggleEl = document.getElementById("insightsToggle");
+const appEl = document.querySelector(".app");
+const insightsEl = document.querySelector(".insights");
 const apiKeyInputEl = document.getElementById("apiKeyInput");
 const modelInputEl = document.getElementById("modelInput");
 const baseUrlInputEl = document.getElementById("baseUrlInput");
@@ -30,6 +34,7 @@ const state = {
   apiKey: "",
   model: "",
   baseUrl: "",
+  insightsHidden: false,
 };
 
 // 로컬 저장소에서 상태를 복원한다.
@@ -411,13 +416,23 @@ async function sendMessage(text) {
   }
 }
 
-// 세션 정보를 화면에 반영한다.
+// 존재하는 요소만 세션 정보를 반영한다.
 function updateSessionUi() {
-  sessionIdEl.textContent = state.sessionId;
-  demoToggleEl.checked = state.demoMode;
-  apiKeyInputEl.value = state.apiKey;
-  modelInputEl.value = state.model;
-  baseUrlInputEl.value = state.baseUrl;
+  if (sessionIdEl) {
+    sessionIdEl.textContent = state.sessionId;
+  }
+  if (demoToggleEl) {
+    demoToggleEl.checked = state.demoMode;
+  }
+  if (apiKeyInputEl) {
+    apiKeyInputEl.value = state.apiKey;
+  }
+  if (modelInputEl) {
+    modelInputEl.value = state.model;
+  }
+  if (baseUrlInputEl) {
+    baseUrlInputEl.value = state.baseUrl;
+  }
 }
 
 // 입력 폼 이벤트를 등록한다.
@@ -444,41 +459,82 @@ messageInputEl.addEventListener("keydown", (event) => {
 // 입력창 크기를 자동으로 갱신한다.
 messageInputEl.addEventListener("input", resizeInput);
 
-// 데모 모드 토글을 저장한다.
-demoToggleEl.addEventListener("change", () => {
-  state.demoMode = demoToggleEl.checked;
-  saveState();
-});
+// 데모 모드 토글이 있을 때만 상태를 저장한다.
+if (demoToggleEl) {
+  demoToggleEl.addEventListener("change", () => {
+    state.demoMode = demoToggleEl.checked;
+    saveState();
+  });
+}
 
-// API 키 입력을 저장한다.
-apiKeyInputEl.addEventListener("input", () => {
-  state.apiKey = apiKeyInputEl.value.trim();
-  saveState();
-});
+// 옵션 입력 필드가 있을 때만 상태를 저장한다.
+if (apiKeyInputEl) {
+  apiKeyInputEl.addEventListener("input", () => {
+    state.apiKey = apiKeyInputEl.value.trim();
+    saveState();
+  });
+}
 
-// 모델 입력을 저장한다.
-modelInputEl.addEventListener("input", () => {
-  state.model = modelInputEl.value.trim();
-  saveState();
-});
+if (modelInputEl) {
+  modelInputEl.addEventListener("input", () => {
+    state.model = modelInputEl.value.trim();
+    saveState();
+  });
+}
 
-// Base URL 입력을 저장한다.
-baseUrlInputEl.addEventListener("input", () => {
-  state.baseUrl = baseUrlInputEl.value.trim();
-  saveState();
-});
+if (baseUrlInputEl) {
+  baseUrlInputEl.addEventListener("input", () => {
+    state.baseUrl = baseUrlInputEl.value.trim();
+    saveState();
+  });
+}
 
-// 대화 내용을 초기화한다.
-clearButtonEl.addEventListener("click", () => {
+// 오른쪽 패널 토글을 처리한다.
+function setInsightsHidden(hidden) {
+  state.insightsHidden = hidden;
+  if (appEl) {
+    appEl.classList.toggle("is-insights-hidden", hidden);
+  }
+  if (insightsEl) {
+    insightsEl.style.display = hidden ? "none" : "flex";
+  }
+  if (insightsToggleEl) {
+    insightsToggleEl.textContent = hidden ? "<" : ">";
+    insightsToggleEl.setAttribute("aria-pressed", String(hidden));
+  }
+}
+
+if (insightsToggleEl) {
+  insightsToggleEl.addEventListener("click", () => {
+    setInsightsHidden(!state.insightsHidden);
+  });
+}
+
+// 대화를 초기화한다.
+function resetConversation() {
   state.sessionId = createSessionId();
   state.messages = [];
   saveState();
   updateSessionUi();
   renderMessages();
-});
+}
+
+// 버튼이 있을 때만 대화 초기화를 처리한다.
+if (clearButtonEl) {
+  clearButtonEl.addEventListener("click", () => {
+    resetConversation();
+  });
+}
+
+if (newChatButtonEl) {
+  newChatButtonEl.addEventListener("click", () => {
+    resetConversation();
+  });
+}
 
 // 초기 로딩을 수행한다.
 loadState();
 updateSessionUi();
 renderMessages();
 resizeInput();
+setInsightsHidden(state.insightsHidden);

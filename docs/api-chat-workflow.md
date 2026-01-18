@@ -118,3 +118,6 @@
 ## Casual route (LLM)
 - route=casual uses CasualAgent to generate text blocks.
 - tables/charts are empty for casual replies.
+
+## Stage catalog mapping
+- CommandAgent/UpdateAgent use a stage catalog to map user phrases (e.g., REF LOT) to internal stage IDs.

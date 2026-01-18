@@ -172,6 +172,12 @@ body::before {
   color: var(--muted);
 }
 
+.topbar__right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .dot {
   width: 8px;
   height: 8px;
@@ -190,6 +196,20 @@ body::before {
   border-radius: 10px;
   cursor: pointer;
   font-size: 12px;
+}
+
+.panel-toggle {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
 }
 
 .thread {
@@ -234,21 +254,22 @@ body::before {
   padding: 14px 18px;
   border-radius: 16px;
   max-width: 70%;
-  background: var(--ink);
-  color: #fff;
+  background: #cfe8ff;
+  color: var(--ink);
   box-shadow: var(--shadow);
   line-height: 1.6;
 }
 
 .assistant-card {
-  background: var(--surface);
+  background: transparent;
   border-radius: var(--radius-lg);
   padding: 18px;
-  box-shadow: var(--shadow);
-  border: 1px solid rgba(0, 0, 0, 0.04);
+  box-shadow: none;
+  border: none;
   display: grid;
   gap: 14px;
-  max-width: 88%;
+  max-width: none;
+  width: 100%;
 }
 
 .assistant-meta {
@@ -350,6 +371,7 @@ body::before {
   font-family: inherit;
   background: #fff;
   resize: none;
+  min-height: 64px;
 }
 
 .send-btn {
@@ -377,6 +399,14 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+.app.is-insights-hidden {
+  grid-template-columns: 230px minmax(0, 1fr);
+}
+
+.app.is-insights-hidden .insights {
+  display: none;
 }
 
 .insights__header {
