@@ -1,0 +1,85 @@
+from typing import Any, Literal
+
+from pydantic import BaseModel
+
+
+# 요청 스키마를 정의한다.
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    overrides: dict[str, Any] | None = None
+    demo: bool = False
+
+
+# 응답 스키마를 정의한다.
+class ChatResponse(BaseModel):
+    route: str
+    blocks: list[dict[str, Any]]
+    tables: dict[str, Any]
+    charts: list[dict[str, Any]]
+
+
+# 라우팅 결과 스키마를 정의한다.
+class RouteDecision(BaseModel):
+    route: Literal["casual", "simulation"]
+
+
+# 커맨드 결과 스키마를 정의한다.
+class CommandDecision(BaseModel):
+    action: Literal["run", "update_input", "explain_stage"]
+    target_stage: str | None = None
+
+
+# 입력 파라미터 스키마를 정의한다.
+class InputParams(BaseModel):
+    temperature: str | None = None
+    voltage: str | None = None
+    size: str | None = None
+    capacity: str | None = None
+    dev_flag: str | None = None
+    powder_size: str | None = None
+    chip_type: str | None = None
+
+
+# 변경 대상 스키마를 정의한다.
+class UpdateSelections(BaseModel):
+    chip_type_id: str | None = None
+    reference_lot_id: str | None = None
+
+
+class UpdateConfigs(BaseModel):
+    top_k: int | None = None
+
+
+class UpdateUserPrefs(BaseModel):
+    chart_type: Literal["bar", "line", "scatter"] | None = None
+
+
+class UpdateDecision(BaseModel):
+    input_params: InputParams | None = None
+    selections: UpdateSelections | None = None
+    configs: UpdateConfigs | None = None
+    user_prefs: UpdateUserPrefs | None = None
+    missing_fields: list[str] = []
+
+
+# 브리핑 블록 스키마를 정의한다.
+class BriefingBlock(BaseModel):
+    type: Literal["text", "table_ref", "chart_ref"]
+    section: str | None = None
+    value: str | None = None
+    table_key: str | None = None
+    chart_id: str | None = None
+
+
+class BriefingOutput(BaseModel):
+    blocks: list[BriefingBlock]
+
+
+# 캐주얼 응답 구조를 정의한다.
+class CasualOutput(BaseModel):
+    answer: str
+
+
+class ExplainOutput(BaseModel):
+    answer: str

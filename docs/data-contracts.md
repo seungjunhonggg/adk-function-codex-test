@@ -34,6 +34,7 @@
 입력(사용자):
 - temperature, voltage, size, capacity, dev_flag, powder_size
 - 선택: chip_type_name 또는 chip_type_id
+- chip_type은 부분 문자열 입력 가능(1-3에서 LIKE 검색)
 출력:
 - input_params (정규화)
 - has_chip_type 플래그
@@ -51,6 +52,7 @@
 - 칩 LOT 마스터: mdh_base_view_total_4
 입력:
 - chip_type_id 리스트
+- chip_type 부분 입력이면 LIKE %chip_type% 조건으로 조회
 규칙:
 - 핵심 설계 인자 NotNull + 불량률 최소 조건(DB 규칙 관리)
 출력:

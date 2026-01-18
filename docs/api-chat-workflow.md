@@ -22,6 +22,7 @@
 3. explain_stage면 ExplainAgent로 근거 설명을 생성(필요한 표/차트만 포함)
 4. run/update_input이면 1-1~1-8 실행
 5. 1-1 입력에서 chip_type이 포함되면 1-2 생략
+6. chip_type이 부분 입력이면 1-3에서 LIKE %chip_type% 조건으로 조회
 
 ## 입력 파싱 (LLM)
 - simulation + action이 run일 때 InputAgent로 1-1 입력을 추출한다.
@@ -96,9 +97,9 @@
 ## 메모리/상태
 - 세션 메모리: input_params, chip_type, stage_outputs, stage_notes, last_explain_stage
 - 중간 변경 시 무효화:
-  - 1-1 변경 → 1-2~1-7 재계산
-  - 1-3 변경 → 1-4~1-7 재계산
-  - 1-5 변경(k 변경) → 1-6~1-7 재계산
+  - 1-1 변경 → 1-2~1-8 재계산
+  - 1-3 변경 → 1-4~1-8 재계산
+  - 1-5 변경(k 변경) → 1-6~1-8 재계산
 - 값 없는 변경 요청은 pending_action으로 보류하고 재질문한다.
 - 입력 파싱 결과는 기존 input_params와 병합한다(새 값만 덮어씀).
 - 데모 단계는 인메모리 세션 스토어로 상태를 유지한다.
@@ -113,3 +114,7 @@
 ## 에러 처리 (간단)
 - 필수 입력 누락: 즉시 안내 후 재질문.
 - API 실패: ref 기반 요약만 제공 + 재시도 안내.
+
+## Casual route (LLM)
+- route=casual uses CasualAgent to generate text blocks.
+- tables/charts are empty for casual replies.

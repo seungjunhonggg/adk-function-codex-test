@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <!-- 기본 메타 설정 -->
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MLCC Agent Demo</title>
+    <!-- 폰트 로드 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <!-- 스타일 시트 연결 -->
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <!-- 전체 앱 레이아웃 -->
+    <div class="app">
+      <!-- 좌측 네비게이션 -->
+      <aside class="nav">
+        <div class="nav__brand">
+          <div class="nav__logo">◎</div>
+          <div>
+            <div class="nav__title">MLCC Agent</div>
+            <div class="nav__subtitle">demo workspace</div>
+          </div>
+        </div>
+        <button class="nav__action" type="button">New chat</button>
+        <div class="nav__section">
+          <div class="nav__section-title">Workspace</div>
+          <ul class="nav__list">
+            <li class="nav__item is-active">Agent structure</li>
+            <li class="nav__item">Simulation flow</li>
+            <li class="nav__item">MLCC notes</li>
+            <li class="nav__item">API specs</li>
+            <li class="nav__item">Defect metrics</li>
+          </ul>
+        </div>
+        <div class="nav__section">
+          <div class="nav__section-title">Shortcuts</div>
+          <ul class="nav__list">
+            <li class="nav__item">Open cases</li>
+            <li class="nav__item">Recent runs</li>
+            <li class="nav__item">Evaluation</li>
+          </ul>
+        </div>
+      </aside>
+
+      <!-- 중앙 채팅 영역 -->
+      <main class="chat">
+        <header class="topbar">
+          <div class="topbar__left">
+            <div class="topbar__badge">ChatGPT-style UI</div>
+            <div class="topbar__title">MLCC Assistant</div>
+          </div>
+          <div class="topbar__right">
+            <div class="topbar__status">
+              <span class="dot dot--green"></span>
+              <span>Connected</span>
+            </div>
+            <button class="ghost-btn" id="clearButton" type="button">
+              Clear
+            </button>
+          </div>
+        </header>
+
+        <!-- 메시지 스레드 -->
+        <section class="thread" id="thread">
+          <div class="empty-state" id="emptyState">
+            <div class="empty-state__title">Demo conversation</div>
+            <div class="empty-state__subtitle">
+              Try a simulation request or ask for a briefing.
+            </div>
+          </div>
+        </section>
+
+        <!-- 입력 영역 -->
+        <form class="composer" id="composer">
+          <div class="composer__field">
+            <textarea
+              id="messageInput"
+              rows="1"
+              placeholder="Ask anything about MLCC workflow..."
+            ></textarea>
+            <button class="send-btn" id="sendButton" type="submit">
+              Send
+            </button>
+          </div>
+          <div class="composer__hint">
+            Press Enter to send, Shift+Enter for newline
+          </div>
+        </form>
+      </main>
+
+      <!-- 우측 상태 패널 -->
+      <aside class="insights">
+        <div class="insights__header">
+          <div class="insights__title">Run status</div>
+          <div class="insights__subtitle">Planner panel</div>
+        </div>
+        <div class="insights__card">
+          <div class="insights__label">Session</div>
+          <div class="insights__value" id="sessionId">-</div>
+        </div>
+        <div class="insights__card">
+          <div class="insights__label">Demo mode</div>
+          <label class="toggle">
+            <input type="checkbox" id="demoToggle" />
+            <span class="toggle__track"></span>
+          </label>
+        </div>
+        <div class="insights__card">
+          <div class="insights__label">Pipeline</div>
+          <div class="stage-list">
+            <div class="stage-row">
+              <span>1-1 Input</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+            <div class="stage-row">
+              <span>1-2 Chip</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+            <div class="stage-row">
+              <span>1-3 Ref Lot</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+            <div class="stage-row">
+              <span>1-4 Payload</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+            <div class="stage-row">
+              <span>1-5 Top-K</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+            <div class="stage-row">
+              <span>1-6 Recent</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+            <div class="stage-row">
+              <span>1-7 Defect</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+            <div class="stage-row">
+              <span>1-8 Brief</span>
+              <span class="stage-dot is-idle"></span>
+            </div>
+          </div>
+        </div>
+        <div class="insights__card insights__card--skeleton">
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- 스크립트 로드 -->
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
