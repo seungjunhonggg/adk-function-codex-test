@@ -188,14 +188,18 @@ briefing_agent = Agent(
         "아래 표/차트 데이터를 보고 브리핑 블록을 생성해.\n"
         "- 출력 형식: blocks 배열만\n"
         "- block.type은 text|table_ref|chart_ref만 사용\n"
-        "- text는 한국어로 작성\n"
+        "- text는 한국어로 친절한 문장으로 작성.\n"
         "- 표/차트 값만 인용\n"
         "- briefing_hint가 있으면 첫 문장에 반영\n"
+        "- stage_sequence가 있으면 그 순서대로 작성\n"
+        "- stage_sequence.note(근거)만 사용하며, 근거로 사용하였다는 말을 직접적으로 언급하지 않음.\n"
+        "- 각 stage는 text 1개 + 관련 table_ref/chart_ref를 바로 배치\n"
         "- 전달된 tables/charts 안에서만 block을 만든다\n"
+        "- 테이블에서 __로 시작하는 메타 필드는 무시\n"
         "- children 지표는 언급하지 않음\n"
         "- 길이 목표: 500~1k 토큰\n"
         "필수 table_key: input_params_table, chip_type_candidates_table, "
-        "reference_lot_candidates_table, reference_lot_table, top_k_table, "
+        "reference_lot_candidates_table, top_k_table, "
         "recent_similar_table, defect_rate_table\n"
         "필수 chart_id: defect_rate_summary\n"
     ),
@@ -250,11 +254,14 @@ async def _build_briefing_blocks(
     tables: dict[str, Any],
     charts: list[dict[str, Any]],
     briefing_hint: str | None = None,
+    stage_sequence: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     # 브리핑 입력을 만든다.
     payload_obj: dict[str, Any] = {"tables": tables, "charts": charts}
     if briefing_hint:
         payload_obj["briefing_hint"] = briefing_hint
+    if stage_sequence:
+        payload_obj["stage_sequence"] = stage_sequence
     payload = json.dumps(payload_obj, ensure_ascii=False)
     # LLM으로 브리핑 블록을 만든다.
     result = await Runner.run(briefing_agent, payload)

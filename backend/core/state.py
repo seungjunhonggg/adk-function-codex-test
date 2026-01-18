@@ -1,5 +1,6 @@
 from datetime import datetime
-from typing import Any
+import re
+from typing import Any, Callable
 
 from .agents import _build_explain_answer
 from .schemas import InputParams, UpdateDecision
@@ -371,6 +372,7 @@ def _filter_briefing_outputs(
     for stage in stages:
         table_keys.extend(_STAGE_TABLE_KEYS.get(stage, []))
         chart_ids.extend(_STAGE_CHART_IDS.get(stage, []))
+    table_keys = [key for key in table_keys if key != "reference_lot_table"]
     selected_tables = {key: tables[key] for key in table_keys if key in tables}
     if not chart_ids:
         selected_charts = list(charts)
@@ -381,11 +383,138 @@ def _filter_briefing_outputs(
     return selected_tables, selected_charts, stages
 
 
+def _extract_reason_note(note: str | None) -> str:
+    # 단계 근거만 추린다.
+    if not note:
+        return ""
+    return note.splitlines()[0]
+
+
+def _build_briefing_sequence(
+    stage_notes: dict[str, str], start_stage: str | None
+) -> list[dict[str, Any]]:
+    # 브리핑 순서 목록을 만든다.
+    stages = _collect_stage_range(start_stage)
+    sequence: list[dict[str, Any]] = []
+    for stage in stages:
+        table_keys = [
+            key
+            for key in _STAGE_TABLE_KEYS.get(stage, [])
+            if key != "reference_lot_table"
+        ]
+        sequence.append(
+            {
+                "stage": stage,
+                "note": _extract_reason_note(stage_notes.get(stage)),
+                "table_keys": table_keys,
+                "chart_ids": _STAGE_CHART_IDS.get(stage, []),
+            }
+        )
+    return sequence
+
+
 def _build_briefing_hint(start_stage: str | None) -> str | None:
     # 변경 반영 안내 문구를 만든다.
     if not start_stage:
         return None
     return f"{start_stage} 단계 변경사항을 반영했습니다. 첫 문장에서 짧게 언급하세요."
+
+
+def _extract_row_value(row: dict[str, Any], keys: list[str]) -> Any:
+    # 여러 키 중 값이 있는 첫 번째를 찾는다.
+    for key in keys:
+        if key in row:
+            return row.get(key)
+    return None
+
+
+def _parse_number(value: Any) -> int | float | None:
+    # 숫자 값으로 변환한다.
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        match = re.search(r"\d+", value)
+        if match:
+            return int(match.group())
+    return None
+
+
+def _find_min_rank(rows: list[dict[str, Any]], keys: list[str]) -> int | float | None:
+    # 최소 rank 값을 찾는다.
+    values: list[int | float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw = _extract_row_value(row, keys)
+        parsed = _parse_number(raw)
+        if parsed is not None:
+            values.append(parsed)
+    return min(values) if values else None
+
+
+def _mark_selected_rows(
+    rows: list[dict[str, Any]], is_selected: Callable[[dict[str, Any]], bool]
+) -> None:
+    # 선택된 행을 강조 표시한다.
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if is_selected(row):
+            row["__row_state"] = "selected"
+        else:
+            if row.get("__row_state") == "selected":
+                row.pop("__row_state", None)
+
+
+def _apply_table_highlights(tables: dict[str, Any], selections: dict[str, Any]) -> None:
+    # 테이블 강조 표시를 적용한다.
+    # 레퍼런스 LOT 후보 강조 처리.
+    ref_rows = tables.get("reference_lot_candidates_table", [])
+    selected_ref_id = selections.get("reference_lot_id")
+    if not selected_ref_id:
+        ref_selected = tables.get("reference_lot_table", [])
+        if isinstance(ref_selected, list) and ref_selected:
+            selected_ref_id = _extract_row_value(
+                ref_selected[0], ["lot_id", "LOT ID"]
+            )
+    if selected_ref_id and isinstance(ref_rows, list):
+        _mark_selected_rows(
+            ref_rows,
+            lambda row: _extract_row_value(row, ["lot_id", "LOT ID"])
+            == selected_ref_id,
+        )
+    # top-k 표의 rank 1 강조 처리.
+    top_rows = tables.get("top_k_table", [])
+    if isinstance(top_rows, list) and top_rows:
+        min_rank = _find_min_rank(top_rows, ["rank", "순위"])
+        if min_rank is not None:
+            _mark_selected_rows(
+                top_rows,
+                lambda row: _parse_number(_extract_row_value(row, ["rank", "순위"]))
+                == min_rank,
+            )
+    # 최근 유사 설계 표의 candidate_rank 1 강조 처리.
+    recent_rows = tables.get("recent_similar_table", [])
+    if isinstance(recent_rows, list) and recent_rows:
+        min_rank = _find_min_rank(recent_rows, ["candidate_rank", "후보 순위", "rank", "순위"])
+        if min_rank is not None:
+            _mark_selected_rows(
+                recent_rows,
+                lambda row: _parse_number(
+                    _extract_row_value(row, ["candidate_rank", "후보 순위", "rank", "순위"])
+                )
+                == min_rank,
+            )
+    # 불량률 표의 rank 1 강조 처리.
+    defect_rows = tables.get("defect_rate_table", [])
+    if isinstance(defect_rows, list) and defect_rows:
+        min_rank = _find_min_rank(defect_rows, ["rank", "순위"])
+        if min_rank is not None:
+            _mark_selected_rows(
+                defect_rows,
+                lambda row: _parse_number(_extract_row_value(row, ["rank", "순위"]))
+                == min_rank,
+            )
 
 
 def _mark_dirty(state: dict[str, Any], stages: list[str]) -> None:

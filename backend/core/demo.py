@@ -293,6 +293,13 @@ def _build_simulation_stub(
                 selected_ref_row["lot_id"] = selected_ref_id
             if selected_ref_row and selected_chip_type_id:
                 selected_ref_row["chip_type_id"] = selected_chip_type_id
+        # 선택된 레퍼런스 LOT를 후보 표에서 강조 표시한다.
+        if not selected_ref_id and selected_ref_row:
+            selected_ref_id = selected_ref_row.get("lot_id")
+        if selected_ref_id:
+            for row in tables["reference_lot_candidates_table"]:
+                if row.get("lot_id") == selected_ref_id:
+                    row["__row_state"] = "selected"
         tables["reference_lot_table"] = [selected_ref_row] if selected_ref_row else []
         # top-k 값을 적용해 표를 만든다.
         top_k_value = configs.get("top_k") or 5
@@ -387,6 +394,10 @@ def _build_simulation_stub(
                 }
                 top_k_rows.append(next_row)
                 last_row = next_row
+        # rank 1 행을 강조 표시한다.
+        for row in top_k_rows:
+            if row.get("rank") == 1:
+                row["__row_state"] = "selected"
         tables["top_k_table"] = top_k_rows
         # 최근 6개월 유사 설계 표를 만든다.
         tables["recent_similar_table"] = [
@@ -426,6 +437,10 @@ def _build_simulation_stub(
                 "representative_lot_id": "LOT-2025-134",
             },
         ]
+        # candidate_rank 1 행을 강조 표시한다.
+        for row in tables["recent_similar_table"]:
+            if row.get("candidate_rank") == 1:
+                row["__row_state"] = "selected"
         # 불량률 요약 표를 만든다(모든 metric 포함).
         # ??? ?? rank ??? wide ??? ???.
         metric_specs = [

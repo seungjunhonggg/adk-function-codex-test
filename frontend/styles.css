@@ -328,6 +328,12 @@ body::before {
   white-space: nowrap;
 }
 
+.table-row--highlight td {
+  font-weight: 700;
+  color: #1a4fb6;
+  background: rgba(186, 50, 50, 0.06);
+}
+
 .table-card th {
   font-weight: 600;
   color: var(--muted);

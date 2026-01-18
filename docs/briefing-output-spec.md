@@ -27,9 +27,9 @@
 
 ### 3) 레퍼런스 LOT 선정 (1-3)
 - 표: `reference_lot_candidates_table` (후보 10개)
-- 표: `reference_lot_table`
 - 필드: lot_id, chip_type_id, defect_score, defect_metrics_summary.
 - 서술: 선정 이유 2~3문장(불량률 최소 기준).
+- 선정 LOT는 후보 표에서 강조 표시(행 강조).
 
 ### 4) 최적화 탐색 요약 (1-4)
 - 서술 전용: 탐색 범위, 탐색 방식, API 호출 시각.

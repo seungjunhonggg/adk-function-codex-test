@@ -5,6 +5,7 @@
 - 브리핑 출력은 한글 라벨만 사용한다(매핑 테이블 필수).
 - 표 데이터는 결정적 처리, LLM은 서술만 담당한다.
 - raw 배열(top-k/불량률 상세)은 저장만 하고 컨텍스트에 넣지 않는다.
+- 표 row에 UI용 메타 필드(__row_state 등)를 포함할 수 있으며 화면 표시에서는 제외한다.
 
 ## 설정 테이블 (DB 기반)
 ### report_table_columns
@@ -58,6 +59,8 @@
 출력:
 - reference_lot_candidates: {lot_id, chip_type_id, defect_score, defect_metrics_summary} 10개
 - reference_lot: {lot_id, chip_type_id, defect_score, defect_metrics_summary}
+브리핑:
+- 후보 테이블만 노출하고 선택 행을 강조한다.
 
 ## Step 1-4: 최적화 API 호출
 소스:

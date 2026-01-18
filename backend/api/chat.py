@@ -107,14 +107,25 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                     session_state["selections"],
                     session_state["user_prefs"],
                 )
+                # 테이블 강조 표시를 적용한다.
+                state._apply_table_highlights(tables, session_state["selections"])
                 if not missing:
                     briefing_start = state._pick_briefing_start_stage(dirty_stages)
+                    # 브리핑 범위를 단계별로 정리한다.
                     briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
                         tables, charts, briefing_start
                     )
+                    # 브리핑 순서를 단계 기준으로 만든다.
+                    briefing_sequence = state._build_briefing_sequence(
+                        stage_notes, briefing_start
+                    )
+                    # 변경 반영 문구를 준비한다.
                     briefing_hint = state._build_briefing_hint(briefing_start)
                     blocks = await agents._build_briefing_blocks(
-                        briefing_tables, briefing_charts, briefing_hint
+                        briefing_tables,
+                        briefing_charts,
+                        briefing_hint,
+                        briefing_sequence,
                     )
                 state._update_state(
                     session_state,
@@ -150,8 +161,17 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                 session_state["selections"],
                 session_state["user_prefs"],
             )
+            # 테이블 강조 표시를 적용한다.
+            state._apply_table_highlights(tables, session_state["selections"])
             if not missing:
-                blocks = await agents._build_briefing_blocks(tables, charts)
+                # 브리핑 순서를 단계 기준으로 만든다.
+                briefing_sequence = state._build_briefing_sequence(stage_notes, None)
+                briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
+                    tables, charts, None
+                )
+                blocks = await agents._build_briefing_blocks(
+                    briefing_tables, briefing_charts, None, briefing_sequence
+                )
             state._update_state(
                 session_state,
                 merged_params,

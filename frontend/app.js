@@ -218,7 +218,19 @@ function renderTableCard(tableKey, tables) {
     return card;
   }
 
-  const columns = Object.keys(rows[0] || {});
+  // 메타 필드를 제외한 컬럼 목록을 만든다.
+  const columnSet = new Set();
+  rows.forEach((row) => {
+    if (!row || typeof row !== "object") {
+      return;
+    }
+    Object.keys(row).forEach((key) => {
+      if (!key.startsWith("__")) {
+        columnSet.add(key);
+      }
+    });
+  });
+  const columns = Array.from(columnSet);
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const headerRow = document.createElement("tr");
@@ -233,6 +245,10 @@ function renderTableCard(tableKey, tables) {
   const tbody = document.createElement("tbody");
   rows.forEach((row) => {
     const tr = document.createElement("tr");
+    // 강조 표시가 필요한 행인지 확인한다.
+    if (row && row.__row_state) {
+      tr.classList.add("table-row--highlight");
+    }
     columns.forEach((col) => {
       const td = document.createElement("td");
       const value = row[col] === null || row[col] === undefined ? "" : row[col];

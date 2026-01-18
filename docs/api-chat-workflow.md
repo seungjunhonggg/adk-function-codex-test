@@ -77,6 +77,9 @@
 - children 지표는 기본 숨김, 요청 시 확장.
 - structured output은 OpenAI ADK structured output을 사용한다.
 - 응답 직전에 report_column_labels 기반 한글 라벨 매핑을 적용한다.
+- stage_sequence(단계 순서/근거/표/차트 키)를 함께 전달해 단계별 순서로 블록을 만든다.
+- stage_notes는 근거 라인만 추려 stage_sequence.note로 전달한다.
+- 1-3 단계는 reference_lot_candidates_table만 사용하고 선택 행을 강조한다.
 
 ### LLM 출력 형식 예시
 ```json
