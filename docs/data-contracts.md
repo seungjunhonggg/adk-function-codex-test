@@ -353,11 +353,12 @@
  - design_input_date 최근 6개월 조건
 출력:
 - defect_rate_table:
-  {candidate_rank, defect_metric, defect_avg, defect_min, defect_max}
-- defect_chart_data (브리핑 스펙의 차트 스키마)
+  {rank, ci_def_rate, fr_defect_rate, gr_short_defect_rate, tvi_defect_rate_f, tr_short_defect_rate, df_def_rate, soul_defect_rate_f, gm_defect_rate_f, pi_def_rate, mf_def_rate, ttm_defect_rate_f, sum_burn_ppm, sum_8585_ppm, fail_halt_ppm}
+- 값은 평균값만 사용(최소/최대 제외)
+- defect_chart_data (공정불량률 차트, rank 기준 6개 지표 시리즈)
 비고:
 - 지표 목록은 `report_defect_groups`, `report_defect_children`에서 관리.
-- 브리핑 기본 표에는 metric만 노출하고 children은 요청 시 확장한다.
+- 브리핑 기본 표에는 중분류 metric 컬럼만 노출하고 children은 요청 시 확장한다.
 
 ## 불량률 지표 시드 (초안)
 아래 JSON을 DB 초기값으로 등록한다.

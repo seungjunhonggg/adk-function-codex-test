@@ -26,9 +26,10 @@
    - candidate_rank 기준 4~5개 제공
 6. 불량률 지표 더미
    - report_defect_groups/children 설정을 그대로 사용
-   - candidate_rank 기준 4~5개 제공
-   - metric은 전부 포함
-
+   - rank 1~5 행 5개 제공
+   - 컬럼: ci_def_rate, fr_defect_rate, gr_short_defect_rate, tvi_defect_rate_f, tr_short_defect_rate,
+     df_def_rate, soul_defect_rate_f, gm_defect_rate_f, pi_def_rate, mf_def_rate, ttm_defect_rate_f,
+     sum_burn_ppm, sum_8585_ppm, fail_halt_ppm
 ## 출력 제약
 - 브리핑은 한글 라벨만 사용한다.
 - 표/차트는 결정적 처리로 생성한다.

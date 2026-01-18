@@ -248,6 +248,7 @@ function renderTableCard(tableKey, tables) {
 
 // 차트 블록을 만든다.
 function renderChartCard(chartId, charts) {
+  // 차트 카드 래퍼를 만든다.
   const card = document.createElement("div");
   card.className = "block chart-card";
   const label = document.createElement("div");
@@ -255,6 +256,7 @@ function renderChartCard(chartId, charts) {
   label.textContent = chartId || "chart";
   card.appendChild(label);
 
+  // 요청한 차트 데이터를 찾는다.
   const chart =
     charts && chartId ? charts.find((item) => item.chart_id === chartId) : null;
   if (!chart) {
@@ -265,92 +267,388 @@ function renderChartCard(chartId, charts) {
     return card;
   }
 
+  // 차트 헤더(타이틀/서브텍스트)를 만든다.
+  const header = document.createElement("div");
+  header.className = "chart-header";
   const title = document.createElement("div");
   title.className = "chart-title";
   title.textContent = chart.title || "Chart";
-  card.appendChild(title);
+  header.appendChild(title);
+  const subtitleText = chart.subtitle || chart.notes;
+  if (subtitleText) {
+    const subtitle = document.createElement("div");
+    subtitle.className = "chart-subtitle";
+    subtitle.textContent = subtitleText;
+    header.appendChild(subtitle);
+  }
+  card.appendChild(header);
 
-  const svg = buildSvgChart(chart);
-  svg.classList.add("chart-canvas");
-  card.appendChild(svg);
+  // 시리즈 색상을 정리한다.
+  const chartSeries = normalizeChartSeries(chart.series || []);
+  const seriesVisibility = chartSeries.map(() => true);
+  const chartPayload = { ...chart, series: chartSeries };
+
+  // 시리즈 토글이 필요하면 범례를 만든다.
+  if (chartSeries.length > 1) {
+    const legend = buildChartLegend(
+      chartSeries,
+      seriesVisibility,
+      () => renderSvg()
+    );
+    card.appendChild(legend);
+  }
+
+  // 차트 프레임과 툴팁을 만든다.
+  const frame = document.createElement("div");
+  frame.className = "chart-frame";
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  frame.appendChild(tooltip);
+  card.appendChild(frame);
+
+  // SVG를 다시 그리는 함수를 만든다.
+  function renderSvg() {
+    const prev = frame.querySelector("svg");
+    if (prev) {
+      prev.remove();
+    }
+    const svg = buildSvgChart(chartPayload, seriesVisibility);
+    frame.insertBefore(svg, tooltip);
+    bindChartTooltip(svg, tooltip, frame);
+  }
+
+  // 첫 렌더를 수행한다.
+  renderSvg();
   return card;
 }
 
 // SVG 차트를 생성한다.
-function buildSvgChart(chart) {
-  const width = 360;
-  const height = 180;
-  const padding = 28;
+function buildSvgChart(chart, seriesVisibility) {
+  // 기본 차트 영역 치수를 정의한다.
+  const width = 640;
+  const height = 300;
+  const padding = { top: 26, right: 24, bottom: 54, left: 66 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.classList.add("chart-canvas");
 
-  const series = chart.series && chart.series[0] ? chart.series[0] : null;
-  const points = series ? series.points || [] : [];
-  const values = points.map((point) => Number(point.y) || 0);
+  // 표시할 시리즈와 값 범위를 계산한다.
+  const seriesList = Array.isArray(chart.series) ? chart.series : [];
+  const visibleSeries = seriesList.filter(
+    (_series, index) => !seriesVisibility || seriesVisibility[index]
+  );
+  const baseSeries = visibleSeries[0] || seriesList[0] || { points: [] };
+  const basePoints = Array.isArray(baseSeries.points) ? baseSeries.points : [];
+  const pointCount = Math.max(basePoints.length, 1);
+  const values = [];
+  visibleSeries.forEach((series) => {
+    const points = Array.isArray(series.points) ? series.points : [];
+    points.forEach((point) => {
+      const numeric = Number(point.y);
+      if (Number.isFinite(numeric)) {
+        values.push(numeric);
+      }
+    });
+  });
   const maxValue = Math.max(...values, 1);
 
-  const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  axis.setAttribute("x1", padding);
-  axis.setAttribute("y1", height - padding);
-  axis.setAttribute("x2", width - padding);
-  axis.setAttribute("y2", height - padding);
-  axis.setAttribute("stroke", "rgba(0,0,0,0.2)");
-  axis.setAttribute("stroke-width", "1");
-  svg.appendChild(axis);
+  // 그리드와 Y축 눈금을 그린다.
+  const yTickCount = 5;
+  for (let i = 0; i <= yTickCount; i += 1) {
+    const y = padding.top + (plotHeight * i) / yTickCount;
+    const value = maxValue - (maxValue * i) / yTickCount;
+    const grid = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    grid.setAttribute("x1", padding.left);
+    grid.setAttribute("y1", y);
+    grid.setAttribute("x2", width - padding.right);
+    grid.setAttribute("y2", y);
+    grid.setAttribute("class", "chart-grid-line");
+    svg.appendChild(grid);
 
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", padding.left - 10);
+    label.setAttribute("y", y + 4);
+    label.setAttribute("text-anchor", "end");
+    label.setAttribute("class", "chart-axis-text");
+    label.textContent = formatChartValue(value);
+    svg.appendChild(label);
+  }
+
+  // X축 눈금을 그린다.
+  const xTickCount = Math.min(6, basePoints.length || 1);
+  const tickStep =
+    basePoints.length > 1 ? (basePoints.length - 1) / Math.max(xTickCount - 1, 1) : 1;
+  for (let i = 0; i < xTickCount; i += 1) {
+    const index = Math.round(i * tickStep);
+    const x =
+      padding.left + (plotWidth * index) / Math.max(basePoints.length - 1, 1);
+    const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    tick.setAttribute("x1", x);
+    tick.setAttribute("y1", height - padding.bottom);
+    tick.setAttribute("x2", x);
+    tick.setAttribute("y2", height - padding.bottom + 6);
+    tick.setAttribute("class", "chart-axis-line");
+    svg.appendChild(tick);
+
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", x);
+    label.setAttribute("y", height - padding.bottom + 22);
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("class", "chart-axis-text");
+    label.textContent = formatChartLabel(basePoints[index]?.x, index);
+    svg.appendChild(label);
+  }
+
+  // 축 라인을 그린다.
+  const axisX = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  axisX.setAttribute("x1", padding.left);
+  axisX.setAttribute("y1", height - padding.bottom);
+  axisX.setAttribute("x2", width - padding.right);
+  axisX.setAttribute("y2", height - padding.bottom);
+  axisX.setAttribute("class", "chart-axis-line");
+  svg.appendChild(axisX);
+
+  const axisY = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  axisY.setAttribute("x1", padding.left);
+  axisY.setAttribute("y1", padding.top);
+  axisY.setAttribute("x2", padding.left);
+  axisY.setAttribute("y2", height - padding.bottom);
+  axisY.setAttribute("class", "chart-axis-line");
+  svg.appendChild(axisY);
+
+  // 축 라벨을 그린다.
+  if (chart.x_label) {
+    const xLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    xLabel.setAttribute("x", padding.left + plotWidth / 2);
+    xLabel.setAttribute("y", height - 10);
+    xLabel.setAttribute("text-anchor", "middle");
+    xLabel.setAttribute("class", "chart-axis-label");
+    xLabel.textContent = chart.x_label;
+    svg.appendChild(xLabel);
+  }
+  if (chart.y_label) {
+    const yLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    yLabel.setAttribute(
+      "transform",
+      `translate(16 ${padding.top + plotHeight / 2}) rotate(-90)`
+    );
+    yLabel.setAttribute("text-anchor", "middle");
+    yLabel.setAttribute("class", "chart-axis-label");
+    yLabel.textContent = chart.y_label;
+    svg.appendChild(yLabel);
+  }
+
+  // 차트 타입에 맞게 시리즈를 그린다.
+  const unit = chart.unit || chart.y_unit || "";
   if (chart.type === "line") {
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    let d = "";
-    points.forEach((point, index) => {
-      const x =
-        padding +
-        (index / Math.max(points.length - 1, 1)) * (width - padding * 2);
-      const y =
-        height -
-        padding -
-        ((Number(point.y) || 0) / maxValue) * (height - padding * 2);
-      d += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+    visibleSeries.forEach((series, seriesIndex) => {
+      const points = Array.isArray(series.points) ? series.points : [];
+      let pathData = "";
+      points.forEach((point, index) => {
+        const x =
+          padding.left +
+          (plotWidth * index) / Math.max(points.length - 1, 1);
+        const y =
+          height -
+          padding.bottom -
+          ((Number(point.y) || 0) / maxValue) * plotHeight;
+        pathData += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+      });
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", pathData);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", series.color || "#0d6c63");
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("class", "chart-line");
+      svg.appendChild(path);
+
+      points.forEach((point, index) => {
+        const value = Number(point.y) || 0;
+        const x =
+          padding.left +
+          (plotWidth * index) / Math.max(points.length - 1, 1);
+        const y =
+          height -
+          padding.bottom -
+          (value / maxValue) * plotHeight;
+        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", x);
+        dot.setAttribute("cy", y);
+        dot.setAttribute("r", "4");
+        dot.setAttribute("fill", series.color || "#0d6c63");
+        dot.setAttribute("class", "chart-point");
+        setPointDataset(dot, point, series, seriesIndex, index, unit);
+        svg.appendChild(dot);
+      });
     });
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "#0d6c63");
-    path.setAttribute("stroke-width", "2");
-    svg.appendChild(path);
   } else if (chart.type === "scatter") {
-    points.forEach((point, index) => {
-      const x =
-        padding +
-        (index / Math.max(points.length - 1, 1)) * (width - padding * 2);
-      const y =
-        height -
-        padding -
-        ((Number(point.y) || 0) / maxValue) * (height - padding * 2);
-      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      dot.setAttribute("cx", x);
-      dot.setAttribute("cy", y);
-      dot.setAttribute("r", "4");
-      dot.setAttribute("fill", "#b5842f");
-      svg.appendChild(dot);
+    visibleSeries.forEach((series, seriesIndex) => {
+      const points = Array.isArray(series.points) ? series.points : [];
+      points.forEach((point, index) => {
+        const value = Number(point.y) || 0;
+        const x =
+          padding.left +
+          (plotWidth * index) / Math.max(points.length - 1, 1);
+        const y =
+          height -
+          padding.bottom -
+          (value / maxValue) * plotHeight;
+        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", x);
+        dot.setAttribute("cy", y);
+        dot.setAttribute("r", "4.5");
+        dot.setAttribute("fill", series.color || "#b5842f");
+        dot.setAttribute("class", "chart-point");
+        setPointDataset(dot, point, series, seriesIndex, index, unit);
+        svg.appendChild(dot);
+      });
     });
   } else {
-    const barWidth = (width - padding * 2) / Math.max(points.length, 1);
-    points.forEach((point, index) => {
-      const value = Number(point.y) || 0;
-      const barHeight = (value / maxValue) * (height - padding * 2);
-      const x = padding + index * barWidth + barWidth * 0.2;
-      const y = height - padding - barHeight;
-      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      rect.setAttribute("x", x);
-      rect.setAttribute("y", y);
-      rect.setAttribute("width", barWidth * 0.6);
-      rect.setAttribute("height", barHeight);
-      rect.setAttribute("rx", "4");
-      rect.setAttribute("fill", "#0d6c63");
-      svg.appendChild(rect);
+    const seriesCount = Math.max(visibleSeries.length, 1);
+    const groupWidth = plotWidth / pointCount;
+    const barGroupWidth = groupWidth * 0.72;
+    const barWidth = barGroupWidth / seriesCount;
+    visibleSeries.forEach((series, seriesIndex) => {
+      const points = Array.isArray(series.points) ? series.points : [];
+      points.forEach((point, index) => {
+        const value = Number(point.y) || 0;
+        const barHeight = (value / maxValue) * plotHeight;
+        const x =
+          padding.left +
+          index * groupWidth +
+          (groupWidth - barGroupWidth) / 2 +
+          seriesIndex * barWidth;
+        const y = height - padding.bottom - barHeight;
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", x);
+        rect.setAttribute("y", y);
+        rect.setAttribute("width", barWidth * 0.9);
+        rect.setAttribute("height", barHeight);
+        rect.setAttribute("rx", "4");
+        rect.setAttribute("fill", series.color || "#0d6c63");
+        rect.setAttribute("class", "chart-bar");
+        setPointDataset(rect, point, series, seriesIndex, index, unit);
+        svg.appendChild(rect);
+      });
     });
   }
 
   return svg;
+}
+
+// 시리즈 색상을 정리한다.
+function normalizeChartSeries(seriesList) {
+  const palette = ["#0d6c63", "#b5842f", "#2f6db5", "#8c2f5b", "#2f8c6e"];
+  return seriesList.map((series, index) => ({
+    ...series,
+    color: series.color || palette[index % palette.length],
+  }));
+}
+
+// 시리즈 토글 범례를 만든다.
+function buildChartLegend(seriesList, visibility, onToggle) {
+  const legend = document.createElement("div");
+  legend.className = "chart-legend";
+  seriesList.forEach((series, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chart-legend__item";
+    const swatch = document.createElement("span");
+    swatch.className = "chart-legend__swatch";
+    swatch.style.backgroundColor = series.color || "#0d6c63";
+    const text = document.createElement("span");
+    text.textContent = series.name || `Series ${index + 1}`;
+    button.appendChild(swatch);
+    button.appendChild(text);
+    button.addEventListener("click", () => {
+      const activeCount = visibility.filter(Boolean).length;
+      if (visibility[index] && activeCount <= 1) {
+        return;
+      }
+      visibility[index] = !visibility[index];
+      button.classList.toggle("is-off", !visibility[index]);
+      onToggle();
+    });
+    legend.appendChild(button);
+  });
+  return legend;
+}
+
+// 툴팁 이벤트를 연결한다.
+function bindChartTooltip(svg, tooltipEl, frameEl) {
+  function hideTooltip() {
+    tooltipEl.classList.remove("is-visible");
+  }
+
+  svg.addEventListener("mousemove", (event) => {
+    const target = event.target.closest(".chart-point, .chart-bar");
+    if (!target || !target.dataset) {
+      hideTooltip();
+      return;
+    }
+    const series = target.dataset.series || "-";
+    const xLabel = target.dataset.xLabel || "-";
+    const yValue = formatChartValue(Number(target.dataset.yValue));
+    const unit = target.dataset.unit || "";
+    const rank = target.dataset.rank || "-";
+    tooltipEl.innerHTML = `
+      <div class="chart-tooltip__title">${series}</div>
+      <div class="chart-tooltip__row">값: ${yValue}${unit ? ` ${unit}` : ""}</div>
+      <div class="chart-tooltip__row">X: ${xLabel}</div>
+      <div class="chart-tooltip__row">rank: ${rank}</div>
+    `;
+    const rect = frameEl.getBoundingClientRect();
+    tooltipEl.style.left = `${event.clientX - rect.left}px`;
+    tooltipEl.style.top = `${event.clientY - rect.top}px`;
+    tooltipEl.classList.add("is-visible");
+  });
+
+  svg.addEventListener("mouseleave", hideTooltip);
+}
+
+// 데이터 포인트 메타를 설정한다.
+function setPointDataset(element, point, series, seriesIndex, index, unit) {
+  const rawX = point.x ?? `#${index + 1}`;
+  const rank = extractRank(rawX, index + 1);
+  element.dataset.series = series.name || `Series ${seriesIndex + 1}`;
+  element.dataset.xLabel = String(rawX);
+  element.dataset.yValue = String(point.y ?? 0);
+  element.dataset.rank = String(rank);
+  element.dataset.unit = unit || "";
+}
+
+// X축 라벨을 정리한다.
+function formatChartLabel(value, index) {
+  if (value === null || value === undefined || value === "") {
+    return `#${index + 1}`;
+  }
+  return String(value);
+}
+
+// 숫자 값을 보기 좋게 포맷한다.
+function formatChartValue(value) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+  const rounded = Math.round(value * 100) / 100;
+  if (Number.isInteger(rounded)) {
+    return String(rounded);
+  }
+  return rounded.toFixed(2);
+}
+
+// rank 정보를 추출한다.
+function extractRank(rawValue, fallback) {
+  if (typeof rawValue === "string") {
+    const match = rawValue.match(/\d+/);
+    if (match) {
+      return Number(match[0]);
+    }
+  }
+  return fallback;
 }
 
 // 오버라이드 페이로드를 만든다.

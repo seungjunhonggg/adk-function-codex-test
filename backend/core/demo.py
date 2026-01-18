@@ -28,10 +28,6 @@ def _get_demo_label_mapping() -> dict[str, str]:
         "date_range_start": "기간 시작",
         "date_range_end": "기간 종료",
         "representative_lot_id": "대표 LOT",
-        "defect_metric": "불량률 지표",
-        "defect_avg": "평균",
-        "defect_min": "최소",
-        "defect_max": "최대",
     }
 
 
@@ -169,12 +165,10 @@ def _build_stage_notes(
     notes["1-6"] = "\n".join([line1, line2, line3])
     # 1-7 불량률 집계 근거를 만든다.
     defect_rows = tables.get("defect_rate_table", [])
-    metric_set = {
-        row.get("defect_metric")
-        for row in defect_rows
-        if isinstance(row, dict) and row.get("defect_metric")
-    }
-    metric_count = len(metric_set)
+    # metric 컬럼 개수를 계산한다.
+    first_row = defect_rows[0] if isinstance(defect_rows, list) and defect_rows else {}
+    metric_keys = [key for key in first_row.keys() if key != "rank"]
+    metric_count = len(metric_keys)
     chart_type = user_prefs.get("chart_type", "bar")
     chart = next(
         (item for item in charts if item.get("chart_id") == "defect_rate_summary"),
@@ -386,61 +380,57 @@ def _build_simulation_stub(
             },
         ]
         # 불량률 요약 표를 만든다(모든 metric 포함).
+        # ??? ?? rank ??? wide ??? ???.
         metric_specs = [
-            {"metric": "ci_def_rate", "base": 0.12, "step": 0.02, "delta": 0.02},
-            {"metric": "fr_defect_rate", "base": 120, "step": 15, "delta": 10},
-            {"metric": "gr_short_defect_rate", "base": 0.08, "step": 0.01, "delta": 0.01},
-            {"metric": "tvi_defect_rate_f", "base": 0.06, "step": 0.01, "delta": 0.01},
-            {"metric": "tr_short_defect_rate", "base": 0.05, "step": 0.01, "delta": 0.01},
-            {"metric": "df_def_rate", "base": 0.09, "step": 0.01, "delta": 0.01},
-            {"metric": "soul_defect_rate_f", "base": 0.04, "step": 0.01, "delta": 0.01},
-            {"metric": "gm_defect_rate_f", "base": 0.03, "step": 0.01, "delta": 0.01},
-            {"metric": "pi_def_rate", "base": 0.11, "step": 0.02, "delta": 0.02},
-            {"metric": "mf_def_rate", "base": 0.07, "step": 0.01, "delta": 0.01},
-            {"metric": "ttm_defect_rate_f", "base": 0.05, "step": 0.01, "delta": 0.01},
-            {"metric": "sum_burn_ppm", "base": 90, "step": 12, "delta": 8},
-            {"metric": "sum_8585_ppm", "base": 110, "step": 14, "delta": 9},
-            {"metric": "fail_halt_ppm", "base": 70, "step": 10, "delta": 7},
+            {"metric": "ci_def_rate", "base": 0.12, "step": 0.02},
+            {"metric": "fr_defect_rate", "base": 120, "step": 15},
+            {"metric": "gr_short_defect_rate", "base": 0.08, "step": 0.01},
+            {"metric": "tvi_defect_rate_f", "base": 0.06, "step": 0.01},
+            {"metric": "tr_short_defect_rate", "base": 0.05, "step": 0.01},
+            {"metric": "df_def_rate", "base": 0.09, "step": 0.01},
+            {"metric": "soul_defect_rate_f", "base": 0.04, "step": 0.01},
+            {"metric": "gm_defect_rate_f", "base": 0.03, "step": 0.01},
+            {"metric": "pi_def_rate", "base": 0.11, "step": 0.02},
+            {"metric": "mf_def_rate", "base": 0.07, "step": 0.01},
+            {"metric": "ttm_defect_rate_f", "base": 0.05, "step": 0.01},
+            {"metric": "sum_burn_ppm", "base": 90, "step": 12},
+            {"metric": "sum_8585_ppm", "base": 110, "step": 14},
+            {"metric": "fail_halt_ppm", "base": 70, "step": 10},
         ]
         defect_rows = []
         for rank in range(1, 6):
+            row = {"rank": rank}
             for spec in metric_specs:
-                avg = spec["base"] + spec["step"] * (rank - 1)
-                min_value = avg - spec["delta"]
-                max_value = avg + spec["delta"]
-                if min_value < 0:
-                    min_value = 0
-                defect_rows.append(
-                    {
-                        "candidate_rank": rank,
-                        "defect_metric": spec["metric"],
-                        "defect_avg": avg,
-                        "defect_min": min_value,
-                        "defect_max": max_value,
-                    }
-                )
+                row[spec["metric"]] = spec["base"] + spec["step"] * (rank - 1)
+            defect_rows.append(row)
         tables["defect_rate_table"] = defect_rows
-        # 불량률 차트를 만든다.
+        # ????? ??? ???(??? 6? ???).
         chart_type = user_prefs.get("chart_type", "bar")
+        chart_metrics = [
+            "ci_def_rate",
+            "tvi_defect_rate_f",
+            "df_def_rate",
+            "pi_def_rate",
+            "mf_def_rate",
+            "ttm_defect_rate_f",
+        ]
+        chart_series = []
+        for metric in chart_metrics:
+            points = [
+                {"x": f"rank_{row['rank']}", "y": row.get(metric, 0)}
+                for row in defect_rows
+            ]
+            chart_series.append({"name": metric, "points": points})
         charts = [
             {
                 "chart_id": "defect_rate_summary",
                 "type": chart_type,
-                "title": "불량률 비교",
-                "x_label": "후보",
+                "title": "공정불량률",
+                "subtitle": "rank 1~5 기준",
+                "x_label": "rank",
                 "y_label": "불량률",
-                "series": [
-                    {
-                        "name": "ci_def_rate",
-                        "points": [
-                            {"x": "rank_1", "y": 0.12},
-                            {"x": "rank_2", "y": 0.18},
-                            {"x": "rank_3", "y": 0.16},
-                            {"x": "rank_4", "y": 0.20},
-                            {"x": "rank_5", "y": 0.14},
-                        ],
-                    }
-                ],
+                "unit": "%",
+                "series": chart_series,
                 "notes": "",
             }
         ]

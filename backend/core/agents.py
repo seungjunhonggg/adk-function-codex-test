@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 model_setting = ModelSettings(temperature=0.1)
-MODEL_NAME = "gpt-5.1"
+MODEL_NAME = "gpt-5-mini"
 MODEL_KWARGS = {"model": MODEL_NAME} if MODEL_NAME else {}
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

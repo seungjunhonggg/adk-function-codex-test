@@ -40,6 +40,7 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
         elif command.action == "update_input":
             # 변경 요청을 파싱한다.
             update = await agents._parse_update_with_llm(request.message)
+            print("update 제대로됐나", update.selections.reference_lot_id)
             missing = update.missing_fields or []
             # 변경 전 상태를 보관한다.
             current_input = schemas.InputParams(**session_state["input_params"])

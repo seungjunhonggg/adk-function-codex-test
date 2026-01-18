@@ -49,8 +49,10 @@
 
 ### 7) 불량률 요약 (1-7)
 - 표: `defect_rate_table`
-- 필드: candidate_rank, defect_metric, defect_avg, defect_min, defect_max.
-- 차트: 불량률 비교(기본 막대).
+- 필드: rank, ci_def_rate, fr_defect_rate, gr_short_defect_rate, tvi_defect_rate_f, tr_short_defect_rate, df_def_rate, soul_defect_rate_f, gm_defect_rate_f, pi_def_rate, mf_def_rate, ttm_defect_rate_f, sum_burn_ppm, sum_8585_ppm, fail_halt_ppm.
+- 값은 평균값만 사용(최소/최대 제외).
+- 차트: 공정불량률(기본 막대).
+- 차트 지표: ci_def_rate, tvi_defect_rate_f, df_def_rate, pi_def_rate, mf_def_rate, ttm_defect_rate_f.
 - 불량률 지표 목록은 DB 설정으로 관리.
 - children 지표는 기본 브리핑에서 숨기고 요청 시만 확장 표로 제공.
 
@@ -64,15 +66,22 @@ UI는 아래 스키마를 받아 차트를 렌더링한다.
 {
   "chart_id": "defect_rate_summary",
   "type": "bar | line | scatter",
-  "title": "Defect rate comparison",
-  "x_label": "Candidate",
-  "y_label": "Defect rate",
+  "title": "공정불량률",
+  "x_label": "rank",
+  "y_label": "불량률",
   "series": [
     {
-      "name": "metric_name",
+      "name": "ci_def_rate",
       "points": [
         { "x": "rank_1", "y": 0.12 },
         { "x": "rank_2", "y": 0.18 }
+      ]
+    },
+    {
+      "name": "tvi_defect_rate_f",
+      "points": [
+        { "x": "rank_1", "y": 0.06 },
+        { "x": "rank_2", "y": 0.08 }
       ]
     }
   ],
@@ -81,7 +90,7 @@ UI는 아래 스키마를 받아 차트를 렌더링한다.
 ```
 
 ### 차트 타입 선택 규칙
-- 기본: 불량률 비교는 막대.
+- 기본: 공정불량률은 막대.
 - 사용자 요청이 추이/시간축이면 선.
 - 두 수치간 상관관계 요청이면 스캐터.
 - 사용자가 명시한 타입이 있으면 우선 적용.
