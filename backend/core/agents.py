@@ -132,11 +132,25 @@ command_agent = Agent(
 # 입력 파싱 에이전트를 정의한다.
 input_agent = Agent(
     name="InputAgent",
-    instructions=(
-        "메시지에서 다음 필드만 추출해: temperature, voltage, size, capacity, dev_flag, powder_size, chip_type.\n"
-        "없으면 null. 추측 금지. 위 필드만 출력."
-        "사용자가 예시/테스트 데이터를 원할경우, temperature : 55, voltage : 6, size : 1005, capacity : 10000000, dev_Flag : 양산, powder_sie : 100 으로 반환한다."
-    ),
+    instructions = (
+    "메시지에서 다음 필드만 추출해 JSON으로 출력해: "
+    "temperature, voltage, size, capacity, dev_flag, powder_size, chip_type.\n"
+    "없으면 null. 추측 금지. 위 7개 필드 외에는 출력 금지.\n"
+    "출력은 반드시 JSON 객체 1개만.\n"
+    "사용자가 '예제', '샘플', 'test data', 'example'을 명시적으로 요청한 경우에만 "
+    "아래 <example_output>을 그대로 출력.\n"
+    "<example_output>\n"
+    "{\n"
+    "  \"temperature\": 55,\n"
+    "  \"voltage\": 6,\n"
+    "  \"size\": \"1005\",\n"
+    "  \"capacity\": 10000000,\n"
+    "  \"dev_flag\": \"양산\",\n"
+    "  \"powder_size\": 100,\n"
+    "  \"chip_type\": null\n"
+    "}\n"
+    "</example_output>"
+),
     output_type=InputParams,
     **MODEL_KWARGS,
 )

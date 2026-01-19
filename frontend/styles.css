@@ -218,7 +218,7 @@ body::before {
   padding: 32px 60px 120px;
   overflow-y: auto;
   display: grid;
-  gap: 18px;
+  gap: 12px;
 }
 
 .empty-state {
@@ -243,7 +243,7 @@ body::before {
 /* 메시지 카드 */
 .message {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   animation: rise 0.4s ease both;
 }
 
@@ -252,7 +252,7 @@ body::before {
 }
 
 .bubble {
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: 16px;
   max-width: 70%;
   display: inline-block;
@@ -260,7 +260,7 @@ body::before {
   background: #cfe8ff;
   color: var(--ink);
   box-shadow: var(--shadow);
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 .assistant-card {
@@ -270,7 +270,7 @@ body::before {
   box-shadow: none;
   border: none;
   display: grid;
-  gap: 10px;
+  gap: 6px;
   max-width: none;
   width: 100%;
 }
@@ -282,6 +282,14 @@ body::before {
   border: none;
   box-shadow: none;
   padding: 0;
+}
+
+.message--assistant .block__label {
+  margin-bottom: 2px;
+}
+
+.message--assistant .block__text {
+  line-height: 1.45;
 }
 
 .assistant-meta {
