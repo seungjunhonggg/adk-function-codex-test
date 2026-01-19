@@ -252,25 +252,36 @@ body::before {
 }
 
 .bubble {
-  padding: 14px 18px;
+  padding: 10px 14px;
   border-radius: 16px;
   max-width: 70%;
+  display: inline-block;
+  width: fit-content;
   background: #cfe8ff;
   color: var(--ink);
   box-shadow: var(--shadow);
-  line-height: 1.6;
+  line-height: 1.45;
 }
 
 .assistant-card {
   background: transparent;
   border-radius: var(--radius-lg);
-  padding: 18px;
+  padding: 0;
   box-shadow: none;
   border: none;
   display: grid;
-  gap: 14px;
+  gap: 10px;
   max-width: none;
   width: 100%;
+}
+
+.message--assistant .block,
+.message--assistant .table-card,
+.message--assistant .chart-card {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
 }
 
 .assistant-meta {

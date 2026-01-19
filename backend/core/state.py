@@ -572,7 +572,8 @@ def _store_raw_outputs(
     raw_id = f"{session_id}_{datetime.utcnow().strftime('%Y%m%dT%H%M%S%fZ')}.json"
     raw_path = raw_dir / raw_id
     payload = {"tables": tables, "charts": charts}
-    raw_path.write_text(json.dumps(payload, ensure_ascii=False))
+    # UTF-8로 저장한다.
+    raw_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return {
         "stage_outputs_path": str(raw_path),
         "stage_outputs_saved_at": _utc_now(),
