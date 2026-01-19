@@ -62,6 +62,24 @@ _STAGE_CHART_IDS = {
     "1-7": ["defect_rate_summary"],
 }
 
+# 진행 로그 문구를 정의한다.
+_PROGRESS_ROUTE_TEXT = {
+    "casual": "답변 생성하는 중",
+    "update_input": "변경 요청 반영하는 중",
+    "explain_stage": "단계 근거 설명하는 중",
+}
+
+_PROGRESS_STAGE_TEXT = {
+    "1-1": "입력 조건 확인하는 중",
+    "1-2": "칩기종 후보 찾는 중",
+    "1-3": "레퍼런스 LOT 선정하는 중",
+    "1-4": "시뮬레이션 payload 만드는 중",
+    "1-5": "top-k 후보 생성하는 중",
+    "1-6": "최근 유사 설계 조회하는 중",
+    "1-7": "불량률 지표 집계하는 중",
+    "1-8": "브리핑 작성하는 중",
+}
+
 # LLM 입력 요약 한도를 정의한다.
 _LLM_PAYLOAD_MAX_CHARS = 8000
 _LLM_MAX_ROWS_DEFAULT = 8
@@ -143,6 +161,63 @@ def _get_session_state(session_id: str) -> dict[str, Any]:
     if session_id not in _SESSION_STORE:
         _SESSION_STORE[session_id] = _init_session_state(session_id)
     return _SESSION_STORE[session_id]
+
+
+def _build_progress_logs(
+    route: str,
+    action: str | None,
+    stage_status: dict[str, Any] | None,
+    missing: list[str] | None,
+    last_error: dict[str, Any] | None,
+    current_stage: str | None = None,
+    is_final: bool = True,
+) -> list[dict[str, Any]]:
+    # 진행 로그를 만든다.
+    if last_error:
+        # 에러가 있으면 오류 상태로 표시한다.
+        text = _PROGRESS_ROUTE_TEXT.get(action or route, "처리하는 중")
+        return [{"text": text, "status": "error"}]
+    if missing:
+        # 누락 입력이 있으면 대기 상태로 표시한다.
+        return [{"text": "필수 입력 확인하는 중", "status": "pending"}]
+    if route == "casual":
+        # 캐주얼 응답 로그를 만든다.
+        status = "done" if is_final else "in_progress"
+        return [{"text": _PROGRESS_ROUTE_TEXT["casual"], "status": status}]
+    if route != "simulation":
+        # 라우트가 없으면 로그를 만들지 않는다.
+        return []
+    if action == "explain_stage":
+        # 단계 설명 로그를 만든다.
+        status = "done" if is_final else "in_progress"
+        return [{"text": _PROGRESS_ROUTE_TEXT["explain_stage"], "status": status}]
+    logs: list[dict[str, Any]] = []
+    if action == "update_input":
+        # 변경 요청 로그를 먼저 추가한다.
+        status = "done" if is_final else "in_progress"
+        logs.append({"text": _PROGRESS_ROUTE_TEXT["update_input"], "status": status})
+    # 시뮬레이션 단계 로그를 추가한다.
+    status_map = stage_status or {}
+    # 현재 진행 단계를 없으면 첫 미완료 단계로 보정한다.
+    if not is_final and not current_stage:
+        for stage in STAGE_ORDER:
+            if not status_map.get(stage, {}).get("done"):
+                current_stage = stage
+                break
+    for stage in STAGE_ORDER:
+        text = _PROGRESS_STAGE_TEXT.get(stage)
+        if not text:
+            continue
+        done = bool(status_map.get(stage, {}).get("done"))
+        if done:
+            logs.append({"text": text, "status": "done"})
+            continue
+        if not is_final and current_stage:
+            status = "in_progress" if stage == current_stage else "pending"
+            logs.append({"text": text, "status": status})
+            continue
+        logs.append({"text": text, "status": "in_progress"})
+    return logs
 
 
 def _merge_input_params(

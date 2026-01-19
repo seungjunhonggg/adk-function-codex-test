@@ -17,7 +17,7 @@
   </head>
   <body>
     <!-- 전체 앱 레이아웃 -->
-    <div class="app">
+    <div class="app is-insights-hidden">
       <!-- 좌측 네비게이션 -->
             <aside class="nav">
         <button class="nav__action" id="newChatButton" type="button">
@@ -58,17 +58,35 @@
 
         <!-- 입력 영역 -->
         <form class="composer" id="composer">
-          <div class="composer__field">
+          <div class="composer__container">
             <textarea
               id="messageInput"
               rows="1"
               placeholder="Ask anything about MLCC workflow..."
             ></textarea>
-            <button class="send-btn" id="sendButton" type="submit">
-              Send
-            </button>
+            <div class="composer__toolbar">
+              <div class="composer__tools"></div>
+              <button class="send-btn" id="sendButton" type="submit" aria-label="Send">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M3 12l18-9-4.5 9L21 21 3 12z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linejoin="round"
+                  />
+                  <path
+                    d="M3 12l13.5 0"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
+            </div>
           </div>
-                  </form>
+        </form>
       </main>
 
       <!-- 우측 상태 패널 -->

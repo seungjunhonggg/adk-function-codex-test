@@ -59,6 +59,16 @@
 }
 ```
 
+## 스트리밍 응답 (SSE)
+- `/api/chat/stream`은 text/event-stream으로 진행 로그와 최종 응답을 보낸다.
+- progress 이벤트는 `{"logs": [{"text": "...", "status": "..."}]}` 형식이다.
+- final 이벤트는 `/api/chat`과 동일한 응답 스키마를 사용한다.
+
+### 진행 로그 블록
+- blocks 첫 줄에 progress_log를 추가할 수 있다.
+- logs는 text와 status(in_progress/done/pending/error)를 가진다.
+- UI에서 status는 진행중/완료/대기/오류로 표시한다.
+
 ## 시뮬레이션 단계
 - 1-1 입력 수집
 - 1-2 칩기종 조회(옵션)

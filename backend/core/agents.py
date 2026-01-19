@@ -20,6 +20,7 @@ model_setting = ModelSettings(temperature=0.1)
 MODEL_NAME = "gpt-5-mini"
 MODEL_KWARGS = {"model": MODEL_NAME} if MODEL_NAME else {}
 
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
@@ -137,7 +138,7 @@ input_agent = Agent(
     "temperature, voltage, size, capacity, dev_flag, powder_size, chip_type.\n"
     "없으면 null. 추측 금지. 위 7개 필드 외에는 출력 금지.\n"
     "출력은 반드시 JSON 객체 1개만.\n"
-    "사용자가 '예제', '샘플', 'test data', 'example'을 명시적으로 요청한 경우에만 "
+    "사용자가 '예제', '샘플', 'test data', 'example'등 예시 데이터 사용을 요청한 경우에 "
     "아래 <example_output>을 그대로 출력.\n"
     "<example_output>\n"
     "{\n"

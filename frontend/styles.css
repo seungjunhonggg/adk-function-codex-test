@@ -26,26 +26,14 @@ body {
   margin: 0;
   font-family: var(--font-body);
   color: var(--ink);
-  background: radial-gradient(circle at 20% 20%, #ffffff 0%, var(--bg) 45%),
-    linear-gradient(120deg, var(--bg-2), var(--bg));
+  background: #fff;
   min-height: 100vh;
   overflow-x: hidden;
 }
 
 /* 배경 텍스처 */
 body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image: repeating-linear-gradient(
-    -45deg,
-    rgba(0, 0, 0, 0.02) 0px,
-    rgba(0, 0, 0, 0.02) 1px,
-    transparent 1px,
-    transparent 8px
-  );
-  opacity: 0.4;
+  display: none;
 }
 
 /* 전체 그리드 레이아웃 */
@@ -55,6 +43,7 @@ body::before {
   grid-template-columns: 230px minmax(0, 1fr) 320px;
   min-height: 100vh;
   gap: 0;
+  background: #fff;
 }
 
 /* 좌측 네비게이션 */
@@ -63,9 +52,9 @@ body::before {
   flex-direction: column;
   gap: 20px;
   padding: 24px 18px;
-  border-right: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(8px);
+  border-right: none;
+  background: #e6eef9;
+  backdrop-filter: none;
 }
 
 .nav__brand {
@@ -97,9 +86,9 @@ body::before {
 }
 
 .nav__action {
-  border: none;
-  background: var(--ink);
-  color: #fff;
+  border: 1px solid #c6d8f0;
+  background: #e6eef9;
+  color: #1d1f1e;
   padding: 10px 14px;
   border-radius: 12px;
   font-weight: 600;
@@ -140,6 +129,7 @@ body::before {
   flex-direction: column;
   min-height: 100vh;
   position: relative;
+  background: #fff;
 }
 
 .topbar {
@@ -147,9 +137,9 @@ body::before {
   justify-content: space-between;
   align-items: center;
   padding: 20px 28px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(10px);
+  border-bottom: none;
+  background: #fff;
+  backdrop-filter: none;
 }
 
 .topbar__badge {
@@ -219,6 +209,7 @@ body::before {
   overflow-y: auto;
   display: grid;
   gap: 12px;
+  align-content: start;
 }
 
 .empty-state {
@@ -245,6 +236,7 @@ body::before {
   display: flex;
   gap: 8px;
   animation: rise 0.4s ease both;
+  align-items: flex-start;
 }
 
 .message--user {
@@ -256,11 +248,12 @@ body::before {
   border-radius: 16px;
   max-width: 70%;
   display: inline-block;
-  width: fit-content;
+  width: auto;
   background: #cfe8ff;
   color: var(--ink);
   box-shadow: var(--shadow);
   line-height: 1.35;
+  word-break: keep-all;
 }
 
 .assistant-card {
@@ -290,6 +283,76 @@ body::before {
 
 .message--assistant .block__text {
   line-height: 1.45;
+}
+
+/* 진행 로그 텍스트 */
+.progress-log {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #9aa0a6;
+}
+
+.progress-log__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.progress-log__status {
+  font-size: 11px;
+  color: #9aa0a6;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 진행중 스피너 */
+.progress-log__spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(154, 160, 166, 0.35);
+  border-top-color: #9aa0a6;
+  animation: progress-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+.progress-log__row.is-static .progress-log__spinner,
+.progress-log__row.is-done .progress-log__spinner {
+  opacity: 0;
+  animation: none;
+}
+
+.progress-log__row.is-static .progress-log__dots {
+  display: none;
+}
+
+/* 진행중 점 애니메이션 */
+.progress-log__dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.progress-log__dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #9aa0a6;
+  opacity: 0.25;
+  animation: progress-dot 1s infinite;
+}
+
+.progress-log__dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.progress-log__dots span:nth-child(3) {
+  animation-delay: 0.4s;
 }
 
 .assistant-meta {
@@ -511,37 +574,75 @@ body::before {
   position: sticky;
   bottom: 0;
   padding: 18px 28px 24px;
-  border-top: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(8px);
+  border-top: none;
+  background: #fff;
+  backdrop-filter: none;
 }
 
-.composer__field {
+/* Gemini 스타일 입력 컨테이너 */
+.composer__container {
   display: flex;
-  gap: 12px;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 10px;
+  background: #fff;
+  border-radius: 28px;
+  padding: 12px 14px;
+  border: 1px solid #e6e6e6;
+  box-shadow: 0 8px 22px rgba(15, 18, 17, 0.08);
+  transition: 0.2s ease;
+}
+
+.composer__container:focus-within {
+  background: #fff;
+  border-color: rgba(13, 108, 99, 0.35);
+  box-shadow: 0 0 0 3px rgba(13, 108, 99, 0.12),
+    0 10px 26px rgba(15, 18, 17, 0.1);
 }
 
 #messageInput {
   flex: 1;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 12px 16px;
+  border: none;
+  border-radius: 18px;
+  padding: 8px 10px;
   font-size: 14px;
   font-family: inherit;
   background: #fff;
   resize: none;
-  min-height: 64px;
+  min-height: 40px;
+  outline: none;
+}
+
+.composer__toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 4px 0;
+}
+
+.composer__tools {
+  min-height: 24px;
 }
 
 .send-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: none;
   background: var(--accent);
   color: #fff;
-  border: none;
-  padding: 12px 18px;
-  border-radius: 14px;
-  font-weight: 600;
   cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: 0.2s ease;
+}
+
+.send-btn:hover {
+  filter: brightness(0.96);
+}
+
+.send-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .composer__hint {
@@ -553,9 +654,9 @@ body::before {
 /* 우측 패널 */
 .insights {
   padding: 26px 20px;
-  border-left: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(8px);
+  border-left: 1px solid #e6e6e6;
+  background: #fff;
+  backdrop-filter: none;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -694,6 +795,23 @@ body::before {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes progress-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
   }
 }
 

@@ -1,5 +1,6 @@
 ﻿// 기본 상수와 로컬 저장소 키를 정의한다.
 const API_URL = "/api/chat";
+const API_STREAM_URL = "/api/chat/stream";
 const STORAGE_KEYS = {
   sessionId: "mlcc_demo_session_id",
   messages: "mlcc_demo_messages",
@@ -24,6 +25,10 @@ const insightsEl = document.querySelector(".insights");
 const apiKeyInputEl = document.getElementById("apiKeyInput");
 const modelInputEl = document.getElementById("modelInput");
 const baseUrlInputEl = document.getElementById("baseUrlInput");
+// 조합 입력 진행 여부를 저장한다.
+let isComposing = false;
+// 조합 종료 후 전송 예약 여부를 저장한다.
+let pendingSubmit = false;
 
 // 화면 상태를 단순 객체로 관리한다.
 const state = {
@@ -34,8 +39,26 @@ const state = {
   apiKey: "",
   model: "",
   baseUrl: "",
-  insightsHidden: false,
+  insightsHidden: true,
 };
+
+// 타이핑 로그를 갱신한다.
+function updateTypingLogs(logs) {
+  if (!state.typingEl) {
+    return;
+  }
+  const card = state.typingEl.querySelector(".assistant-card");
+  if (!card) {
+    return;
+  }
+  const nextLog = renderProgressLog(logs || []);
+  const currentLog = card.querySelector(".progress-log");
+  if (currentLog) {
+    card.replaceChild(nextLog, currentLog);
+  } else {
+    card.appendChild(nextLog);
+  }
+}
 
 // 로컬 저장소에서 상태를 복원한다.
 function loadState() {
@@ -94,17 +117,24 @@ function setTyping(isTyping) {
   if (isTyping) {
     const typingEl = document.createElement("div");
     typingEl.className = "message message--assistant";
-    typingEl.innerHTML = `
-      <div class="assistant-card">
-        <div class="assistant-meta">
-          <span class="route-pill">thinking</span>
-          <span>assistant</span>
-        </div>
-        <div class="block">
-          <div class="block__text">...</div>
-        </div>
-      </div>
-    `;
+    const card = document.createElement("div");
+    card.className = "assistant-card";
+
+    const meta = document.createElement("div");
+    meta.className = "assistant-meta";
+    const pill = document.createElement("span");
+    pill.className = "route-pill";
+    pill.textContent = "thinking";
+    const metaText = document.createElement("span");
+    metaText.textContent = "assistant";
+    meta.appendChild(pill);
+    meta.appendChild(metaText);
+    card.appendChild(meta);
+
+    card.appendChild(
+      renderProgressLog([{ text: "답변 생성하는 중", status: "in_progress" }])
+    );
+    typingEl.appendChild(card);
     state.typingEl = typingEl;
     threadEl.appendChild(typingEl);
     scrollToBottom();
@@ -172,6 +202,53 @@ function renderAssistantMessage(message) {
   return wrapper;
 }
 
+// 진행 로그 DOM을 만든다.
+function renderProgressLog(logs) {
+  const container = document.createElement("div");
+  container.className = "progress-log";
+  if (!Array.isArray(logs) || logs.length === 0) {
+    return container;
+  }
+  logs.forEach((log) => {
+    const row = document.createElement("div");
+    row.className = "progress-log__row";
+    const logStatus = log.status || "in_progress";
+    if (logStatus !== "in_progress") {
+      row.classList.add("is-static");
+    }
+    if (logStatus === "done") {
+      row.classList.add("is-done");
+    }
+
+    const spinner = document.createElement("span");
+    spinner.className = "progress-log__spinner";
+    row.appendChild(spinner);
+
+    const text = document.createElement("span");
+    text.textContent = log.text || "";
+    row.appendChild(text);
+
+    const status = document.createElement("span");
+    status.className = "progress-log__status";
+    if (logStatus === "done") {
+      status.textContent = "완료";
+    } else if (logStatus === "pending") {
+      status.textContent = "대기";
+    } else if (logStatus === "error") {
+      status.textContent = "오류";
+    } else {
+      status.textContent = "진행중";
+      const dots = document.createElement("span");
+      dots.className = "progress-log__dots";
+      dots.innerHTML = "<span></span><span></span><span></span>";
+      status.appendChild(dots);
+    }
+    row.appendChild(status);
+    container.appendChild(row);
+  });
+  return container;
+}
+
 // 블록 타입에 따라 카드 내용을 만든다.
 function renderBlock(block, tables, charts) {
   if (block.type === "table_ref") {
@@ -179,6 +256,9 @@ function renderBlock(block, tables, charts) {
   }
   if (block.type === "chart_ref") {
     return renderChartCard(block.chart_id, charts);
+  }
+  if (block.type === "progress_log") {
+    return renderProgressLog(block.logs || []);
   }
   return renderTextCard(block);
 }
@@ -703,6 +783,7 @@ function buildOverrides() {
 async function sendMessage(text) {
   setTyping(true);
   try {
+    // 요청 페이로드를 준비한다.
     const overrides = buildOverrides();
     const payload = {
       session_id: state.sessionId,
@@ -712,19 +793,65 @@ async function sendMessage(text) {
     if (overrides) {
       payload.overrides = overrides;
     }
-    const response = await fetch(API_URL, {
+    // SSE 스트림 요청을 보낸다.
+    const response = await fetch(API_STREAM_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await response.json();
-    addMessage({
-      role: "assistant",
-      route: data.route,
-      blocks: data.blocks || [],
-      tables: data.tables || {},
-      charts: data.charts || [],
-    });
+    // 스트림 응답을 확인한다.
+    if (!response.ok || !response.body) {
+      throw new Error("stream failed");
+    }
+    // 스트림을 읽기 위한 도구를 준비한다.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let hasFinal = false;
+    // 스트림 청크를 반복해서 읽는다.
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      // SSE 메시지를 파싱 가능한 버퍼로 모은다.
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() || "";
+      // 개별 SSE 이벤트를 처리한다.
+      chunks.forEach((chunk) => {
+        const trimmed = chunk.trim();
+        if (!trimmed) {
+          return;
+        }
+        const parsed = parseSseChunk(trimmed);
+        if (!parsed) {
+          return;
+        }
+        if (parsed.event === "progress") {
+          // 진행 로그를 갱신한다.
+          const progressPayload = JSON.parse(parsed.data || "{}");
+          updateTypingLogs(progressPayload.logs || []);
+          return;
+        }
+        if (parsed.event === "final") {
+          // 최종 응답을 추가한다.
+          const data = JSON.parse(parsed.data || "{}");
+          hasFinal = true;
+          addMessage({
+            role: "assistant",
+            route: data.route,
+            blocks: data.blocks || [],
+            tables: data.tables || {},
+            charts: data.charts || [],
+          });
+        }
+      });
+    }
+    // 최종 응답이 없으면 오류로 처리한다.
+    if (!hasFinal) {
+      throw new Error("final missing");
+    }
   } catch (error) {
     addMessage({
       role: "assistant",
@@ -742,6 +869,22 @@ async function sendMessage(text) {
   } finally {
     setTyping(false);
   }
+}
+
+// SSE 청크를 파싱한다.
+function parseSseChunk(chunk) {
+  let eventName = "message";
+  const dataLines = [];
+  chunk.split("\n").forEach((line) => {
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+      return;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  });
+  return { event: eventName, data: dataLines.join("\n") };
 }
 
 // 존재하는 요소만 세션 정보를 반영한다.
@@ -766,6 +909,11 @@ function updateSessionUi() {
 // 입력 폼 이벤트를 등록한다.
 composerEl.addEventListener("submit", (event) => {
   event.preventDefault();
+  // 조합 입력 중이면 전송을 예약한다.
+  if (isComposing) {
+    pendingSubmit = true;
+    return;
+  }
   const text = messageInputEl.value.trim();
   if (!text) {
     return;
@@ -779,9 +927,30 @@ composerEl.addEventListener("submit", (event) => {
 // 엔터 키 동작을 제어한다.
 messageInputEl.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
+    // 조합 입력 중이면 전송을 예약하고 기본 동작을 막지 않는다.
+    if (event.isComposing || isComposing || event.keyCode === 229) {
+      pendingSubmit = true;
+      return;
+    }
     event.preventDefault();
     composerEl.requestSubmit();
   }
+});
+
+// 조합 입력 시작을 기록한다.
+messageInputEl.addEventListener("compositionstart", () => {
+  isComposing = true;
+});
+
+// 조합 입력 종료를 기록한다.
+messageInputEl.addEventListener("compositionend", () => {
+  isComposing = false;
+  // 전송 예약이 있으면 즉시 제출한다.
+  if (pendingSubmit) {
+    pendingSubmit = false;
+    composerEl.requestSubmit();
+  }
+  resizeInput();
 });
 
 // 입력창 크기를 자동으로 갱신한다.
