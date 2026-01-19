@@ -97,10 +97,11 @@
 ## 컨텍스트 예산
 - LLM 입력 4k 토큰 이내 유지.
 - raw 배열(top-k/불량률 상세)은 컨텍스트에 넣지 않는다.
-- 표 요약/차트 데이터만 주입한다.
+- 표/차트는 LLM 전용 요약 투영본만 주입하고 하드캡을 적용한다.
+- 원본 표/차트는 파일로 저장하고 raw_refs에 경로만 보관한다.
 
 ## 메모리/상태
-- 세션 메모리: input_params, chip_type, stage_outputs, stage_notes, last_explain_stage
+- 세션 메모리: input_params, chip_type, stage_outputs(요약본), stage_notes, last_explain_stage
 - 중간 변경 시 무효화:
   - 1-1 변경 → 1-2~1-8 재계산
   - 1-3 변경 → 1-4~1-8 재계산
@@ -108,6 +109,7 @@
 - 값 없는 변경 요청은 pending_action으로 보류하고 재질문한다.
 - 입력 파싱 결과는 기존 input_params와 병합한다(새 값만 덮어씀).
 - 데모 단계는 인메모리 세션 스토어로 상태를 유지한다.
+- 원본 표/차트는 `data/raw_outputs/<session_id>/*.json`에 저장한다.
 
 상태 스키마 상세는 `docs/state-schema.md`를 따른다.
 

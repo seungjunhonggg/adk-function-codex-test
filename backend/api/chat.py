@@ -109,11 +109,15 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                 )
                 # 테이블 강조 표시를 적용한다.
                 state._apply_table_highlights(tables, session_state["selections"])
+                # LLM에 전달할 요약본을 만든다.
+                llm_tables, llm_charts = state._build_llm_payload(
+                    tables, charts, session_state["configs"]
+                )
                 if not missing:
                     briefing_start = state._pick_briefing_start_stage(dirty_stages)
                     # 브리핑 범위를 단계별로 정리한다.
                     briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
-                        tables, charts, briefing_start
+                        llm_tables, llm_charts, briefing_start
                     )
                     # 브리핑 순서를 단계 기준으로 만든다.
                     briefing_sequence = state._build_briefing_sequence(
@@ -136,6 +140,8 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                     stage_notes,
                     missing,
                     request.demo,
+                    llm_tables=llm_tables,
+                    llm_charts=llm_charts,
                 )
                 # 재실행 완료 단계의 dirty를 해소한다.
                 if not missing:
@@ -163,11 +169,15 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
             )
             # 테이블 강조 표시를 적용한다.
             state._apply_table_highlights(tables, session_state["selections"])
+            # LLM에 전달할 요약본을 만든다.
+            llm_tables, llm_charts = state._build_llm_payload(
+                tables, charts, session_state["configs"]
+            )
             if not missing:
                 # 브리핑 순서를 단계 기준으로 만든다.
                 briefing_sequence = state._build_briefing_sequence(stage_notes, None)
                 briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
-                    tables, charts, None
+                    llm_tables, llm_charts, None
                 )
                 blocks = await agents._build_briefing_blocks(
                     briefing_tables, briefing_charts, None, briefing_sequence
@@ -181,6 +191,8 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                 stage_notes,
                 missing,
                 request.demo,
+                llm_tables=llm_tables,
+                llm_charts=llm_charts,
             )
             # 재실행 완료 단계의 dirty를 해소한다.
             if not missing:

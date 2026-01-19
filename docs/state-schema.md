@@ -67,7 +67,9 @@
   },
   "raw_refs": {
     "top_k_raw_id": "string|null",
-    "defect_raw_id": "string|null"
+    "defect_raw_id": "string|null",
+    "stage_outputs_path": "string|null",
+    "stage_outputs_saved_at": "ts"
   },
   "pending_action": {
     "action": "collect_input",
@@ -114,6 +116,7 @@
 
 ## 저장 원칙
 - raw 결과는 raw_refs로만 저장하고, 요약만 stage_outputs에 저장한다.
+- 원본 표/차트는 `data/raw_outputs/<session_id>/*.json`에 저장한다.
 - 브리핑은 stage_outputs.briefing_blocks로 저장한다.
 - 단계 근거 요약은 stage_notes에 저장한다.
 - 설명 후속 처리를 위해 last_explain_stage를 저장한다.

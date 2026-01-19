@@ -1,4 +1,6 @@
 from datetime import datetime
+import json
+from pathlib import Path
 import re
 from typing import Any, Callable
 
@@ -60,6 +62,20 @@ _STAGE_CHART_IDS = {
     "1-7": ["defect_rate_summary"],
 }
 
+# LLM 입력 요약 한도를 정의한다.
+_LLM_PAYLOAD_MAX_CHARS = 8000
+_LLM_MAX_ROWS_DEFAULT = 8
+_LLM_MAX_COLS_DEFAULT = 6
+_LLM_MAX_SERIES_DEFAULT = 3
+_LLM_MAX_POINTS_DEFAULT = 6
+_RAW_OUTPUTS_DIR = Path(__file__).resolve().parents[2] / "data" / "raw_outputs"
+_CORE_PARAM_LABEL_MAP = {
+    "active_powder_base": "활성파우더베이스",
+    "active_powder_additives": "활성파우더첨가제",
+    "ldn_avr_value": "LDN 평균값",
+    "cast_dsgn_thk": "캐스팅 설계 두께",
+}
+
 
 # 세션 스토어를 준비한다.
 _SESSION_STORE: dict[str, dict[str, Any]] = {}
@@ -108,7 +124,12 @@ def _init_session_state(session_id: str) -> dict[str, Any]:
         "stage_status": _init_stage_status(),
         "stage_outputs": {"tables": {}, "charts": [], "briefing_blocks": []},
         "stage_notes": {},
-        "raw_refs": {"top_k_raw_id": None, "defect_raw_id": None},
+        "raw_refs": {
+            "top_k_raw_id": None,
+            "defect_raw_id": None,
+            "stage_outputs_path": None,
+            "stage_outputs_saved_at": None,
+        },
         "pending_action": None,
         "last_explain_stage": None,
         "history": [],
@@ -179,13 +200,24 @@ def _update_state(
     stage_notes: dict[str, str],
     missing: list[str],
     demo: bool,
+    llm_tables: dict[str, Any] | None = None,
+    llm_charts: list[dict[str, Any]] | None = None,
 ) -> None:
     # 입력값을 저장한다.
     state["input_params"] = input_params.dict()
+    # 원본 출력물을 외부에 저장한다.
+    raw_refs = _store_raw_outputs(state, tables, charts)
+    if raw_refs:
+        state["raw_refs"].update(raw_refs)
+    # LLM 요약 출력물을 준비한다.
+    if llm_tables is None or llm_charts is None:
+        llm_tables, llm_charts = _build_llm_payload(
+            tables, charts, state.get("configs", {})
+        )
     # 출력물을 저장한다.
     state["stage_outputs"] = {
-        "tables": tables,
-        "charts": charts,
+        "tables": llm_tables,
+        "charts": llm_charts,
         "briefing_blocks": blocks,
     }
     # 단계 근거를 저장한다.
@@ -261,6 +293,10 @@ async def _build_explain_response(
     selected_charts = [
         chart for chart in charts if chart.get("chart_id") in chart_ids
     ]
+    # 설명용 payload를 하드캡으로 줄인다.
+    selected_tables, selected_charts = _apply_payload_budget(
+        selected_tables, selected_charts
+    )
     # 설명용 컨텍스트를 만든다.
     context = {
         "question": question,
@@ -515,6 +551,334 @@ def _apply_table_highlights(tables: dict[str, Any], selections: dict[str, Any]) 
                 lambda row: _parse_number(_extract_row_value(row, ["rank", "순위"]))
                 == min_rank,
             )
+
+
+def _safe_path_component(value: str) -> str:
+    # 경로에 사용할 문자열을 정리한다.
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", value)
+
+
+def _store_raw_outputs(
+    state: dict[str, Any],
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    # 원본 출력물을 파일로 저장한다.
+    if not tables and not charts:
+        return {}
+    session_id = _safe_path_component(state.get("session_id", "session"))
+    raw_dir = _RAW_OUTPUTS_DIR / session_id
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_id = f"{session_id}_{datetime.utcnow().strftime('%Y%m%dT%H%M%S%fZ')}.json"
+    raw_path = raw_dir / raw_id
+    payload = {"tables": tables, "charts": charts}
+    raw_path.write_text(json.dumps(payload, ensure_ascii=False))
+    return {
+        "stage_outputs_path": str(raw_path),
+        "stage_outputs_saved_at": _utc_now(),
+    }
+
+
+def _payload_size(tables: dict[str, Any], charts: list[dict[str, Any]]) -> int:
+    # LLM payload 크기를 추정한다.
+    payload = {"tables": tables, "charts": charts}
+    return len(json.dumps(payload, ensure_ascii=False))
+
+
+def _strip_meta_fields(row: dict[str, Any]) -> dict[str, Any]:
+    # 메타 필드를 제거한다.
+    return {key: value for key, value in row.items() if not key.startswith("__")}
+
+
+def _prioritize_keys(row: dict[str, Any], max_cols: int) -> list[str]:
+    # 우선 순위가 높은 키를 먼저 배치한다.
+    priority = [
+        "rank",
+        "순위",
+        "lot_id",
+        "LOT ID",
+        "chip_type_id",
+        "칩기종 ID",
+        "candidate_rank",
+        "후보 순위",
+    ]
+    ordered: list[str] = []
+    for key in priority:
+        if key in row and key not in ordered:
+            ordered.append(key)
+    for key in row.keys():
+        if key not in ordered:
+            ordered.append(key)
+    return ordered[:max_cols]
+
+
+def _select_keys(
+    row: dict[str, Any], preferred_keys: list[str] | None, max_cols: int
+) -> dict[str, Any]:
+    # 필요한 컬럼만 추린다.
+    if preferred_keys:
+        keys = [key for key in preferred_keys if key in row]
+    else:
+        keys = []
+    if not keys:
+        keys = _prioritize_keys(row, max_cols)
+    return {key: row.get(key) for key in keys[:max_cols]}
+
+
+def _project_table_rows(
+    rows: list[dict[str, Any]],
+    preferred_keys: list[str] | None,
+    max_rows: int,
+    max_cols: int,
+) -> list[dict[str, Any]]:
+    # 테이블 행을 요약한다.
+    projected: list[dict[str, Any]] = []
+    for row in rows[:max_rows]:
+        if not isinstance(row, dict):
+            continue
+        clean = _strip_meta_fields(row)
+        projected.append(_select_keys(clean, preferred_keys, max_cols))
+    return projected
+
+
+def _extract_chart_metric_keys(charts: list[dict[str, Any]]) -> list[str]:
+    # 차트에서 metric 키를 추출한다.
+    for chart in charts:
+        if not isinstance(chart, dict):
+            continue
+        if chart.get("chart_id") != "defect_rate_summary":
+            continue
+        series = chart.get("series", [])
+        if not isinstance(series, list) or not series:
+            continue
+        points = series[0].get("points", [])
+        if not isinstance(points, list):
+            continue
+        metrics: list[str] = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            metric = point.get("x")
+            if metric and metric not in metrics:
+                metrics.append(metric)
+        if metrics:
+            return metrics
+    return []
+
+
+def _pick_rank_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    # rank가 가장 낮은 행을 고른다.
+    min_rank = _find_min_rank(rows, ["rank", "순위"])
+    if min_rank is None:
+        return rows[0] if rows else None
+    for row in rows:
+        raw = _extract_row_value(row, ["rank", "순위"])
+        if _parse_number(raw) == min_rank:
+            return row
+    return rows[0] if rows else None
+
+
+def _project_defect_rate_table(
+    rows: list[dict[str, Any]],
+    charts: list[dict[str, Any]],
+    max_metrics: int,
+) -> list[dict[str, Any]]:
+    # 불량률 표를 요약한다.
+    target_row = _pick_rank_row(rows)
+    if not target_row:
+        return []
+    clean = _strip_meta_fields(target_row)
+    metric_keys = _extract_chart_metric_keys(charts)
+    if not metric_keys:
+        metric_keys = [
+            key for key in clean.keys() if key not in ("rank", "순위")
+        ][:max_metrics]
+    preferred = ["rank", "순위"] + metric_keys
+    return [_select_keys(clean, preferred, len(preferred))]
+
+
+def _project_tables(
+    tables: dict[str, Any],
+    configs: dict[str, Any],
+    charts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    # 표 요약본을 만든다.
+    projected: dict[str, Any] = {}
+    core_params = configs.get("core_match_params") or []
+    core_labels = [
+        _CORE_PARAM_LABEL_MAP.get(key) for key in core_params if key in _CORE_PARAM_LABEL_MAP
+    ]
+    top_k_limit = int(configs.get("top_k") or 5)
+    for key, rows in tables.items():
+        if not isinstance(rows, list):
+            projected[key] = rows
+            continue
+        if key == "input_params_table":
+            preferred = ["항목", "값", "item", "value"]
+            projected[key] = _project_table_rows(rows, preferred, _LLM_MAX_ROWS_DEFAULT, 2)
+            continue
+        if key in ("chip_type_candidates_table", "reference_lot_candidates_table", "reference_lot_table"):
+            preferred = [
+                "chip_type_id",
+                "칩기종 ID",
+                "chip_type_name",
+                "칩기종명",
+                "match_count",
+                "매칭수",
+                "lot_id",
+                "LOT ID",
+                "defect_score",
+                "불량률 점수",
+                "defect_metrics_summary",
+                "불량률 요약",
+                "notes",
+                "비고",
+            ]
+            projected[key] = _project_table_rows(rows, preferred, 5, _LLM_MAX_COLS_DEFAULT)
+            continue
+        if key == "top_k_table":
+            preferred = (
+                ["rank", "순위", "predicted_capacity", "예상 용량", "total_layer", "총 레이어"]
+                + core_params
+                + [label for label in core_labels if label]
+            )
+            projected[key] = _project_table_rows(
+                rows, preferred, min(top_k_limit, _LLM_MAX_ROWS_DEFAULT), _LLM_MAX_COLS_DEFAULT
+            )
+            continue
+        if key == "recent_similar_table":
+            preferred = [
+                "candidate_rank",
+                "후보 순위",
+                "match_count",
+                "매칭수",
+                "representative_lot_id",
+                "대표 LOT",
+                "date_range_start",
+                "기간 시작",
+                "date_range_end",
+                "기간 종료",
+            ]
+            projected[key] = _project_table_rows(rows, preferred, 5, _LLM_MAX_COLS_DEFAULT)
+            continue
+        if key == "defect_rate_table":
+            projected[key] = _project_defect_rate_table(
+                rows, charts, _LLM_MAX_COLS_DEFAULT
+            )
+            continue
+        projected[key] = _project_table_rows(
+            rows, None, _LLM_MAX_ROWS_DEFAULT, _LLM_MAX_COLS_DEFAULT
+        )
+    return projected
+
+
+def _project_charts(
+    charts: list[dict[str, Any]],
+    max_series: int = _LLM_MAX_SERIES_DEFAULT,
+    max_points: int = _LLM_MAX_POINTS_DEFAULT,
+) -> list[dict[str, Any]]:
+    # 차트 요약본을 만든다.
+    projected: list[dict[str, Any]] = []
+    for chart in charts:
+        if not isinstance(chart, dict):
+            continue
+        summary = {
+            key: chart.get(key)
+            for key in ("chart_id", "type", "title", "subtitle", "x_label", "y_label", "unit")
+            if key in chart
+        }
+        series = chart.get("series", [])
+        if isinstance(series, list):
+            trimmed_series: list[dict[str, Any]] = []
+            for item in series[:max_series]:
+                if not isinstance(item, dict):
+                    continue
+                points = item.get("points", [])
+                trimmed_points = points[:max_points] if isinstance(points, list) else []
+                trimmed_series.append({"name": item.get("name"), "points": trimmed_points})
+            summary["series"] = trimmed_series
+        projected.append(summary)
+    return projected
+
+
+def _trim_tables_for_budget(
+    tables: dict[str, Any], max_rows: int, max_cols: int
+) -> dict[str, Any]:
+    # 테이블을 추가로 줄인다.
+    trimmed: dict[str, Any] = {}
+    for key, rows in tables.items():
+        if not isinstance(rows, list):
+            trimmed[key] = rows
+            continue
+        sliced = rows[:max_rows]
+        if sliced and isinstance(sliced[0], dict):
+            trimmed_rows = []
+            for row in sliced:
+                clean = _strip_meta_fields(row)
+                keys = _prioritize_keys(clean, max_cols)
+                trimmed_rows.append({key: clean.get(key) for key in keys})
+            trimmed[key] = trimmed_rows
+        else:
+            trimmed[key] = sliced
+    return trimmed
+
+
+def _trim_charts_for_budget(
+    charts: list[dict[str, Any]], max_series: int, max_points: int
+) -> list[dict[str, Any]]:
+    # 차트를 추가로 줄인다.
+    trimmed: list[dict[str, Any]] = []
+    for chart in charts:
+        if not isinstance(chart, dict):
+            continue
+        series = chart.get("series", [])
+        if isinstance(series, list):
+            clipped_series = []
+            for item in series[:max_series]:
+                if not isinstance(item, dict):
+                    continue
+                points = item.get("points", [])
+                clipped_points = points[:max_points] if isinstance(points, list) else []
+                clipped_series.append({"name": item.get("name"), "points": clipped_points})
+            chart = dict(chart)
+            chart["series"] = clipped_series
+        trimmed.append(chart)
+    return trimmed
+
+
+def _apply_payload_budget(
+    tables: dict[str, Any], charts: list[dict[str, Any]]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    # 하드캡을 적용해 payload를 줄인다.
+    if _payload_size(tables, charts) <= _LLM_PAYLOAD_MAX_CHARS:
+        return tables, charts
+    row_budget = _LLM_MAX_ROWS_DEFAULT
+    col_budget = _LLM_MAX_COLS_DEFAULT
+    series_budget = _LLM_MAX_SERIES_DEFAULT
+    points_budget = _LLM_MAX_POINTS_DEFAULT
+    trimmed_tables = tables
+    trimmed_charts = charts
+    for _ in range(3):
+        trimmed_tables = _trim_tables_for_budget(trimmed_tables, row_budget, col_budget)
+        trimmed_charts = _trim_charts_for_budget(trimmed_charts, series_budget, points_budget)
+        if _payload_size(trimmed_tables, trimmed_charts) <= _LLM_PAYLOAD_MAX_CHARS:
+            break
+        row_budget = max(1, row_budget // 2)
+        col_budget = max(2, col_budget // 2)
+        series_budget = max(1, series_budget // 2)
+        points_budget = max(2, points_budget // 2)
+    return trimmed_tables, trimmed_charts
+
+
+def _build_llm_payload(
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+    configs: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    # LLM에 전달할 요약 payload를 만든다.
+    projected_tables = _project_tables(tables, configs, charts)
+    projected_charts = _project_charts(charts)
+    return _apply_payload_budget(projected_tables, projected_charts)
 
 
 def _mark_dirty(state: dict[str, Any], stages: list[str]) -> None:

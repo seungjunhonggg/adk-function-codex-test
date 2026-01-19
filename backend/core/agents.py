@@ -102,7 +102,7 @@ router_agent = Agent(
     name="RouteAgent",
     instructions=(
         "사용자 메시지를 보고 route를 분류해.\n"
-        "- simulation: 칩 설계/시뮬레이션/추천을 요청하는 경우\n"
+        "- simulation: 칩 설계/시뮬레이션/추천을 요청하는 경우, 산출된 산출물(REF LOT/ 칩기종/ 차트/ 불량률/ 선정기준) 에 대한 근거 자료를 요청하는경우\n"
         "- casual: 그 외 일반 대화\n"
         "반드시 route만 출력해."
     ),
