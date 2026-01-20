@@ -13,10 +13,7 @@
     "temperature": "string|null",
     "voltage": "string|null",
     "size": "string|null",
-    "capacity": "string|null",
-    "dev_flag": "string|null",
-    "powder_size": "string|null",
-    "chip_type": "string|null"
+    "capacity": "string|null"
   },
   "selections": {
     "chip_type_id": "string|null",

@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # 요청 스키마를 정의한다.
@@ -36,9 +36,6 @@ class InputParams(BaseModel):
     voltage: str | None = None
     size: str | None = None
     capacity: str | None = None
-    dev_flag: str | None = None
-    powder_size: str | None = None
-    chip_type: str | None = None
 
 
 # 변경 대상 스키마를 정의한다.
@@ -67,7 +64,14 @@ class UpdateDecision(BaseModel):
 class BriefingBlock(BaseModel):
     type: Literal["text", "table_ref", "chart_ref"]
     section: str | None = None
-    value: str | None = None
+    # text 줄바꿈 규칙을 스키마 설명으로 전달한다.
+    value: str | None = Field(
+        default=None,
+        description=(
+            "text 블록 내용. 문장마다 **반드시** 줄바꿈(\\n)을 넣고 한 줄에 문장 1개만 작성."
+            " 문장 구분은 마침표/물음표/느낌표 기준. 빈 줄 금지."
+        ),
+    )
     table_key: str | None = None
     chart_id: str | None = None
 

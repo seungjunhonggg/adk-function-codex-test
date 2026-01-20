@@ -11,7 +11,7 @@
 
 ## 구성
 1. 입력값 더미
-   - temperature, voltage, size, capacity, dev_flag, powder_size
+   - temperature, voltage, size, capacity
 2. 칩기종 더미
    - 4~5개 후보를 고정 목록으로 제공
 3. 레퍼런스 LOT 더미
@@ -23,7 +23,7 @@
    - sim은 rank 순으로 k개 생성
 5. 최근 6개월 유사 설계 더미
    - design_input_date 범위를 최근 6개월로 설정
-   - candidate_rank 기준 4~5개 제공
+   - rank 기준 4~5개 제공
 6. 불량률 지표 더미
    - report_defect_groups/children 설정을 그대로 사용
    - rank 1~5 행 5개 제공

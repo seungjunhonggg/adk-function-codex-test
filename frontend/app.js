@@ -257,10 +257,217 @@ function renderBlock(block, tables, charts) {
   if (block.type === "chart_ref") {
     return renderChartCard(block.chart_id, charts);
   }
+  if (block.type === "input_form") {
+    return renderInputForm(block);
+  }
   if (block.type === "progress_log") {
     return renderProgressLog(block.logs || []);
   }
   return renderTextCard(block);
+}
+
+// 입력 폼을 만든다.
+function renderInputForm(block) {
+  const card = document.createElement("div");
+  card.className = "input-form-card";
+
+  // 헤더 영역 (타이틀, 설명)
+  const header = document.createElement("div");
+  header.className = "form-header";
+  if (block.title) {
+    const title = document.createElement("div");
+    title.className = "form-title";
+    title.textContent = block.title;
+    header.appendChild(title);
+  }
+  if (block.description) {
+    const desc = document.createElement("div");
+    desc.className = "form-description";
+    desc.textContent = block.description;
+    header.appendChild(desc);
+  }
+  card.appendChild(header);
+
+  // 폼 그리드
+  const grid = document.createElement("div");
+  grid.className = "form-grid";
+
+  const fields = Array.isArray(block.fields) ? block.fields : [];
+  fields.forEach((field) => {
+    const group = document.createElement("div");
+    group.className = "form-group";
+
+    // 라벨
+    const label = document.createElement("label");
+    label.className = "form-label";
+    label.textContent = field.label || field.key;
+    group.appendChild(label);
+
+    // 입력 필드 (select vs text/number)
+    if (field.type === "select" && Array.isArray(field.options)) {
+      const input = document.createElement("select");
+      input.className = "form-input";
+      input.name = field.key;
+
+      // Placeholder logic for select
+      if (!field.value) {
+        const placeholder = document.createElement("option");
+        placeholder.text = "선택해주세요";
+        placeholder.value = "";
+        placeholder.disabled = true;
+        placeholder.selected = true;
+        input.appendChild(placeholder);
+      }
+
+      field.options.forEach(opt => {
+        const option = document.createElement("option");
+        option.value = opt;
+        option.textContent = opt + (field.unit ? ` ${field.unit}` : "");
+        if (opt === field.value) option.selected = true;
+        input.appendChild(option);
+      });
+      group.appendChild(input);
+    }
+    // 단위 옵션이 있는 경우 (예: Capacity) - 복합 입력 UI
+    else if (field.unit_options && Array.isArray(field.unit_options)) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "form-input-group"; // Flex container style needed
+
+      const input = document.createElement("input");
+      input.className = "form-input";
+      input.type = "number"; // 보통 단위가 있으면 숫자
+      input.name = field.key;
+      input.value = field.value || "";
+      input.placeholder = field.label || "값 입력";
+
+      const unitSelect = document.createElement("select");
+      unitSelect.className = "form-input form-input-unit";
+      unitSelect.name = `${field.key}_unit`;
+
+      field.unit_options.forEach((opt, idx) => {
+        const option = document.createElement("option");
+        option.value = opt;
+        option.textContent = opt;
+        // 기본값은 첫 번째(pF) 또는 지정된 단위
+        if (idx === 0) option.selected = true;
+        unitSelect.appendChild(option);
+      });
+
+      wrapper.appendChild(input);
+      wrapper.appendChild(unitSelect);
+      group.appendChild(wrapper);
+    }
+    else {
+      const input = document.createElement("input");
+      input.className = "form-input";
+      input.type = field.type || "text";
+      input.name = field.key;
+      input.value = field.value || "";
+      if (field.placeholder) {
+        input.placeholder = field.placeholder;
+      } else if (field.label) {
+        input.placeholder = field.label;
+      }
+      group.appendChild(input);
+    }
+
+    // 에러 메시지 요소 추가
+    const errorText = document.createElement("div");
+    errorText.className = "form-error-text";
+    errorText.textContent = "입력이 필요합니다";
+
+    group.appendChild(errorText);
+    grid.appendChild(group);
+  });
+  card.appendChild(grid);
+
+  // 액션 버튼
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+  const submitBtn = document.createElement("button");
+  submitBtn.className = "form-submit-btn";
+  submitBtn.textContent = block.submit_label || "Submit Parameters";
+  submitBtn.type = "button";
+
+  if (block.submitted) {
+    card.classList.add("is-submitted");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Submitted";
+  }
+
+  submitBtn.addEventListener("click", () => {
+    handleFormSubmit(card, block.form_id);
+  });
+
+  actions.appendChild(submitBtn);
+  card.appendChild(actions);
+
+  return card;
+}
+
+// 폼 제출 처리
+function handleFormSubmit(cardEl, formId) {
+  // .form-input 클래스를 가진 모든 요소 (input, select)
+  // 그룹 내에 input과 unit select가 같이 있을 수 있음.
+  // data 수집 방식을 form-group 기준으로 변경
+  const groups = cardEl.querySelectorAll(".form-group");
+  const data = {};
+  let isValid = true;
+
+  groups.forEach(group => {
+    // 주요 입력 필드 찾기 (unit select 제외하고, name이 _unit으로 끝나지 않는 것)
+    const input = Array.from(group.querySelectorAll(".form-input")).find(el => !el.name.endsWith("_unit"));
+    if (!input) return; // 라벨만 있는 경우 등 방지
+
+    const errorText = group.querySelector(".form-error-text");
+    const unitSelect = group.querySelector(`select[name="${input.name}_unit"]`);
+
+    // 초기화
+    input.classList.remove("has-error");
+    if (errorText) errorText.classList.remove("is-visible");
+
+    // 강제로 리플로우를 발생시켜 애니메이션 다시 실행 가능하게 함
+    void input.offsetWidth;
+
+    const val = input.value.trim();
+
+    if (!val) {
+      isValid = false;
+      input.classList.add("has-error");
+      if (errorText) errorText.classList.add("is-visible");
+    } else {
+      let finalValue = val;
+      // 단위 변환 로직 check
+      if (unitSelect) {
+        const unit = unitSelect.value;
+        const numVal = parseFloat(val);
+        if (!isNaN(numVal)) {
+          if (unit === "nF") {
+            finalValue = String(numVal * 1000); // 1nF = 1000pF
+          } else if (unit === "uF") {
+            finalValue = String(numVal * 1000000); // 1uF = 1,000,000pF
+          }
+          // pF는 그대로
+        }
+      }
+      data[input.name] = finalValue;
+    }
+  });
+
+  if (!isValid) return;
+
+  // UI 잠금
+  cardEl.classList.add("is-submitted");
+  const btn = cardEl.querySelector(".form-submit-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Submitting...";
+  }
+
+  // 메시지 전송 (JSON 문자열로)
+  const payload = data;
+  const messageText = JSON.stringify(payload, null, 2);
+  sendMessage(messageText);
 }
 
 // 텍스트 블록을 만든다.
@@ -637,7 +844,8 @@ function buildSvgChart(chart, seriesVisibility) {
 
 // 시리즈 색상을 정리한다.
 function normalizeChartSeries(seriesList) {
-  const palette = ["#0d6c63", "#b5842f", "#2f6db5", "#8c2f5b", "#2f8c6e"];
+  // 가시성이 좋은 밝고 선명한 팔레트 (User request: Clean, high visibility)
+  const palette = ["#4285F4", "#EA4335", "#FBBC04", "#34A853", "#AA00FF", "#00ACC1"];
   return seriesList.map((series, index) => ({
     ...series,
     color: series.color || palette[index % palette.length],
@@ -691,11 +899,11 @@ function bindChartTooltip(svg, tooltipEl, frameEl) {
     const unit = target.dataset.unit || "";
     const rank = target.dataset.rank || "-";
     tooltipEl.innerHTML = `
-      <div class="chart-tooltip__title">${series}</div>
-      <div class="chart-tooltip__row">값: ${yValue}${unit ? ` ${unit}` : ""}</div>
-      <div class="chart-tooltip__row">X: ${xLabel}</div>
-      <div class="chart-tooltip__row">rank: ${rank}</div>
-    `;
+    <div class="chart-tooltip__title">${series}</div>
+    <div class="chart-tooltip__row">값: ${yValue}${unit ? ` ${unit}` : ""}</div>
+    <div class="chart-tooltip__row">X: ${xLabel}</div>
+    <div class="chart-tooltip__row">rank: ${rank}</div>
+  `;
     const rect = frameEl.getBoundingClientRect();
     tooltipEl.style.left = `${event.clientX - rect.left}px`;
     tooltipEl.style.top = `${event.clientY - rect.top}px`;

@@ -67,6 +67,40 @@ def _map_table_labels(
     return mapped
 
 
+def _map_chart_labels(
+    charts: list[dict[str, Any]], label_map: dict[str, str]
+) -> list[dict[str, Any]]:
+    # 차트의 x 라벨을 한글로 변환한다.
+    mapped: list[dict[str, Any]] = []
+    for chart in charts:
+        if not isinstance(chart, dict):
+            continue
+        next_chart = dict(chart)
+        series_list = next_chart.get("series", [])
+        if isinstance(series_list, list):
+            mapped_series: list[dict[str, Any]] = []
+            for series in series_list:
+                if not isinstance(series, dict):
+                    continue
+                next_series = dict(series)
+                points = next_series.get("points", [])
+                if isinstance(points, list):
+                    mapped_points: list[dict[str, Any]] = []
+                    for point in points:
+                        if not isinstance(point, dict):
+                            continue
+                        next_point = dict(point)
+                        raw_x = next_point.get("x")
+                        if isinstance(raw_x, str):
+                            next_point["x"] = label_map.get(raw_x, raw_x)
+                        mapped_points.append(next_point)
+                    next_series["points"] = mapped_points
+                mapped_series.append(next_series)
+            next_chart["series"] = mapped_series
+        mapped.append(next_chart)
+    return mapped
+
+
 def _build_stage_notes(
     input_params: InputParams,
     tables: dict[str, Any],
@@ -90,107 +124,41 @@ def _build_stage_notes(
     line2 = f"입력: {', '.join(filled_labels) if filled_labels else '-'}"
     notes["1-1"] = "\n".join([line1, line2, line3])
     # 1-2 칩기종 후보 근거를 만든다.
-    if input_params.chip_type:
-        line1 = "근거: chip_type 입력으로 1-2 생략"
-        line2 = f"입력: chip_type={input_params.chip_type}"
-        line3 = "출력: 1-2 생략"
-        notes["1-2"] = "\n".join([line1, line2, line3])
-    else:
-        chip_rows = tables.get("chip_type_candidates_table", [])
-        chip_count = len(chip_rows) if isinstance(chip_rows, list) else 0
-        chip_top = chip_rows[0] if chip_count else {}
-        chip_id = chip_top.get("chip_type_id", "-")
-        chip_match = chip_top.get("match_count", "-")
-        line1 = (
-            "근거: match_count 높은 순 정렬" if chip_count else "근거: 후보 데이터 없음"
-        )
-        line2 = f"입력: 후보 {chip_count}개"
-        line3 = (
-            f"출력: {chip_id} (match_count={chip_match})"
-            if chip_count
-            else "출력: -"
-        )
-        notes["1-2"] = "\n".join([line1, line2, line3])
+    chip_rows = tables.get("chip_type_candidates_table", [])
+    chip_count = len(chip_rows) if isinstance(chip_rows, list) else 0
+    notes["1-2"] = (
+        "사용자가 준 인자값에 맞는 3개월 이내 하이러너 기종을 검색하였음. "
+        f"총 {chip_count}개의 기종이 검색되었음."
+    )
     # 1-3 레퍼런스 LOT 근거를 만든다.
-    ref_rows = tables.get("reference_lot_candidates_table", [])
-    ref_count = len(ref_rows) if isinstance(ref_rows, list) else 0
     ref_selected = tables.get("reference_lot_table", [])
     ref_top = ref_selected[0] if isinstance(ref_selected, list) and ref_selected else {}
     ref_id = ref_top.get("lot_id", "-")
-    ref_score = ref_top.get("defect_score", "-")
-    line1 = "근거: defect_score 낮은 LOT 선정" if ref_top else "근거: 후보 데이터 없음"
-    line2 = f"입력: 후보 {ref_count}개"
-    line3 = f"출력: {ref_id} (defect_score={ref_score})" if ref_top else "출력: -"
-    notes["1-3"] = "\n".join([line1, line2, line3])
+    notes["1-3"] = (
+        "해당 기종들중 신뢰성 결과 및 불량률 검사 등급을 기준으로 상위 LOT들을 "
+        "선별하였으며, 그중 불량률이 제일 낮은 LOT를 reference로 선정하였습니다."
+    )
     # 1-4 API payload 근거를 만든다.
     ref_lot_id = selections.get("reference_lot_id") or ref_id or "-"
-    chip_type_value = selections.get("chip_type_id") or input_params.chip_type or "-"
-    line1 = "근거: 입력값 + ref LOT로 payload 구성"
-    line2 = f"입력: ref_lot={ref_lot_id}, chip_type={chip_type_value}"
-    line3 = "출력: API payload 구성"
-    notes["1-4"] = "\n".join([line1, line2, line3])
+    notes["1-4"] = (
+        f"선정된 ref_lot의 ID는 {ref_lot_id}이며, 설계값은 하기 표와 같습니다."
+    )
     # 1-5 top-k 근거를 만든다.
-    top_k_rows = tables.get("top_k_table", [])
-    top_k_count = len(top_k_rows) if isinstance(top_k_rows, list) else 0
-    top_k_row = top_k_rows[0] if top_k_count else {}
-    top_k_value = configs.get("top_k")
-    top_k_sort = configs.get("top_k_sort", "rank")
-    top_rank = top_k_row.get("rank", "-")
-    top_capacity = top_k_row.get("predicted_capacity", "-")
-    line1 = f"근거: {top_k_sort} 오름차순 정렬 + top_k={top_k_value}"
-    line2 = f"입력: top_k={top_k_value}"
-    line3 = (
-        f"출력: rank1={top_rank}, predicted_capacity={top_capacity}"
-        if top_k_count
-        else "출력: -"
+    notes["1-5"] = (
+        "REF LOT을 기준으로 용량을 5%수준 높이고, 액티브 층, Sheet T, "
+        "Laydown을 +-5% 수준을 만족하는 설계값을 grid search 한 결과를 "
+        "상위 sorting 하였습니다."
     )
-    notes["1-5"] = "\n".join([line1, line2, line3])
     # 1-6 최근 유사 설계 근거를 만든다.
-    recent_rows = tables.get("recent_similar_table", [])
-    recent_count = len(recent_rows) if isinstance(recent_rows, list) else 0
-    recent_top = recent_rows[0] if recent_count else {}
-    date_start = recent_top.get("date_range_start", "-")
-    date_end = recent_top.get("date_range_end", "-")
-    rep_lot = recent_top.get("representative_lot_id", "-")
-    match_count = recent_top.get("match_count", "-")
-    core_params = configs.get("core_match_params", [])
-    core_text = ", ".join(core_params) if core_params else "-"
-    line1 = "근거: 최근 6개월 + 핵심 파라미터 매칭"
-    line2 = f"입력: 기간={date_start}~{date_end}, core_params={core_text}"
-    line3 = (
-        f"출력: 대표 LOT={rep_lot}, match_count={match_count}"
-        if recent_count
-        else "출력: -"
+    notes["1-6"] = (
+        "상위 추천설계를 모재/첨가제, S/T, L/D 동일 설계 조건으로 "
+        "최근 6개월 이내로 검색한 결과는 하기와 같습니다."
     )
-    notes["1-6"] = "\n".join([line1, line2, line3])
     # 1-7 불량률 집계 근거를 만든다.
-    defect_rows = tables.get("defect_rate_table", [])
-    # metric 컬럼 개수를 계산한다.
-    first_row = defect_rows[0] if isinstance(defect_rows, list) and defect_rows else {}
-    metric_keys = [key for key in first_row.keys() if key != "rank"]
-    metric_count = len(metric_keys)
-    chart_type = user_prefs.get("chart_type", "bar")
-    chart = next(
-        (item for item in charts if item.get("chart_id") == "defect_rate_summary"),
-        None,
+    notes["1-7"] = (
+        "각 추천설계별 LOT들의 6개월 평균 공정불량률은 하기와 같습니다. "
+        "그중 공정불량률은 하기 차트에 나타내었습니다."
     )
-    series_name = "-"
-    first_value = "-"
-    if chart and chart.get("series"):
-        series = chart["series"][0]
-        series_name = series.get("name", "-")
-        points = series.get("points", [])
-        if points:
-            first_value = points[0].get("y", "-")
-    line1 = f"근거: metric {metric_count}개 집계 + chart_type={chart_type}"
-    line2 = f"입력: chart_type={chart_type}"
-    line3 = f"출력: {series_name} rank1={first_value}"
-    notes["1-7"] = "\n".join([line1, line2, line3])
-    # 1-8 브리핑 근거를 만든다.
-    line1 = "근거: 표/차트 요약 기반 브리핑 생성"
-    line2 = "입력: stage_outputs 표/차트"
-    line3 = "출력: briefing_blocks"
-    notes["1-8"] = "\n".join([line1, line2, line3])
     return notes
 
 
@@ -236,11 +204,7 @@ def _build_simulation_stub(
     # 데모 모드일 때만 간단한 표/차트를 채운다.
     # 데모 모드도 입력 완료 후에만 결과를 채운다.
     if request.demo and not missing:
-        skip_chip_type = bool(input_params.chip_type)
-        if not skip_chip_type:
-            blocks.append(
-                {"type": "table_ref", "table_key": "chip_type_candidates_table"}
-            )
+        blocks.append({"type": "table_ref", "table_key": "chip_type_candidates_table"})
         blocks.append({"type": "table_ref", "table_key": "reference_lot_candidates_table"})
         blocks.append({"type": "table_ref", "table_key": "reference_lot_table"})
         blocks.append({"type": "table_ref", "table_key": "top_k_table"})
@@ -248,14 +212,13 @@ def _build_simulation_stub(
         blocks.append({"type": "table_ref", "table_key": "defect_rate_table"})
         blocks.append({"type": "chart_ref", "chart_id": "defect_rate_summary"})
         # 칩기종 후보 표를 만든다.
-        if not skip_chip_type:
-            tables["chip_type_candidates_table"] = [
-                {"chip_type_id": "CT-001", "chip_type_name": "MLCC-A", "match_count": 12, "notes": "고온/고전압"},
-                {"chip_type_id": "CT-002", "chip_type_name": "MLCC-B", "match_count": 9, "notes": "용량 우선"},
-                {"chip_type_id": "CT-003", "chip_type_name": "MLCC-C", "match_count": 7, "notes": "소형화"},
-                {"chip_type_id": "CT-004", "chip_type_name": "MLCC-D", "match_count": 5, "notes": "개발품"},
-                {"chip_type_id": "CT-005", "chip_type_name": "MLCC-E", "match_count": 4, "notes": "표준형"},
-            ]
+        tables["chip_type_candidates_table"] = [
+            {"chip_type_id": "CT-001", "chip_type_name": "MLCC-A", "match_count": 12, "notes": "고온/고전압"},
+            {"chip_type_id": "CT-002", "chip_type_name": "MLCC-B", "match_count": 9, "notes": "용량 우선"},
+            {"chip_type_id": "CT-003", "chip_type_name": "MLCC-C", "match_count": 7, "notes": "소형화"},
+            {"chip_type_id": "CT-004", "chip_type_name": "MLCC-D", "match_count": 5, "notes": "개발품"},
+            {"chip_type_id": "CT-005", "chip_type_name": "MLCC-E", "match_count": 4, "notes": "표준형"},
+        ]
         # 레퍼런스 LOT 후보 표(10개)를 만든다.
         tables["reference_lot_candidates_table"] = [
             {"lot_id": "LOT-CAND-001", "chip_type_id": "CT-001", "defect_score": 0.08, "defect_metrics_summary": "ci_def_rate 0.08%, fr_defect_rate 80ppm"},
@@ -402,44 +365,44 @@ def _build_simulation_stub(
         # 최근 6개월 유사 설계 표를 만든다.
         tables["recent_similar_table"] = [
             {
-                "candidate_rank": 1,
+                "rank": 1,
                 "match_count": 8,
                 "date_range_start": "2025-07-01",
                 "date_range_end": "2025-12-31",
                 "representative_lot_id": "LOT-2025-071",
             },
             {
-                "candidate_rank": 2,
+                "rank": 2,
                 "match_count": 6,
                 "date_range_start": "2025-07-01",
                 "date_range_end": "2025-12-31",
                 "representative_lot_id": "LOT-2025-088",
             },
             {
-                "candidate_rank": 3,
+                "rank": 3,
                 "match_count": 5,
                 "date_range_start": "2025-07-01",
                 "date_range_end": "2025-12-31",
                 "representative_lot_id": "LOT-2025-103",
             },
             {
-                "candidate_rank": 4,
+                "rank": 4,
                 "match_count": 4,
                 "date_range_start": "2025-07-01",
                 "date_range_end": "2025-12-31",
                 "representative_lot_id": "LOT-2025-120",
             },
             {
-                "candidate_rank": 5,
+                "rank": 5,
                 "match_count": 3,
                 "date_range_start": "2025-07-01",
                 "date_range_end": "2025-12-31",
                 "representative_lot_id": "LOT-2025-134",
             },
         ]
-        # candidate_rank 1 행을 강조 표시한다.
+        # rank 1 행을 강조 표시한다.
         for row in tables["recent_similar_table"]:
-            if row.get("candidate_rank") == 1:
+            if row.get("rank") == 1:
                 row["__row_state"] = "selected"
         # 불량률 요약 표를 만든다(모든 metric 포함).
         # ??? ?? rank ??? wide ??? ???.
@@ -505,4 +468,5 @@ def _build_simulation_stub(
     # 한글 라벨 매핑을 적용한다.
     label_map = _get_label_mapping(request.demo)
     tables = _map_table_labels(tables, label_map)
+    charts = _map_chart_labels(charts, label_map)
     return blocks, tables, charts, stage_notes

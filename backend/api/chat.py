@@ -128,14 +128,66 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
             else:
                 # 누락된 입력을 확인한다.
                 missing = state._get_missing_fields(merged_params)
-                # 시뮬레이션 결과를 만든다.
-                blocks, tables, charts, stage_notes = demo._build_simulation_stub(
-                    request,
-                    merged_params,
-                    session_state["configs"],
-                    session_state["selections"],
-                    session_state["user_prefs"],
-                )
+                
+                # 4가지 핵심 파라미터가 누락된 경우 input_form 블록을 생성한다.
+                # 사용자 요청: 온도, 크기, 용량, 전압
+                target_keys = ["temperature", "size", "capacity", "voltage"]
+                missing_targets = [k for k in missing if k in target_keys]
+                
+                if missing_targets:
+                    # 폼 필드를 구성한다.
+                    fields = []
+                    # 순서대로 필드를 추가한다.
+                    for key in target_keys:
+                        current_val = merged_params.dict().get(key)
+                        field_def = {
+                            "key": key,
+                            "label": state.INPUT_LABEL_MAP.get(key, key),
+                            "type": "text", # 기본값 text
+                            "value": current_val or ""
+                        }
+                        
+                        # 각 필드별 특화 설정
+                        if key == "temperature":
+                            field_def["type"] = "select"
+                            field_def["options"] = ["A", "B", "O"]
+                            field_def["unit"] = "℃"
+                        elif key == "voltage":
+                            field_def["type"] = "number"
+                            field_def["unit"] = "V"
+                        elif key == "size":
+                            field_def["type"] = "select"
+                            field_def["options"] = ["1005", "1608", "2012", "3216"]
+                        elif key == "capacity":
+                            field_def["type"] = "number"
+                            field_def["unit"] = "pF" # 기본 단위 표시
+                            # 단위 선택 옵션 추가 (프론트엔드에서 렌더링 및 자동 변환 처리)
+                            field_def["unit_options"] = ["pF", "nF", "uF"]
+                            
+                        fields.append(field_def)
+
+                    blocks = [
+                        {
+                            "type": "input_form",
+                            "form_id": "mlcc_basic_params",
+                            "title": "시뮬레이션 조건 입력",
+                            "description": "MLCC 시뮬레이션을 위해 다음 핵심 정보를 입력해주세요.",
+                            "fields": fields,
+                            "submit_label": "시뮬레이션 시작",
+                            "submitted": False
+                        }
+                    ]
+                    tables, charts = {}, []
+                    stage_notes = {}
+                else:
+                    # 시뮬레이션 결과를 만든다.
+                    blocks, tables, charts, stage_notes = demo._build_simulation_stub(
+                        request,
+                        merged_params,
+                        session_state["configs"],
+                        session_state["selections"],
+                        session_state["user_prefs"],
+                    )
                 # 테이블 강조 표시를 적용한다.
                 state._apply_table_highlights(tables, session_state["selections"])
                 # LLM에 전달할 요약본을 만든다.
@@ -338,13 +390,59 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                 else:
                     # 누락된 입력을 확인한다.
                     missing = state._get_missing_fields(merged_params)
-                    blocks, tables, charts, stage_notes = demo._build_simulation_stub(
-                        request,
-                        merged_params,
-                        session_state["configs"],
-                        session_state["selections"],
-                        session_state["user_prefs"],
-                    )
+                    
+                    # 스트림에서도 동일한 위젯 로직 적용
+                    target_keys = ["temperature", "size", "capacity", "voltage"]
+                    missing_targets = [k for k in missing if k in target_keys]
+
+                    if missing_targets:
+                         # 폼 필드를 구성한다.
+                        fields = []
+                        for key in target_keys:
+                            current_val = merged_params.dict().get(key)
+                            field_def = {
+                                "key": key,
+                                "label": state.INPUT_LABEL_MAP.get(key, key),
+                                "type": "text",
+                                "value": current_val or ""
+                            }
+                            if key == "temperature":
+                                field_def["type"] = "select"
+                                field_def["options"] = ["A", "B", "D"]
+                                field_def["unit"] = "특성"
+                            elif key == "voltage":
+                                field_def["type"] = "number"
+                                field_def["unit"] = "V"
+                            elif key == "size":
+                                field_def["type"] = "select"
+                                field_def["options"] = ["1005", "1608", "2012", "3216"]
+                            elif key == "capacity":
+                                field_def["type"] = "number"
+                                field_def["unit"] = "pF"
+                                field_def["unit_options"] = ["pF", "nF", "uF"]
+                            fields.append(field_def)
+
+                        blocks = [
+                            {
+                                "type": "input_form",
+                                "form_id": "mlcc_basic_params",
+                                "title": "시뮬레이션 조건 입력",
+                                "description": "다음 핵심 정보를 입력해주세요.",
+                                "fields": fields,
+                                "submit_label": "시뮬레이션 시작",
+                                "submitted": False
+                            }
+                        ]
+                        tables, charts = {}, []
+                        stage_notes = {}
+                    else:
+                        blocks, tables, charts, stage_notes = demo._build_simulation_stub(
+                            request,
+                            merged_params,
+                            session_state["configs"],
+                            session_state["selections"],
+                            session_state["user_prefs"],
+                        )
                     # 테이블 강조 표시를 적용한다.
                     state._apply_table_highlights(tables, session_state["selections"])
                     # LLM에 전달할 요약본을 만든다.

@@ -19,7 +19,7 @@
 
 ### 1) 입력 요약 (1-1)
 - 표: `input_params_table`
-- 필드: temperature, voltage, size, capacity, dev_flag, powder_size.
+- 필드: temperature, voltage, size, capacity.
 
 ### 2) 칩기종 후보 (1-2)
 - 표: `chip_type_candidates_table`
@@ -32,7 +32,8 @@
 - 선정 LOT는 후보 표에서 강조 표시(행 강조).
 
 ### 4) 최적화 탐색 요약 (1-4)
-- 서술 전용: 탐색 범위, 탐색 방식, API 호출 시각.
+- 표: `reference_lot_table` (선정 LOT 설계값)
+- 서술: ref LOT 설계값 요약 + 탐색 범위/방식/호출 시각.
 
 ### 5) Top-K 후보 (1-5)
 - 표: `top_k_table`
@@ -45,7 +46,7 @@
 
 ### 6) 최근 6개월 유사 설계 (1-6)
 - 표: `recent_similar_table`
-- 필드: candidate_rank, match_count, date_range_start, date_range_end, representative_lot_id.
+- 필드: rank, match_count, date_range_start, date_range_end, representative_lot_id.
 
 ### 7) 불량률 요약 (1-7)
 - 표: `defect_rate_table`

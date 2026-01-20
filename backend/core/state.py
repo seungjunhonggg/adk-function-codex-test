@@ -14,9 +14,6 @@ INPUT_LABEL_MAP = {
     "voltage": "전압",
     "size": "크기",
     "capacity": "용량",
-    "dev_flag": "개발품여부",
-    "powder_size": "파우더사이즈",
-    "chip_type": "칩기종",
 }
 
 # 변경 라벨 맵을 정의한다.
@@ -51,7 +48,8 @@ DIRTY_STAGE_RULES = {
 _STAGE_TABLE_KEYS = {
     "1-1": ["input_params_table"],
     "1-2": ["chip_type_candidates_table"],
-    "1-3": ["reference_lot_candidates_table", "reference_lot_table"],
+    "1-3": ["reference_lot_candidates_table"],
+    "1-4": ["reference_lot_table"],
     "1-5": ["top_k_table"],
     "1-6": ["recent_similar_table"],
     "1-7": ["defect_rate_table"],
@@ -121,9 +119,6 @@ def _init_session_state(session_id: str) -> dict[str, Any]:
             "voltage": None,
             "size": None,
             "capacity": None,
-            "dev_flag": None,
-            "powder_size": None,
-            "chip_type": None,
         },
         "selections": {
             "chip_type_id": None,
@@ -280,17 +275,6 @@ def _update_stage_status(state: dict[str, Any], has_missing: bool, demo: bool) -
             status[stage]["updated_at"] = now
 
 
-def _apply_chip_type_skip(state: dict[str, Any], input_params: InputParams) -> None:
-    # chip_type 입력이면 1-2 단계를 생략 처리한다.
-    if not input_params.chip_type:
-        return
-    status = state["stage_status"]
-    now = _utc_now()
-    status["1-2"]["done"] = True
-    status["1-2"]["dirty"] = False
-    status["1-2"]["updated_at"] = now
-
-
 def _update_state(
     state: dict[str, Any],
     input_params: InputParams,
@@ -324,8 +308,6 @@ def _update_state(
     state["stage_notes"] = stage_notes
     # 단계 상태를 갱신한다.
     _update_stage_status(state, bool(missing), demo)
-    # chip_type 입력 시 1-2 단계를 생략 처리한다.
-    _apply_chip_type_skip(state, input_params)
     # pending_action을 저장한다.
     if missing:
         state["pending_action"] = {
@@ -423,7 +405,7 @@ def _get_missing_fields(input_params: InputParams) -> list[str]:
     return [
         name
         for name, value in input_params.dict().items()
-        if name != "chip_type" and not value
+        if not value
     ]
 
 
@@ -508,7 +490,6 @@ def _filter_briefing_outputs(
     for stage in stages:
         table_keys.extend(_STAGE_TABLE_KEYS.get(stage, []))
         chart_ids.extend(_STAGE_CHART_IDS.get(stage, []))
-    table_keys = [key for key in table_keys if key != "reference_lot_table"]
     selected_tables = {key: tables[key] for key in table_keys if key in tables}
     if not chart_ids:
         selected_charts = list(charts)
@@ -533,11 +514,7 @@ def _build_briefing_sequence(
     stages = _collect_stage_range(start_stage)
     sequence: list[dict[str, Any]] = []
     for stage in stages:
-        table_keys = [
-            key
-            for key in _STAGE_TABLE_KEYS.get(stage, [])
-            if key != "reference_lot_table"
-        ]
+        table_keys = list(_STAGE_TABLE_KEYS.get(stage, []))
         sequence.append(
             {
                 "stage": stage,
@@ -629,15 +606,15 @@ def _apply_table_highlights(tables: dict[str, Any], selections: dict[str, Any]) 
                 lambda row: _parse_number(_extract_row_value(row, ["rank", "순위"]))
                 == min_rank,
             )
-    # 최근 유사 설계 표의 candidate_rank 1 강조 처리.
+    # 최근 유사 설계 표의 rank 1 강조 처리.
     recent_rows = tables.get("recent_similar_table", [])
     if isinstance(recent_rows, list) and recent_rows:
-        min_rank = _find_min_rank(recent_rows, ["candidate_rank", "후보 순위", "rank", "순위"])
+        min_rank = _find_min_rank(recent_rows, ["rank", "순위"])
         if min_rank is not None:
             _mark_selected_rows(
                 recent_rows,
                 lambda row: _parse_number(
-                    _extract_row_value(row, ["candidate_rank", "후보 순위", "rank", "순위"])
+                    _extract_row_value(row, ["rank", "순위"])
                 )
                 == min_rank,
             )
@@ -849,8 +826,8 @@ def _project_tables(
             continue
         if key == "recent_similar_table":
             preferred = [
-                "candidate_rank",
-                "후보 순위",
+                "rank",
+                "순위",
                 "match_count",
                 "매칭수",
                 "representative_lot_id",

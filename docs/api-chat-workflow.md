@@ -21,13 +21,12 @@
    - 상태 힌트(브리핑 완료 여부/보류 액션)를 참고해 run 우선
 3. explain_stage면 ExplainAgent로 근거 설명을 생성(필요한 표/차트만 포함)
 4. run이면 1-1~1-8 실행 (변경 요청도 run에서 처리)
-5. 1-1 입력에서 chip_type이 포함되면 1-2 생략
-6. chip_type이 부분 입력이면 1-3에서 LIKE %chip_type% 조건으로 조회
 
 ## 입력 파싱 (LLM)
 - simulation + action이 run일 때 InputAgent로 1-1 입력을 추출한다.
 - simulation + action이 run일 때 UpdateAgent가 필요한 입력/변경 값을 추출한다.
 - output_type으로 구조화하여 필드가 없으면 null로 둔다.
+- 입력 필드는 temperature/voltage/size/capacity 4개만 사용한다.
 - 누락 필드가 있으면 다음 질문으로 안내한다.
 - 누락이 있으면 브리핑 생성은 생략한다.
 
@@ -71,7 +70,7 @@
 
 ## 시뮬레이션 단계
 - 1-1 입력 수집
-- 1-2 칩기종 조회(옵션)
+- 1-2 칩기종 조회
 - 1-3 레퍼런스 LOT 선정
 - 1-4 최적화 API 호출
 - 1-5 top-k 선정
@@ -111,7 +110,7 @@
 - 원본 표/차트는 파일로 저장하고 raw_refs에 경로만 보관한다.
 
 ## 메모리/상태
-- 세션 메모리: input_params, chip_type, stage_outputs(요약본), stage_notes, last_explain_stage
+- 세션 메모리: input_params, stage_outputs(요약본), stage_notes, last_explain_stage
 - 중간 변경 시 무효화:
   - 1-1 변경 → 1-2~1-8 재계산
   - 1-3 변경 → 1-4~1-8 재계산

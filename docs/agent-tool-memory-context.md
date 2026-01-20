@@ -22,8 +22,7 @@
 ### 1) simulation_run
 설명: 1-1~1-7의 결정적 처리를 수행하고 표/차트 데이터를 반환.
 입력:
-- input_params (온도/전압/크기/용량/개발품여부/파우더사이즈)
-- optional chip_type
+- input_params (온도/전압/크기/용량)
 - overrides (중간 단계 변경 시)
 출력:
 - tables (1-1~1-7)
@@ -50,7 +49,6 @@
 ### 세션 메모리 (필수)
 - session_id
 - input_params
-- chip_type
 - stage_outputs (tables, chart_data)
 - last_updated_stage
 - invalidation_rules
