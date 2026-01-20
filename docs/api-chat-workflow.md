@@ -17,23 +17,22 @@
    - simulation → CommandAgent 실행
 2. CommandAgent로 action 결정
    - run → 시뮬레이션 시작/진행
-   - update_input → 입력/선택 변경
    - explain_stage → 특정 단계 근거 설명
-   - 상태 힌트(브리핑 완료 여부/보류 액션)를 참고해 run/update_input을 보정
+   - 상태 힌트(브리핑 완료 여부/보류 액션)를 참고해 run 우선
 3. explain_stage면 ExplainAgent로 근거 설명을 생성(필요한 표/차트만 포함)
-4. run/update_input이면 1-1~1-8 실행
+4. run이면 1-1~1-8 실행 (변경 요청도 run에서 처리)
 5. 1-1 입력에서 chip_type이 포함되면 1-2 생략
 6. chip_type이 부분 입력이면 1-3에서 LIKE %chip_type% 조건으로 조회
 
 ## 입력 파싱 (LLM)
 - simulation + action이 run일 때 InputAgent로 1-1 입력을 추출한다.
-- simulation + action이 update_input일 때 UpdateAgent가 필요한 입력/변경 값을 추출한다.
+- simulation + action이 run일 때 UpdateAgent가 필요한 입력/변경 값을 추출한다.
 - output_type으로 구조화하여 필드가 없으면 null로 둔다.
 - 누락 필드가 있으면 다음 질문으로 안내한다.
 - 누락이 있으면 브리핑 생성은 생략한다.
 
-## update_input 처리
-- action이 update_input이면 UpdateAgent로 변경 값을 추출한다.
+## 변경 요청 처리 (run 내부)
+- UpdateAgent로 변경 값을 추출한다.
 - 값이 없으면 pending_action으로 보류하고 질문만 반환한다.
 - 값이 있으면 상태를 갱신하고 시뮬레이션을 재실행한다.
 - 변경된 dirty 단계 중 가장 앞 단계부터 브리핑 범위를 제한한다(예: 1-4 변경 → 1-4~1-8).
