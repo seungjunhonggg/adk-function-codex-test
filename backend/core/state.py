@@ -163,6 +163,31 @@ def _get_session_state(session_id: str) -> dict[str, Any]:
     return _SESSION_STORE[session_id]
 
 
+def _build_command_hint(state: dict[str, Any]) -> str:
+    # 커맨드 에이전트 힌트를 만든다.
+    stage_status = state.get("stage_status", {})
+    # 브리핑 완료 여부를 확인한다.
+    has_results = bool(stage_status.get("1-8", {}).get("done"))
+    # 입력값 완성 여부를 확인한다.
+    input_params = InputParams(**state.get("input_params", {}))
+    missing = _get_missing_fields(input_params)
+    has_input_complete = not missing
+    # 보류된 액션을 확인한다.
+    pending = state.get("pending_action")
+    pending_action = pending.get("action") if isinstance(pending, dict) else None
+    # 최근 액션을 확인한다.
+    history = state.get("history", [])
+    last_action = history[-1].get("action") if history else None
+    # 힌트 텍스트를 구성한다.
+    return (
+        "[STATE_HINT]\n"
+        f"- has_results: {str(has_results).lower()}\n"
+        f"- has_input_complete: {str(has_input_complete).lower()}\n"
+        f"- pending_action: {pending_action or 'none'}\n"
+        f"- last_action: {last_action or 'none'}"
+    )
+
+
 def _build_progress_logs(
     route: str,
     action: str | None,

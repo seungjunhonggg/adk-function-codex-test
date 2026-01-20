@@ -19,6 +19,7 @@
    - run → 시뮬레이션 시작/진행
    - update_input → 입력/선택 변경
    - explain_stage → 특정 단계 근거 설명
+   - 상태 힌트(브리핑 완료 여부/보류 액션)를 참고해 run/update_input을 보정
 3. explain_stage면 ExplainAgent로 근거 설명을 생성(필요한 표/차트만 포함)
 4. run/update_input이면 1-1~1-8 실행
 5. 1-1 입력에서 chip_type이 포함되면 1-2 생략

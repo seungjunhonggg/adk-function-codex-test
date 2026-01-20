@@ -26,7 +26,10 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
     missing: list[str] = []
     # 라우트에 맞는 기본 응답을 만든다.
     if route == "simulation":
-        command = await agents._decide_command_with_llm(session,request.message)
+        # 상태 힌트를 포함해 커맨드를 결정한다.
+        command_hint = state._build_command_hint(session_state)
+        command_message = f"{command_hint}\n\n[사용자 메시지]\n{request.message}"
+        command = await agents._decide_command_with_llm(session, command_message)
         action = command.action
         print("route = ", route, "command_action = ",command.action)
         if command.action == "explain_stage":
@@ -246,7 +249,9 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
 
         if route == "simulation":
             # 커맨드를 결정한다.
-            command = await agents._decide_command_with_llm(session, request.message)
+            command_hint = state._build_command_hint(session_state)
+            command_message = f"{command_hint}\n\n[사용자 메시지]\n{request.message}"
+            command = await agents._decide_command_with_llm(session, command_message)
             action = command.action
             if command.action == "explain_stage":
                 # 설명 단계 진행 로그를 전송한다.
