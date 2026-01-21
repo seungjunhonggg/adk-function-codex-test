@@ -1,5 +1,6 @@
 from typing import Any
 
+from .db_production import fetch_column_label_map
 from .schemas import InputParams
 from .state import INPUT_LABEL_MAP, _format_missing_summary, _get_missing_fields
 
@@ -33,7 +34,7 @@ def _get_demo_label_mapping() -> dict[str, str]:
 
 def _get_db_label_mapping() -> dict[str, str]:
     # DB 연결 시 한글 라벨 매핑을 조회한다.
-    return {}
+    return fetch_column_label_map()
 
 
 def _get_label_mapping(demo: bool) -> dict[str, str]:
