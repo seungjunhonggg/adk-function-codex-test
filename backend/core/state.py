@@ -187,43 +187,19 @@ def _build_progress_logs(
     route: str,
     action: str | None,
     stage_status: dict[str, Any] | None,
-    missing: list[str] | None,
-    last_error: dict[str, Any] | None,
     current_stage: str | None = None,
     is_final: bool = True,
 ) -> list[dict[str, Any]]:
-    # 진행 로그를 만든다.
-    if last_error:
-        # 에러가 있으면 오류 상태로 표시한다.
-        text = _PROGRESS_ROUTE_TEXT.get(action or route, "처리하는 중")
-        return [{"text": text, "status": "error"}]
-    if missing:
-        # 누락 입력이 있으면 대기 상태로 표시한다.
-        return [{"text": "필수 입력 확인하는 중", "status": "pending"}]
-    if route == "casual":
-        # 캐주얼 응답 로그를 만든다.
-        status = "done" if is_final else "in_progress"
-        return [{"text": _PROGRESS_ROUTE_TEXT["casual"], "status": status}]
-    if route != "simulation":
-        # 라우트가 없으면 로그를 만들지 않는다.
-        return []
-    if action == "explain_stage":
-        # 단계 설명 로그를 만든다.
-        status = "done" if is_final else "in_progress"
-        return [{"text": _PROGRESS_ROUTE_TEXT["explain_stage"], "status": status}]
+    # 진행 로그를 만든다(완료/진행중만 사용).
     logs: list[dict[str, Any]] = []
-    if action == "update_input":
-        # 변경 요청 로그를 먼저 추가한다.
-        status = "done" if is_final else "in_progress"
-        logs.append({"text": _PROGRESS_ROUTE_TEXT["update_input"], "status": status})
-    # 시뮬레이션 단계 로그를 추가한다.
+    status = "done" if is_final else "in_progress"
+    if route == "casual":
+        return [{"text": _PROGRESS_ROUTE_TEXT["casual"], "status": status}]
+    if action == "explain_stage":
+        return [{"text": _PROGRESS_ROUTE_TEXT["explain_stage"], "status": status}]
+    if route != "simulation":
+        return []
     status_map = stage_status or {}
-    # 현재 진행 단계를 없으면 첫 미완료 단계로 보정한다.
-    if not is_final and not current_stage:
-        for stage in STAGE_ORDER:
-            if not status_map.get(stage, {}).get("done"):
-                current_stage = stage
-                break
     for stage in STAGE_ORDER:
         text = _PROGRESS_STAGE_TEXT.get(stage)
         if not text:
@@ -232,11 +208,12 @@ def _build_progress_logs(
         if done:
             logs.append({"text": text, "status": "done"})
             continue
-        if not is_final and current_stage:
-            status = "in_progress" if stage == current_stage else "pending"
-            logs.append({"text": text, "status": status})
-            continue
-        logs.append({"text": text, "status": "in_progress"})
+        if current_stage and stage == current_stage:
+            logs.append({"text": text, "status": "in_progress"})
+    if current_stage and not logs:
+        text = _PROGRESS_STAGE_TEXT.get(current_stage)
+        if text:
+            logs.append({"text": text, "status": "in_progress"})
     return logs
 
 

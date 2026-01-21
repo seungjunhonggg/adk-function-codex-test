@@ -240,8 +240,6 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
         route,
         action,
         session_state.get("stage_status"),
-        missing,
-        session_state.get("last_error"),
     )
     if progress_logs:
         blocks = [{"type": "progress_log", "logs": progress_logs}] + blocks
@@ -278,8 +276,6 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                     route,
                     action,
                     session_state.get("stage_status"),
-                    None,
-                    None,
                     is_final=False,
                 )
                 yield _format_sse("progress", {"logs": progress_logs})
@@ -310,8 +306,6 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                     route,
                     action,
                     session_state.get("stage_status"),
-                    None,
-                    None,
                     current_stage="1-1",
                     is_final=False,
                 )
@@ -455,8 +449,6 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                             route,
                             action,
                             session_state.get("stage_status"),
-                            None,
-                            None,
                             current_stage="1-8",
                             is_final=False,
                         )
@@ -505,8 +497,6 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                 route,
                 None,
                 session_state.get("stage_status"),
-                None,
-                None,
                 is_final=False,
             )
             yield _format_sse("progress", {"logs": progress_logs})
@@ -520,8 +510,6 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
             route,
             action,
             session_state.get("stage_status"),
-            missing,
-            session_state.get("last_error"),
         )
         if final_logs:
             blocks = [{"type": "progress_log", "logs": final_logs}] + blocks
