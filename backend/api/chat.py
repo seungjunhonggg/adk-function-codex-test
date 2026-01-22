@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from ..core import agents, demo, schemas, state
+from ..core import agents, db_production, demo, schemas, state
 from agents import SQLiteSession
 
 router = APIRouter()
@@ -180,14 +180,30 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                     tables, charts = {}, []
                     stage_notes = {}
                 else:
-                    # 시뮬레이션 결과를 만든다.
-                    blocks, tables, charts, stage_notes = demo._build_simulation_stub(
-                        request,
-                        merged_params,
-                        session_state["configs"],
-                        session_state["selections"],
-                        session_state["user_prefs"],
-                    )
+                    if request.demo:
+                        # 시뮬레이션 결과를 만든다(데모).
+                        blocks, tables, charts, stage_notes = (
+                            demo._build_simulation_stub(
+                                request,
+                                merged_params,
+                                session_state["configs"],
+                                session_state["selections"],
+                                session_state["user_prefs"],
+                            )
+                        )
+                    else:
+                        # 시뮬레이션 결과를 만든다(DB).
+                        tables, charts, stage_notes = (
+                            db_production.build_simulation_from_db(
+                                merged_params,
+                                session_state["configs"],
+                                session_state["selections"],
+                                session_state["user_prefs"],
+                                dirty_stages=dirty_stages,
+                            )
+                        )
+                        # 브리핑 생성 전에 사용할 빈 블록을 준비한다.
+                        blocks = []
                 # 테이블 강조 표시를 적용한다.
                 state._apply_table_highlights(tables, session_state["selections"])
                 # LLM에 전달할 요약본을 만든다.
@@ -430,13 +446,47 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                         tables, charts = {}, []
                         stage_notes = {}
                     else:
-                        blocks, tables, charts, stage_notes = demo._build_simulation_stub(
-                            request,
-                            merged_params,
-                            session_state["configs"],
-                            session_state["selections"],
-                            session_state["user_prefs"],
-                        )
+                        if request.demo:
+                            blocks, tables, charts, stage_notes = (
+                                demo._build_simulation_stub(
+                                    request,
+                                    merged_params,
+                                    session_state["configs"],
+                                    session_state["selections"],
+                                    session_state["user_prefs"],
+                                )
+                            )
+                        else:
+                            # 진행 로그 이벤트를 모아둔다.
+                            progress_events: list[list[dict[str, Any]]] = []
+
+                            def progress_cb(stage: str) -> None:
+                                # 단계 진행 로그를 수집한다.
+                                logs = state._build_progress_logs(
+                                    route,
+                                    action,
+                                    session_state.get("stage_status"),
+                                    current_stage=stage,
+                                    is_final=False,
+                                )
+                                if logs:
+                                    progress_events.append(logs)
+
+                            tables, charts, stage_notes = (
+                                db_production.build_simulation_from_db(
+                                    merged_params,
+                                    session_state["configs"],
+                                    session_state["selections"],
+                                    session_state["user_prefs"],
+                                    dirty_stages=dirty_stages,
+                                    progress_cb=progress_cb,
+                                )
+                            )
+                            # 수집한 진행 로그를 순서대로 전송한다.
+                            for logs in progress_events:
+                                yield _format_sse("progress", {"logs": logs})
+                            # 브리핑 생성 전에 사용할 빈 블록을 준비한다.
+                            blocks = []
                     # 테이블 강조 표시를 적용한다.
                     state._apply_table_highlights(tables, session_state["selections"])
                     # LLM에 전달할 요약본을 만든다.
