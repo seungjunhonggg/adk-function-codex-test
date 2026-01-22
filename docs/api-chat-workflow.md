@@ -65,8 +65,8 @@
 
 ### 진행 로그 블록
 - blocks 첫 줄에 progress_log를 추가할 수 있다.
-- logs는 text와 status(in_progress/done/pending/error)를 가진다.
-- UI에서 status는 진행중/완료/대기/오류로 표시한다.
+- logs는 text와 status(in_progress/done)만 사용한다.
+- UI에서 status는 진행중/완료로 표시한다.
 
 ## 시뮬레이션 단계
 - 1-1 입력 수집
@@ -111,6 +111,7 @@
 
 ## 메모리/상태
 - 세션 메모리: input_params, stage_outputs(요약본), stage_notes, last_explain_stage
+- dirty 업데이트 시 stage_outputs/stage_notes는 변경된 단계만 덮어쓰고 나머지는 유지한다.
 - 중간 변경 시 무효화:
   - 1-1 변경 → 1-2~1-8 재계산
   - 1-3 변경 → 1-4~1-8 재계산

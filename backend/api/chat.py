@@ -242,6 +242,7 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                     request.demo,
                     llm_tables=llm_tables,
                     llm_charts=llm_charts,
+                    dirty_stages=dirty_stages,
                 )
                 # 재실행 완료 단계의 dirty를 해소한다.
                 if not missing:
@@ -537,6 +538,7 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                         request.demo,
                         llm_tables=llm_tables,
                         llm_charts=llm_charts,
+                        dirty_stages=dirty_stages,
                     )
                     # 재실행 완료 단계의 dirty를 해소한다.
                     if not missing:

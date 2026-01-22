@@ -263,6 +263,7 @@ def _update_state(
     demo: bool,
     llm_tables: dict[str, Any] | None = None,
     llm_charts: list[dict[str, Any]] | None = None,
+    dirty_stages: list[str] | None = None,
 ) -> None:
     # 입력값을 저장한다.
     state["input_params"] = input_params.dict()
@@ -274,6 +275,24 @@ def _update_state(
     if llm_tables is None or llm_charts is None:
         llm_tables, llm_charts = _build_llm_payload(
             tables, charts, state.get("configs", {})
+        )
+    # dirty 단계가 있으면 기존 요약본과 병합한다.
+    if dirty_stages:
+        # 이전 요약본을 꺼낸다.
+        previous_outputs = state.get("stage_outputs", {})
+        previous_tables = previous_outputs.get("tables", {})
+        previous_charts = previous_outputs.get("charts", [])
+        # 이전 근거 노트를 꺼낸다.
+        previous_notes = state.get("stage_notes", {})
+        # 변경된 단계만 덮어쓰도록 병합한다.
+        llm_tables, llm_charts, stage_notes = _merge_stage_outputs(
+            previous_tables,
+            previous_charts,
+            previous_notes,
+            llm_tables,
+            llm_charts,
+            stage_notes,
+            dirty_stages,
         )
     # 출력물을 저장한다.
     state["stage_outputs"] = {
@@ -508,6 +527,61 @@ def _build_briefing_hint(start_stage: str | None) -> str | None:
     if not start_stage:
         return None
     return f"{start_stage} 단계 변경사항을 반영했습니다. 첫 문장에서 짧게 언급하세요."
+
+
+def _merge_chart_outputs(
+    existing: list[dict[str, Any]], incoming: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    # chart_id 기준으로 차트를 병합한다.
+    merged = list(existing)
+    # 새 차트를 순회한다.
+    for chart in incoming:
+        if not isinstance(chart, dict):
+            continue
+        # chart_id가 있으면 기존 차트를 제거한다.
+        chart_id = chart.get("chart_id")
+        if chart_id:
+            merged = [
+                item for item in merged if item.get("chart_id") != chart_id
+            ]
+        # 새 차트를 추가한다.
+        merged.append(chart)
+    return merged
+
+
+def _merge_stage_outputs(
+    previous_tables: dict[str, Any],
+    previous_charts: list[dict[str, Any]],
+    previous_notes: dict[str, str],
+    new_tables: dict[str, Any],
+    new_charts: list[dict[str, Any]],
+    new_notes: dict[str, str],
+    dirty_stages: list[str] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
+    # dirty 단계가 없으면 새 결과만 사용한다.
+    if not dirty_stages:
+        return new_tables, new_charts, new_notes
+    # 기존 결과를 복사한다.
+    merged_tables = dict(previous_tables or {})
+    merged_charts = list(previous_charts or [])
+    merged_notes = dict(previous_notes or {})
+    # dirty 단계에 해당하는 기존 결과를 제거한다.
+    for stage in dirty_stages:
+        for key in _STAGE_TABLE_KEYS.get(stage, []):
+            merged_tables.pop(key, None)
+        chart_ids = set(_STAGE_CHART_IDS.get(stage, []))
+        if chart_ids:
+            merged_charts = [
+                chart
+                for chart in merged_charts
+                if chart.get("chart_id") not in chart_ids
+            ]
+        merged_notes.pop(stage, None)
+    # 새 결과를 덮어쓴다.
+    merged_tables.update(new_tables or {})
+    merged_charts = _merge_chart_outputs(merged_charts, new_charts or [])
+    merged_notes.update(new_notes or {})
+    return merged_tables, merged_charts, merged_notes
 
 
 def _extract_row_value(row: dict[str, Any], keys: list[str]) -> Any:
