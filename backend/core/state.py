@@ -708,6 +708,134 @@ def _store_raw_outputs(
     }
 
 
+def _load_raw_outputs(raw_path: str | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    # raw 출력 경로가 없으면 빈 값을 반환한다.
+    if not raw_path:
+        return {}, []
+    # 파일 경로를 준비한다.
+    path = Path(raw_path)
+    # 파일이 없으면 빈 값을 반환한다.
+    if not path.exists():
+        return {}, []
+    # 파일 내용을 읽는다.
+    raw_text = path.read_text(encoding="utf-8")
+    # JSON payload로 파싱한다.
+    payload = json.loads(raw_text)
+    # 테이블/차트를 꺼낸다.
+    tables = payload.get("tables", {}) if isinstance(payload, dict) else {}
+    charts = payload.get("charts", []) if isinstance(payload, dict) else []
+    # 타입을 정리한다.
+    if not isinstance(tables, dict):
+        tables = {}
+    if not isinstance(charts, list):
+        charts = []
+    return tables, charts
+
+
+def _merge_raw_outputs(
+    previous_tables: dict[str, Any],
+    previous_charts: list[dict[str, Any]],
+    new_tables: dict[str, Any],
+    new_charts: list[dict[str, Any]],
+    dirty_stages: list[str] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    # dirty 단계가 없으면 새 결과만 사용한다.
+    if not dirty_stages:
+        return new_tables, new_charts
+    # 기존 결과를 복사한다.
+    merged_tables = dict(previous_tables or {})
+    merged_charts = list(previous_charts or [])
+    # dirty 단계에 해당하는 기존 결과를 제거한다.
+    for stage in dirty_stages:
+        for key in _STAGE_TABLE_KEYS.get(stage, []):
+            merged_tables.pop(key, None)
+        chart_ids = set(_STAGE_CHART_IDS.get(stage, []))
+        if chart_ids:
+            merged_charts = [
+                chart
+                for chart in merged_charts
+                if chart.get("chart_id") not in chart_ids
+            ]
+    # 새 결과를 덮어쓴다.
+    merged_tables.update(new_tables or {})
+    merged_charts = _merge_chart_outputs(merged_charts, new_charts or [])
+    return merged_tables, merged_charts
+
+
+def _merge_raw_outputs_with_history(
+    state: dict[str, Any],
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+    dirty_stages: list[str] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    # 이전 raw 출력 경로를 꺼낸다.
+    raw_path = state.get("raw_refs", {}).get("stage_outputs_path")
+    # 이전 raw 출력이 없으면 현재 결과를 반환한다.
+    if not raw_path:
+        return tables, charts
+    # 이전 raw 출력 내용을 읽는다.
+    previous_tables, previous_charts = _load_raw_outputs(raw_path)
+    # dirty 단계 기준으로 병합한다.
+    merged_tables, merged_charts = _merge_raw_outputs(
+        previous_tables,
+        previous_charts,
+        tables,
+        charts,
+        dirty_stages,
+    )
+    return merged_tables, merged_charts
+
+
+def _normalize_block_refs(
+    blocks: list[dict[str, Any]],
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    # 참조 키 후보를 준비한다.
+    table_keys = [key for key in (tables or {}).keys() if isinstance(key, str)]
+    chart_ids = [
+        chart.get("chart_id")
+        for chart in (charts or [])
+        if isinstance(chart, dict) and isinstance(chart.get("chart_id"), str)
+    ]
+    # 정규화용 맵을 만든다.
+    table_key_map = {key.strip().lower(): key for key in table_keys}
+    chart_id_map = {key.strip().lower(): key for key in chart_ids}
+    # 블록을 순회하며 참조 키를 정리한다.
+    normalized: list[dict[str, Any]] = []
+    for block in blocks or []:
+        # dict가 아니면 그대로 유지한다.
+        if not isinstance(block, dict):
+            normalized.append(block)
+            continue
+        # 블록을 복사한다.
+        next_block = dict(block)
+        block_type = next_block.get("type")
+        # table_ref 키를 정규화한다.
+        if block_type == "table_ref":
+            raw_key = next_block.get("table_key")
+            if isinstance(raw_key, str):
+                cleaned = raw_key.strip()
+                mapped = table_key_map.get(cleaned.lower())
+                if mapped:
+                    next_block["table_key"] = mapped
+                else:
+                    next_block["table_key"] = cleaned
+        # chart_ref 키를 정규화한다.
+        if block_type == "chart_ref":
+            raw_key = next_block.get("chart_id")
+            if isinstance(raw_key, str):
+                cleaned = raw_key.strip()
+                mapped = chart_id_map.get(cleaned.lower())
+                if mapped:
+                    next_block["chart_id"] = mapped
+                else:
+                    next_block["chart_id"] = cleaned
+        # 정리된 블록을 추가한다.
+        normalized.append(next_block)
+    return normalized
+
+
 def _payload_size(tables: dict[str, Any], charts: list[dict[str, Any]]) -> int:
     # LLM payload 크기를 추정한다.
     payload = {"tables": tables, "charts": charts}

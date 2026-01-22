@@ -15,6 +15,59 @@ def _format_sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _log_briefing_debug(
+    note: str,
+    session_id: str,
+    route: str,
+    action: str | None,
+    blocks: list[dict[str, Any]],
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+) -> None:
+    # 테이블 키를 수집한다.
+    table_keys = [key for key in (tables or {}).keys() if isinstance(key, str)]
+    # 차트 ID를 수집한다.
+    chart_ids = [
+        chart.get("chart_id")
+        for chart in (charts or [])
+        if isinstance(chart, dict) and isinstance(chart.get("chart_id"), str)
+    ]
+    # 블록에서 table_ref를 수집한다.
+    block_table_refs = [
+        block.get("table_key")
+        for block in (blocks or [])
+        if isinstance(block, dict) and block.get("type") == "table_ref"
+    ]
+    # 블록에서 chart_ref를 수집한다.
+    block_chart_refs = [
+        block.get("chart_id")
+        for block in (blocks or [])
+        if isinstance(block, dict) and block.get("type") == "chart_ref"
+    ]
+    # 누락된 table_ref를 계산한다.
+    missing_tables = [key for key in block_table_refs if key not in table_keys]
+    # 누락된 chart_ref를 계산한다.
+    missing_charts = [key for key in block_chart_refs if key not in chart_ids]
+    # 디버그 페이로드를 만든다.
+    payload = {
+        "note": note,
+        "session_id": session_id,
+        "route": route,
+        "action": action,
+        "block_count": len(blocks or []),
+        "table_count": len(table_keys),
+        "chart_count": len(chart_ids),
+        "table_keys": table_keys,
+        "chart_ids": chart_ids,
+        "block_table_refs": block_table_refs,
+        "block_chart_refs": block_chart_refs,
+        "missing_tables": missing_tables,
+        "missing_charts": missing_charts,
+    }
+    # 디버그 로그를 출력한다.
+    print("[BRIEFING_DEBUG]", json.dumps(payload, ensure_ascii=False))
+
+
 @router.post("/api/chat", response_model=schemas.ChatResponse)
 async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
     # 요청을 라우팅한다.
@@ -231,6 +284,21 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
                         briefing_hint,
                         briefing_sequence,
                     )
+                    # 블록 참조 키를 실제 데이터 키로 정리한다.
+                    blocks = state._normalize_block_refs(blocks, tables, charts)
+                if not missing:
+                    # 이전 raw 출력과 병합해 누락된 표/차트를 보정한다.
+                    tables, charts = state._merge_raw_outputs_with_history(
+                        session_state,
+                        tables,
+                        charts,
+                        dirty_stages,
+                    )
+                    # 병합된 테이블에 강조 표시를 다시 적용한다.
+                    state._apply_table_highlights(
+                        tables,
+                        session_state["selections"],
+                    )
                 state._update_state(
                     session_state,
                     merged_params,
@@ -260,6 +328,17 @@ async def api_chat(request: schemas.ChatRequest) -> schemas.ChatResponse:
     )
     if progress_logs:
         blocks = [{"type": "progress_log", "logs": progress_logs}] + blocks
+    # 시뮬레이션 응답 디버그 로그를 남긴다.
+    if route == "simulation":
+        _log_briefing_debug(
+            "final_response",
+            request.session_id,
+            route,
+            action,
+            blocks,
+            tables,
+            charts,
+        )
     # 응답을 구성한다.
     return schemas.ChatResponse(route=route, blocks=blocks, tables=tables, charts=charts)
 
@@ -527,6 +606,21 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                             briefing_hint,
                             briefing_sequence,
                         )
+                        # 블록 참조 키를 실제 데이터 키로 정리한다.
+                        blocks = state._normalize_block_refs(blocks, tables, charts)
+                    if not missing:
+                        # 이전 raw 출력과 병합해 누락된 표/차트를 보정한다.
+                        tables, charts = state._merge_raw_outputs_with_history(
+                            session_state,
+                            tables,
+                            charts,
+                            dirty_stages,
+                        )
+                        # 병합된 테이블에 강조 표시를 다시 적용한다.
+                        state._apply_table_highlights(
+                            tables,
+                            session_state["selections"],
+                        )
                     state._update_state(
                         session_state,
                         merged_params,
@@ -565,6 +659,17 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
         )
         if final_logs:
             blocks = [{"type": "progress_log", "logs": final_logs}] + blocks
+        # 시뮬레이션 스트림 응답 디버그 로그를 남긴다.
+        if route == "simulation":
+            _log_briefing_debug(
+                "final_stream_response",
+                request.session_id,
+                route,
+                action,
+                blocks,
+                tables,
+                charts,
+            )
         # 최종 응답을 전송한다.
         yield _format_sse(
             "final",
