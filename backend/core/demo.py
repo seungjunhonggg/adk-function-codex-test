@@ -234,8 +234,11 @@ def _build_simulation_stub(
             {"lot_id": "LOT-CAND-010", "chip_type_id": "CT-001", "defect_score": 0.26, "defect_metrics_summary": "ci_def_rate 0.26%, fr_defect_rate 215ppm"},
         ]
         # 선택된 칩기종을 후보 표에 반영한다.
-        selected_chip_type_id = selections.get("chip_type_id")
-        if selected_chip_type_id:
+        selected_chip_type_ids = selections.get("chip_type_ids") or []
+        selected_chip_type_id = (
+            selected_chip_type_ids[0] if selected_chip_type_ids else None
+        )
+        if selected_chip_type_id and len(selected_chip_type_ids) == 1:
             for row in tables["reference_lot_candidates_table"]:
                 row["chip_type_id"] = selected_chip_type_id
         # 선택된 레퍼런스 LOT를 최종 표에 반영한다.
@@ -255,7 +258,7 @@ def _build_simulation_stub(
             selected_ref_row = dict(default_row) if default_row else {}
             if selected_ref_row and selected_ref_id:
                 selected_ref_row["lot_id"] = selected_ref_id
-            if selected_ref_row and selected_chip_type_id:
+            if selected_ref_row and selected_chip_type_id and len(selected_chip_type_ids) == 1:
                 selected_ref_row["chip_type_id"] = selected_chip_type_id
         # 선택된 레퍼런스 LOT를 후보 표에서 강조 표시한다.
         if not selected_ref_id and selected_ref_row:

@@ -19,7 +19,7 @@ INPUT_LABEL_MAP = {
 # 변경 라벨 맵을 정의한다.
 UPDATE_LABEL_MAP = {
     "reference_lot_id": "레퍼런스 LOT",
-    "chip_type_id": "칩기종",
+    "chip_type_ids": "칩기종",
     "top_k": "top-k",
     "chart_type": "차트 타입",
 }
@@ -27,7 +27,7 @@ UPDATE_LABEL_MAP = {
 # pending_action 규칙을 정의한다.
 PENDING_ACTION_RULES = {
     "reference_lot_id": ("update_reference_lot", "1-3"),
-    "chip_type_id": ("update_chip_type", "1-2"),
+    "chip_type_ids": ("update_chip_type", "1-2"),
     "top_k": ("update_top_k", "1-5"),
     "chart_type": ("update_chart_type", "1-7"),
 }
@@ -38,7 +38,7 @@ STAGE_ORDER = ["1-1", "1-2", "1-3", "1-4", "1-5", "1-6", "1-7", "1-8"]
 # dirty 규칙을 정의한다.
 DIRTY_STAGE_RULES = {
     "input_params": ["1-2", "1-3", "1-4", "1-5", "1-6", "1-7", "1-8"],
-    "chip_type_id": ["1-2", "1-3", "1-4", "1-5", "1-6", "1-7", "1-8"],
+    "chip_type_ids": ["1-2", "1-3", "1-4", "1-5", "1-6", "1-7", "1-8"],
     "reference_lot_id": ["1-4", "1-5", "1-6", "1-7", "1-8"],
     "top_k": ["1-5", "1-6", "1-7", "1-8"],
     "chart_type": ["1-7", "1-8"],
@@ -121,7 +121,7 @@ def _init_session_state(session_id: str) -> dict[str, Any]:
             "capacity": None,
         },
         "selections": {
-            "chip_type_id": None,
+            "chip_type_ids": None,
             "reference_lot_id": None,
         },
         "configs": {
@@ -144,6 +144,7 @@ def _init_session_state(session_id: str) -> dict[str, Any]:
             "stage_outputs_saved_at": None,
         },
         "pending_action": None,
+        "last_gap": None,
         "last_explain_stage": None,
         "history": [],
         "user_prefs": {"chart_type": "bar", "language": "ko"},
@@ -228,6 +229,57 @@ def _merge_input_params(
     return InputParams(**merged)
 
 
+def _merge_update_and_collect_dirty(
+    session_state: dict[str, Any],
+    input_params: InputParams,
+    update: UpdateDecision,
+    missing_update: list[str] | None = None,
+) -> tuple[InputParams, list[str]]:
+    # 현재 입력값을 준비한다.
+    current_input = InputParams(**session_state["input_params"])
+    # 현재 선택값을 복사한다.
+    current_selections = dict(session_state["selections"])
+    # 현재 설정값을 복사한다.
+    current_configs = dict(session_state["configs"])
+    # 현재 사용자 설정을 복사한다.
+    current_prefs = dict(session_state["user_prefs"])
+    # 입력값을 병합한다.
+    merged_params = _merge_input_params(session_state["input_params"], input_params)
+    # 업데이트 입력값이 있으면 추가 병합한다.
+    if update.input_params:
+        merged_params = _merge_input_params(merged_params.dict(), update.input_params)
+    # 입력 변경점을 계산한다.
+    changed_input = _extract_changed_keys(
+        current_input.dict(), merged_params.dict()
+    )
+    # 선택 변경점을 계산한다.
+    changed_selections = _extract_changed_keys(
+        current_selections,
+        update.selections.dict() if update.selections else {},
+    )
+    # 설정 변경점을 계산한다.
+    changed_configs = _extract_changed_keys(
+        current_configs,
+        update.configs.dict() if update.configs else {},
+        skip_empty=False,
+    )
+    # 사용자 설정 변경점을 계산한다.
+    changed_prefs = _extract_changed_keys(
+        current_prefs,
+        update.user_prefs.dict() if update.user_prefs else {},
+    )
+    # 변경 필드를 하나로 모은다.
+    changed_fields = (
+        changed_input + changed_selections + changed_configs + changed_prefs
+    )
+    # 누락 업데이트를 포함해 dirty 단계를 계산한다.
+    dirty_stages = _collect_dirty_stages(
+        changed_fields + (missing_update or [])
+    )
+    # 병합 결과와 dirty 단계를 반환한다.
+    return merged_params, dirty_stages
+
+
 def _update_stage_status(state: dict[str, Any], has_missing: bool, demo: bool) -> None:
     # 단계 상태를 업데이트한다.
     status = state["stage_status"]
@@ -264,6 +316,7 @@ def _update_state(
     llm_tables: dict[str, Any] | None = None,
     llm_charts: list[dict[str, Any]] | None = None,
     dirty_stages: list[str] | None = None,
+    pending_action: dict[str, Any] | None = None,
 ) -> None:
     # 입력값을 저장한다.
     state["input_params"] = input_params.dict()
@@ -305,7 +358,9 @@ def _update_state(
     # 단계 상태를 갱신한다.
     _update_stage_status(state, bool(missing), demo)
     # pending_action을 저장한다.
-    if missing:
+    if pending_action is not None:
+        state["pending_action"] = pending_action
+    elif missing:
         state["pending_action"] = {
             "action": "collect_input",
             "target_stage": "1-1",
@@ -632,6 +687,15 @@ def _mark_selected_rows(
 
 def _apply_table_highlights(tables: dict[str, Any], selections: dict[str, Any]) -> None:
     # 테이블 강조 표시를 적용한다.
+    # 칩기종 후보 강조 처리.
+    chip_rows = tables.get("chip_type_candidates_table", [])
+    selected_chip_ids = selections.get("chip_type_ids") or []
+    if isinstance(selected_chip_ids, list) and isinstance(chip_rows, list):
+        _mark_selected_rows(
+            chip_rows,
+            lambda row: _extract_row_value(row, ["chip_type_id", "칩기종 ID"])
+            in selected_chip_ids,
+        )
     # 레퍼런스 LOT 후보 강조 처리.
     ref_rows = tables.get("reference_lot_candidates_table", [])
     selected_ref_id = selections.get("reference_lot_id")

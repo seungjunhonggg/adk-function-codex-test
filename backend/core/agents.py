@@ -8,6 +8,7 @@ from .schemas import (
     CasualOutput,
     CommandDecision,
     ExplainOutput,
+    GapQuestionOutput,
     InputParams,
     RouteDecision,
     UpdateDecision,
@@ -93,7 +94,7 @@ COMMAND_STAGE_HINT = (
 UPDATE_STAGE_HINT = (
     "\n\n[필드 매핑 힌트]\n"
     "- ref lot/레퍼런스/LOT 변경 -> selections.reference_lot_id\n"
-    "- 칩기종/칩 타입 변경 -> selections.chip_type_id\n"
+    "- 칩기종/칩 타입 변경 -> selections.chip_type_ids (리스트)\n"
     "- top-k/순위 변경 -> configs.top_k\n"
     "\n[단계 카탈로그]\n"
     f"{STAGE_CATALOG_TEXT}"
@@ -188,7 +189,7 @@ update_agent = Agent(
     instructions=(
         "사용자 메시지에서 변경 요청을 추출해.\n"
         "- input_params: temperature, voltage, size, capacity\n"
-        "- selections: chip_type_id, reference_lot_id\n"
+        "- selections: chip_type_ids(리스트), reference_lot_id\n"
         "- configs: top_k\n"
         "- user_prefs: chart_type(bar|line|scatter)\n"
         "규칙:\n"
@@ -217,6 +218,25 @@ explain_agent = Agent(
         "answer만 출력해."
     ),
     output_type=ExplainOutput,
+    **MODEL_KWARGS,
+)
+
+
+gap_agent = Agent(
+    name="GapAgent",
+    instructions=(
+        "다음 JSON을 보고 사용자에게 확인 질문을 만들어.\n"
+        "- stage: 단계\n"
+        "- reason: 데이터 공백 이유\n"
+        "- fallback_summary: 대체조건 요약\n"
+        "- candidate_count: 후보 개수\n"
+        "규칙:\n"
+        "- 항상 확인 질문으로 끝내.\n"
+        "- 짧고 간결한 한국어 2~3문장.\n"
+        "- fallback_summary를 한 번 언급.\n"
+        "question만 출력해."
+    ),
+    output_type=GapQuestionOutput,
     **MODEL_KWARGS,
 )
 
@@ -337,6 +357,14 @@ async def _build_explain_answer(context: dict[str, Any]) -> str:
     # LLM으로 설명을 생성한다.
     result = await Runner.run(explain_agent, payload)
     return result.final_output.answer
+
+
+async def _build_gap_question(context: dict[str, Any]) -> str:
+    # 데이터 공백 질문 컨텍스트를 직렬화한다.
+    payload = json.dumps(context, ensure_ascii=False)
+    # LLM으로 확인 질문을 생성한다.
+    result = await Runner.run(gap_agent, payload)
+    return result.final_output.question
 
 
 async def _build_casual_blocks(session, message: str) -> list[dict[str, Any]]:

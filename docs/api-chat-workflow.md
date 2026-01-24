@@ -37,6 +37,13 @@
 - 변경된 dirty 단계 중 가장 앞 단계부터 브리핑 범위를 제한한다(예: 1-4 변경 → 1-4~1-8).
 - briefing_hint를 전달해 첫 문장에 변경 반영 문구를 포함한다.
 
+## 데이터 공백 처리 (gap)
+- 각 단계에서 strict 조회 결과가 0건이면 fallback 조건으로 1회 재조회한다.
+- fallback 결과가 있으면 pending_action을 `select_candidates`로 설정하고 다음 단계로 진행하지 않는다.
+- GapAgent가 확인 질문을 생성한다.
+- 후보 선택이 필요한 경우 `table_select` 블록을 반환한다.
+- 사용자가 선택을 제출하면 해당 단계부터 재실행한다.
+
 ## 요청/응답 스키마 (v0)
 ### 요청
 ```json
@@ -55,6 +62,29 @@
   "blocks": [],
   "tables": {},
   "charts": []
+}
+```
+
+### table_select 블록 (선택 UI)
+```json
+{
+  "type": "table_select",
+  "table_key": "chip_type_candidates_table",
+  "id_field": "chip_type_id",
+  "selection_field": "chip_type_ids",
+  "allow_multi": true,
+  "action": "select_candidates",
+  "submit_label": "해당 기종으로 진행"
+}
+```
+
+### 선택 제출 payload
+```json
+{
+  "action": "select_candidates",
+  "selection": {
+    "chip_type_ids": ["CT-001", "CT-003"]
+  }
 }
 ```
 
@@ -131,6 +161,7 @@
 ## 에러 처리 (간단)
 - 필수 입력 누락: 즉시 안내 후 재질문.
 - API 실패: ref 기반 요약만 제공 + 재시도 안내.
+- 데이터 공백: fallback 결과가 있으면 확인 질문 + 선택 UI 반환.
 
 ## Casual route (LLM)
 - route=casual uses CasualAgent to generate text blocks.

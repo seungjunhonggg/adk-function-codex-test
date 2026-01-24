@@ -48,7 +48,7 @@
 소스:
 - 칩 LOT 마스터: mdh_base_view_total_4
 입력:
-- chip_type_id 리스트
+- chip_type_ids 리스트
 규칙:
 - 핵심 설계 인자 NotNull + 불량률 최소 조건(DB 규칙 관리)
 출력:

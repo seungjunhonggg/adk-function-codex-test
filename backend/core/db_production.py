@@ -1,7 +1,79 @@
 from typing import Any, Callable
 
 from .schemas import InputParams
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
 
+# .env 파일 로드
+load_dotenv()
+
+class DatabaseHandler:
+    def __init__(self):
+        """환경 변수에서 DB 설정을 불러와 초기화합니다."""
+        self.host = os.getenv("DB_HOST")
+        self.dbname = os.getenv("DB_NAME")
+        self.user = os.getenv("DB_USER")
+        self.password = os.getenv("DB_PASSWORD")
+        self.port = os.getenv("DB_PORT")
+        self.connection = None
+
+    def connect(self):
+        """DB 연결을 생성합니다."""
+        try:
+            if self.connection is None or self.connection.closed:
+                self.connection = psycopg2.connect(
+                    host=self.host,
+                    dbname=self.dbname,
+                    user=self.user,
+                    password=self.password,
+                    port=self.port
+                )
+        except Exception as e:
+            print(f"[DB Error] Connection failed: {e}")
+            raise
+
+    def execute_read(self, query, params=None):
+        """
+        SELECT 문과 같이 데이터를 조회할 때 사용합니다.
+        결과를 딕셔너리 형태의 리스트로 반환합니다.
+        """
+        self.connect()
+        try:
+            # RealDictCursor를 사용하면 컬럼명:값 형태(Dict)로 결과를 받습니다.
+            with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, params)
+                result = cursor.fetchall()
+                return result
+        except Exception as e:
+            print(f"[DB Error] Read query failed: {e}")
+            return None
+        # 연결은 유지하거나, 필요에 따라 finally에서 close() 할 수 있습니다.
+
+    def execute_write(self, query, params=None):
+        """
+        INSERT, UPDATE, DELETE 문과 같이 데이터를 변경할 때 사용합니다.
+        성공적으로 완료되면 commit, 실패하면 rollback 합니다.
+        """
+        self.connect()
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(query, params)
+                self.connection.commit()  # 변경사항 저장
+                return True
+        except Exception as e:
+            self.connection.rollback()  # 에러 발생 시 되돌리기
+            print(f"[DB Error] Write query failed: {e}")
+            return False
+
+    def close(self):
+        """DB 연결을 종료합니다."""
+        if self.connection:
+            self.connection.close()
+
+# 에이전트에서 바로 import해서 쓸 수 있도록 인스턴스 생성 (선택 사항)
+db = DatabaseHandler()
 
 # 라벨 매핑 테이블/컬럼명을 정의한다.
 _COLUMN_LABEL_TABLE = "column_label_map"
@@ -42,7 +114,7 @@ def build_simulation_from_db(
     user_prefs: dict[str, Any],
     dirty_stages: list[str] | None = None,
     progress_cb: Callable[[str], None] | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any] | None]:
     # 테이블 컨테이너를 준비한다.
     tables: dict[str, Any] = {}
     # 차트 컨테이너를 준비한다.
@@ -51,6 +123,8 @@ def build_simulation_from_db(
     stage_notes: dict[str, str] = {}
     # dirty 스테이지 집합을 준비한다.
     dirty_set = set(dirty_stages or [])
+    # 데이터 공백 정보를 준비한다.
+    gap: dict[str, Any] | None = None
 
     def _should_run(stage: str) -> bool:
         # dirty 정보가 없으면 전체 실행한다.
@@ -78,9 +152,15 @@ def build_simulation_from_db(
     if _should_run("1-2"):
         # 1-2 진행 로그를 보낸다.
         _emit_progress("1-2")
-        # TODO: 칩기종 후보를 조회해 테이블을 만든다.
-        # tables["chip_type_candidates_table"] = [...]
-        # stage_notes["1-2"] = "..."
+        # 칩기종 후보 조회를 수행한다.
+        chip_rows, chip_gap = find_chip_prod_id(input_params)
+        # 조회 결과를 테이블에 넣는다.
+        if chip_rows:
+            tables["chip_type_candidates_table"] = chip_rows
+        # gap이 있으면 여기서 멈춘다.
+        if chip_gap:
+            gap = chip_gap
+            return tables, charts, stage_notes, gap
 
     # 1-3: reference_lot_candidates_table, reference_lot_table
     if _should_run("1-3"):
@@ -129,4 +209,43 @@ def build_simulation_from_db(
         _emit_progress("1-8")
         # TODO: 브리핑 근거 노트를 만든다.
         # stage_notes["1-8"] = "..."
-    return tables, charts, stage_notes
+    return tables, charts, stage_notes, gap
+
+
+def find_chip_prod_id(params: InputParams) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
+    # 기본 조건 조회 쿼리를 준비한다.
+    query = """
+    SELECT ~~~
+    FROM ~~~
+    WHERE ~~~
+    """
+    # 기본 조건 조회를 실행한다.
+    result = db.execute_read(query, params)
+    # 기본 조건 결과가 있으면 바로 반환한다.
+    if result:
+        return result, None, "입력 조건에 맞는 칩기종 후보를 찾았습니다."
+    # 대체 조건 쿼리를 준비한다.
+    fallback_query = """
+    SELECT ~~~
+    FROM ~~~
+    WHERE ~~~
+    """
+    # 대체 조건 요약을 준비한다.
+    fallback_summary = "조건 일부를 완화"
+    # 대체 조건 조회를 실행한다.
+    fallback_rows = db.execute_read(fallback_query, params)
+    # 대체 조건 결과가 있으면 gap을 만들어 반환한다.
+    if fallback_rows:
+        gap = {
+            "stage": "1-2",
+            "reason": "no_chip_type_match",
+            "fallback_summary": fallback_summary,
+            "candidate_count": len(fallback_rows),
+            "table_key": "chip_type_candidates_table",
+            "id_field": "chip_type_id",
+            "selection_field": "chip_type_ids",
+            "allow_multi": True,
+        }
+        return fallback_rows, gap
+    # 대체 조건도 없으면 빈 결과로 반환한다.
+    return [], None

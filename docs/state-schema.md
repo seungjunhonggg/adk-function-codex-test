@@ -16,7 +16,7 @@
     "capacity": "string|null"
   },
   "selections": {
-    "chip_type_id": "string|null",
+    "chip_type_ids": ["string"] | null,
     "reference_lot_id": "string|null"
   },
   "configs": {
@@ -69,10 +69,20 @@
     "stage_outputs_saved_at": "ts"
   },
   "pending_action": {
-    "action": "collect_input",
+    "action": "collect_input | select_candidates",
     "target_stage": "1-1",
     "missing_fields": ["temperature"],
+    "table_key": "chip_type_candidates_table",
+    "id_field": "chip_type_id",
+    "selection_field": "chip_type_ids",
+    "question": "string",
     "requested_at": "ts"
+  },
+  "last_gap": {
+    "stage": "1-2",
+    "reason": "string",
+    "fallback_summary": "string",
+    "candidate_count": 0
   },
   "last_explain_stage": "string|null",
   "history": [
@@ -95,6 +105,7 @@
 - 사용자가 값을 주면 pending_action을 해소하고 해당 단계부터 재실행한다.
 - action 예시:
   - collect_input
+  - select_candidates
   - update_reference_lot
   - update_chip_type
   - update_top_k

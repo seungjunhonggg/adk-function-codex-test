@@ -36,6 +36,13 @@ WHERE column_key IS NOT NULL;
 
 ## 2) 시뮬레이션 결과 구조
 `build_simulation_from_db(...)`에서 아래 키로 결과를 구성한다.
+데이터 공백이 발생하면 gap 정보를 함께 반환한다.
+
+### 반환 형식
+```
+tables, charts, stage_notes, gap
+```
+- `gap`이 있으면 다음 단계로 진행하지 않고 사용자 확인을 요청한다.
 
 ### 필수 tables 키
 - `input_params_table`

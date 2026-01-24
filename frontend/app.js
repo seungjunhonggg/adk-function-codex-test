@@ -257,6 +257,9 @@ function renderBlock(block, tables, charts) {
   if (block.type === "chart_ref") {
     return renderChartCard(block.chart_id, charts);
   }
+  if (block.type === "table_select") {
+    return renderTableSelect(block, tables);
+  }
   if (block.type === "input_form") {
     return renderInputForm(block);
   }
@@ -547,6 +550,158 @@ function renderTableCard(tableKey, tables) {
   table.appendChild(tbody);
   card.appendChild(table);
   return card;
+}
+
+// 테이블 선택 블록을 만든다.
+function renderTableSelect(block, tables) {
+  const card = document.createElement("div");
+  card.className = "block table-select-card";
+
+  const header = document.createElement("div");
+  header.className = "table-select-header";
+  if (block.title) {
+    const title = document.createElement("div");
+    title.className = "table-select-title";
+    title.textContent = block.title;
+    header.appendChild(title);
+  }
+  if (block.description) {
+    const desc = document.createElement("div");
+    desc.className = "table-select-desc";
+    desc.textContent = block.description;
+    header.appendChild(desc);
+  }
+  card.appendChild(header);
+
+  const tableKey = block.table_key;
+  const rows = tables && tableKey ? tables[tableKey] : null;
+  if (!rows || !Array.isArray(rows) || rows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "block__text";
+    empty.textContent = "No table data.";
+    card.appendChild(empty);
+    return card;
+  }
+
+  const selectedIds = new Set(block.selected_ids || []);
+  const columns = getTableColumns(rows);
+  const idField = block.id_field || "chip_type_id";
+  const allowMulti = block.allow_multi !== false;
+  const table = document.createElement("table");
+  table.className = "table-select-table";
+
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  const selectTh = document.createElement("th");
+  selectTh.textContent = "선택";
+  headerRow.appendChild(selectTh);
+  columns.forEach((col) => {
+    const th = document.createElement("th");
+    th.textContent = col;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((row, index) => {
+    const tr = document.createElement("tr");
+    const rowId = getRowIdValue(row, idField, columns, index);
+    if (selectedIds.has(String(rowId))) {
+      tr.classList.add("is-selected");
+    }
+
+    const selectTd = document.createElement("td");
+    const selectInput = document.createElement("input");
+    selectInput.type = allowMulti ? "checkbox" : "radio";
+    selectInput.name = "table-select";
+    selectInput.value = String(rowId);
+    selectInput.checked = selectedIds.has(String(rowId));
+    selectTd.appendChild(selectInput);
+    tr.appendChild(selectTd);
+
+    columns.forEach((col) => {
+      const td = document.createElement("td");
+      const value = row[col] === null || row[col] === undefined ? "" : row[col];
+      td.textContent = String(value);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  card.appendChild(table);
+
+  const actions = document.createElement("div");
+  actions.className = "table-select-actions";
+  const summary = document.createElement("div");
+  summary.className = "table-select-summary";
+  summary.textContent = allowMulti
+    ? "여러 개 선택 가능"
+    : "한 개만 선택 가능";
+  actions.appendChild(summary);
+
+  const errorText = document.createElement("div");
+  errorText.className = "table-select-error";
+  errorText.textContent = "선택한 항목이 없습니다.";
+  actions.appendChild(errorText);
+
+  const submitBtn = document.createElement("button");
+  submitBtn.type = "button";
+  submitBtn.className = "table-select-submit";
+  submitBtn.textContent = block.submit_label || "선택 완료";
+  submitBtn.addEventListener("click", () => {
+    const selected = collectTableSelection(card);
+    if (selected.length === 0) {
+      errorText.classList.add("is-visible");
+      return;
+    }
+    errorText.classList.remove("is-visible");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Submitting...";
+    card.classList.add("is-submitted");
+    const selectionField = block.selection_field || "chip_type_ids";
+    const payload = {
+      action: block.action || "select_candidates",
+      selection: { [selectionField]: selected },
+    };
+    sendMessage(JSON.stringify(payload, null, 2));
+  });
+  actions.appendChild(submitBtn);
+  card.appendChild(actions);
+  return card;
+}
+
+// 테이블 컬럼 목록을 만든다.
+function getTableColumns(rows) {
+  const columnSet = new Set();
+  rows.forEach((row) => {
+    if (!row || typeof row !== "object") {
+      return;
+    }
+    Object.keys(row).forEach((key) => {
+      if (!key.startsWith("__")) {
+        columnSet.add(key);
+      }
+    });
+  });
+  return Array.from(columnSet);
+}
+
+// 테이블 행 ID를 추출한다.
+function getRowIdValue(row, idField, columns, index) {
+  if (row && Object.prototype.hasOwnProperty.call(row, idField)) {
+    return row[idField];
+  }
+  if (columns.length > 0 && row && Object.prototype.hasOwnProperty.call(row, columns[0])) {
+    return row[columns[0]];
+  }
+  return index + 1;
+}
+
+// 테이블에서 선택된 ID를 모은다.
+function collectTableSelection(card) {
+  const inputs = card.querySelectorAll('input[name="table-select"]:checked');
+  return Array.from(inputs).map((input) => input.value);
 }
 
 // 차트 블록을 만든다.

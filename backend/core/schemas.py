@@ -40,7 +40,7 @@ class InputParams(BaseModel):
 
 # 변경 대상 스키마를 정의한다.
 class UpdateSelections(BaseModel):
-    chip_type_id: str | None = None
+    chip_type_ids: list[str] | None = None
     reference_lot_id: str | None = None
 
 
@@ -87,3 +87,7 @@ class CasualOutput(BaseModel):
 
 class ExplainOutput(BaseModel):
     answer: str
+
+
+class GapQuestionOutput(BaseModel):
+    question: str
