@@ -565,6 +565,13 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                         )
                         # 블록 참조 키를 실제 데이터 키로 정리한다.
                         blocks = state._normalize_block_refs(blocks, tables, charts)
+                        # 참조 블록이 없으면 단계 순서 기준으로 보정한다.
+                        blocks = state._ensure_block_refs(
+                            blocks,
+                            tables,
+                            charts,
+                            briefing_sequence,
+                        )
                     if not missing and not pending_action:
                         # 이전 raw 출력과 병합해 누락된 표/차트를 보정한다.
                         tables, charts = state._merge_raw_outputs_with_history(

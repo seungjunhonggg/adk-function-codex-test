@@ -900,6 +900,51 @@ def _normalize_block_refs(
     return normalized
 
 
+def _ensure_block_refs(
+    blocks: list[dict[str, Any]],
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+    stage_sequence: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    # 참조할 데이터가 없으면 그대로 반환한다.
+    if not tables and not charts:
+        return blocks
+    # 참조 블록이 이미 있으면 그대로 반환한다.
+    has_ref = any(
+        isinstance(block, dict)
+        and block.get("type") in ("table_ref", "chart_ref")
+        for block in (blocks or [])
+    )
+    if has_ref:
+        return blocks
+    # 차트 ID 집합을 만든다.
+    chart_id_set = {
+        chart.get("chart_id")
+        for chart in (charts or [])
+        if isinstance(chart, dict) and chart.get("chart_id")
+    }
+    # 단계 순서가 있으면 그 순서대로 참조 블록을 만든다.
+    if stage_sequence:
+        refs: list[dict[str, Any]] = []
+        for stage in stage_sequence:
+            for key in stage.get("table_keys", []):
+                if key in (tables or {}):
+                    refs.append({"type": "table_ref", "table_key": key})
+            for chart_id in stage.get("chart_ids", []):
+                if chart_id in chart_id_set:
+                    refs.append({"type": "chart_ref", "chart_id": chart_id})
+        if refs:
+            return (blocks or []) + refs
+    # 순서 정보가 없으면 키 순서대로 참조 블록을 붙인다.
+    fallback_refs: list[dict[str, Any]] = []
+    for key in (tables or {}).keys():
+        if isinstance(key, str):
+            fallback_refs.append({"type": "table_ref", "table_key": key})
+    for chart_id in chart_id_set:
+        fallback_refs.append({"type": "chart_ref", "chart_id": chart_id})
+    return (blocks or []) + fallback_refs
+
+
 def _payload_size(tables: dict[str, Any], charts: list[dict[str, Any]]) -> int:
     # LLM payload 크기를 추정한다.
     payload = {"tables": tables, "charts": charts}

@@ -119,6 +119,7 @@
 - stage_sequence(단계 순서/근거/표/차트 키)를 함께 전달해 단계별 순서로 블록을 만든다.
 - stage_notes는 근거 라인만 추려 stage_sequence.note로 전달한다.
 - 1-3 단계는 reference_lot_candidates_table만 사용하고 선택 행을 강조한다.
+- LLM이 table_ref/chart_ref를 누락하면 stage_sequence 기준으로 참조 블록을 보정한다.
 
 ### LLM 출력 형식 예시
 ```json
