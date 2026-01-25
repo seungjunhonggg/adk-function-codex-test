@@ -225,6 +225,376 @@ def _build_gap_pending_payload(
     return pending_action, blocks
 
 
+def _build_input_form_blocks(merged_params: schemas.InputParams) -> list[dict[str, Any]]:
+    # 입력 폼에 필요한 필드 목록을 준비한다.
+    target_keys = ["temperature", "size", "capacity", "voltage"]
+    # 폼 필드를 담을 리스트를 만든다.
+    fields: list[dict[str, Any]] = []
+    # 각 입력 항목을 순서대로 구성한다.
+    for key in target_keys:
+        current_val = merged_params.dict().get(key)
+        field_def = {
+            "key": key,
+            "label": state.INPUT_LABEL_MAP.get(key, key),
+            "type": "text",
+            "value": current_val or "",
+        }
+        # 필드별 UI 설정을 추가한다.
+        if key == "temperature":
+            field_def["type"] = "select"
+            field_def["options"] = ["A", "B", "D"]
+            field_def["unit"] = "특성"
+        elif key == "voltage":
+            field_def["type"] = "number"
+            field_def["unit"] = "V"
+        elif key == "size":
+            field_def["type"] = "select"
+            field_def["options"] = ["1005", "1608", "2012", "3216"]
+        elif key == "capacity":
+            field_def["type"] = "number"
+            field_def["unit"] = "pF"
+            field_def["unit_options"] = ["pF", "nF", "uF"]
+        # 구성된 필드를 목록에 추가한다.
+        fields.append(field_def)
+    # 입력 폼 블록을 반환한다.
+    return [
+        {
+            "type": "input_form",
+            "form_id": "mlcc_basic_params",
+            "title": "시뮬레이션 조건 입력",
+            "description": "다음 핵심 정보를 입력해주세요.",
+            "fields": fields,
+            "submit_label": "시뮬레이션 시작",
+            "submitted": False,
+        }
+    ]
+
+
+async def _handle_explain_stage_request(
+    session_state: dict[str, Any],
+    command: schemas.CommandDecision,
+    request_message: str,
+    route: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+    # 설명 요청 진행 로그를 만든다.
+    progress_logs = state._build_progress_logs(
+        route,
+        "explain_stage",
+        session_state.get("stage_status"),
+        is_final=False,
+    )
+    # 설명 대상 단계를 확정한다.
+    target_stage = state._normalize_stage(
+        command.target_stage or session_state.get("last_explain_stage"),
+        session_state["stage_status"],
+    )
+    # LLM 설명 응답을 생성한다.
+    blocks, tables, charts = await state._build_explain_response(
+        session_state, target_stage, request_message
+    )
+    # 마지막 설명 단계 기록을 갱신한다.
+    if target_stage:
+        session_state["last_explain_stage"] = target_stage
+    # 설명 요청 히스토리를 남긴다.
+    session_state["history"].append(
+        {
+            "action": "explain_stage",
+            "payload": {"target_stage": target_stage},
+            "at": state._utc_now(),
+        }
+    )
+    # 진행 로그와 결과 블록을 함께 반환한다.
+    return progress_logs, blocks, tables, charts
+
+
+async def _resolve_input_and_update(
+    session_state: dict[str, Any],
+    request_message: str,
+    pending_selection: list[str] | None,
+    had_results: bool,
+) -> tuple[schemas.InputParams, schemas.UpdateDecision, list[str]]:
+    # pending 선택이 있으면 해당 선택만 업데이트한다.
+    if pending_selection:
+        input_params = schemas.InputParams(**session_state["input_params"])
+        update = schemas.UpdateDecision(
+            selections=schemas.UpdateSelections(chip_type_ids=pending_selection)
+        )
+        session_state["pending_action"] = None
+    else:
+        # 일반 메시지는 LLM 파싱으로 입력/업데이트를 만든다.
+        input_params = await agents._parse_input_with_llm(request_message)
+        update = await agents._parse_update_with_llm(request_message)
+    # 누락 요청 필드를 수집한다.
+    missing_update = update.missing_fields or []
+    # 결과가 없던 상태라면 누락 요청은 무시한다.
+    if not had_results:
+        missing_update = []
+    # 입력/업데이트/누락 정보를 반환한다.
+    return input_params, update, missing_update
+
+
+def _apply_update_and_dirty(
+    session_state: dict[str, Any],
+    input_params: schemas.InputParams,
+    update: schemas.UpdateDecision,
+    missing_update: list[str],
+) -> tuple[schemas.InputParams, list[str]]:
+    # 입력 병합과 dirty 계산을 동시에 수행한다.
+    merged_params, dirty_stages = state._merge_update_and_collect_dirty(
+        session_state,
+        input_params,
+        update,
+        missing_update,
+    )
+    # 병합된 입력을 세션에 반영한다.
+    session_state["input_params"] = merged_params.dict()
+    # 업데이트 필드를 세션에 적용한다.
+    state._apply_update_fields(session_state, update)
+    # dirty 상태를 기록한다.
+    state._mark_dirty(session_state, dirty_stages)
+    # 병합 결과와 dirty 정보를 반환한다.
+    return merged_params, dirty_stages
+
+
+def _handle_missing_update_request(
+    session_state: dict[str, Any],
+    missing_update: list[str],
+) -> tuple[bool, list[str], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]:
+    # 누락 업데이트가 없으면 처리하지 않는다.
+    if not missing_update:
+        return False, [], [], {}, [], None
+    # 누락 요청 pending_action을 만든다.
+    pending_action = state._build_pending_action(missing_update)
+    session_state["pending_action"] = pending_action
+    # 누락 요청 히스토리를 기록한다.
+    session_state["history"].append(
+        {
+            "action": "update_input_pending",
+            "payload": {"missing": missing_update},
+            "at": state._utc_now(),
+        }
+    )
+    # 사용자 안내 블록을 만든다.
+    blocks = [
+        {
+            "type": "text",
+            "section": "summary",
+            "value": state._format_update_missing(missing_update),
+        }
+    ]
+    # 누락 요청 응답용 테이블/차트를 초기화한다.
+    tables, charts = {}, []
+    # 누락 처리 결과를 반환한다.
+    return True, missing_update, blocks, tables, charts, pending_action
+
+
+def _handle_missing_targets_form(
+    missing: list[str],
+    merged_params: schemas.InputParams,
+) -> tuple[bool, list[dict[str, Any]], dict[str, Any], list[dict[str, Any]], dict[str, str]]:
+    # 입력 폼에 필요한 필드를 고른다.
+    target_keys = ["temperature", "size", "capacity", "voltage"]
+    # 누락된 주요 입력 필드를 찾는다.
+    missing_targets = [key for key in missing if key in target_keys]
+    # 주요 필드가 없으면 입력 폼을 만들지 않는다.
+    if not missing_targets:
+        return False, [], {}, [], {}
+    # 입력 폼 블록을 만든다.
+    blocks = _build_input_form_blocks(merged_params)
+    # 입력 폼은 테이블/차트가 없다.
+    tables, charts = {}, []
+    # 입력 폼 단계 노트를 비워둔다.
+    stage_notes: dict[str, str] = {}
+    # 입력 폼 처리 결과를 반환한다.
+    return True, blocks, tables, charts, stage_notes
+
+
+async def _build_briefing_blocks_for_run(
+    route: str,
+    action: str | None,
+    session_state: dict[str, Any],
+    had_results: bool,
+    dirty_stages: list[str],
+    stage_notes: dict[str, str],
+    llm_tables: dict[str, Any],
+    llm_charts: list[dict[str, Any]],
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    # 브리핑 진행 로그를 만든다.
+    progress_logs = state._build_progress_logs(
+        route,
+        action,
+        session_state.get("stage_status"),
+        current_stage="1-8",
+        is_final=False,
+    )
+    # 브리핑 시작 단계와 힌트를 결정한다.
+    briefing_start = None
+    briefing_hint = None
+    if had_results and dirty_stages:
+        briefing_start = state._pick_briefing_start_stage(dirty_stages)
+        briefing_hint = state._build_briefing_hint(briefing_start)
+    # 브리핑 시퀀스를 구성한다.
+    briefing_sequence = state._build_briefing_sequence(stage_notes, briefing_start)
+    # 브리핑 대상 테이블/차트를 추린다.
+    briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
+        llm_tables, llm_charts, briefing_start
+    )
+    # LLM 브리핑 블록을 생성한다.
+    blocks = await agents._build_briefing_blocks(
+        briefing_tables,
+        briefing_charts,
+        briefing_hint,
+        briefing_sequence,
+    )
+    # 블록 참조를 정규화한다.
+    blocks = state._normalize_block_refs(blocks, tables, charts)
+    # 참조 누락 블록을 보정한다.
+    blocks = state._ensure_block_refs(
+        blocks,
+        tables,
+        charts,
+        briefing_sequence,
+    )
+    # 브리핑 블록과 진행 로그를 반환한다.
+    return blocks, progress_logs
+
+
+def _post_process_run_tables(
+    session_state: dict[str, Any],
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+    dirty_stages: list[str],
+    missing: list[str],
+    pending_action: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    # 누락이나 pending이 있으면 후처리를 하지 않는다.
+    if missing or pending_action:
+        return tables, charts
+    # raw 출력과 히스토리를 병합한다.
+    tables, charts = state._merge_raw_outputs_with_history(
+        session_state,
+        tables,
+        charts,
+        dirty_stages,
+    )
+    # 병합 후에도 강조 표시를 유지한다.
+    state._apply_table_highlights(
+        tables,
+        session_state["selections"],
+    )
+    # 후처리 결과를 반환한다.
+    return tables, charts
+
+
+def _update_run_state(
+    session_state: dict[str, Any],
+    merged_params: schemas.InputParams,
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+    stage_notes: dict[str, str],
+    missing: list[str],
+    demo: bool,
+    llm_tables: dict[str, Any],
+    llm_charts: list[dict[str, Any]],
+    dirty_stages: list[str],
+    pending_action: dict[str, Any] | None,
+) -> None:
+    # 세션 상태를 업데이트한다.
+    state._update_state(
+        session_state,
+        merged_params,
+        tables,
+        charts,
+        blocks,
+        stage_notes,
+        missing,
+        demo,
+        llm_tables=llm_tables,
+        llm_charts=llm_charts,
+        dirty_stages=dirty_stages,
+        pending_action=pending_action,
+    )
+    # 누락과 pending이 없으면 dirty 상태를 해제한다.
+    if not missing and not pending_action:
+        state._mark_clean(session_state, dirty_stages)
+
+
+def _run_simulation_with_progress(
+    route: str,
+    action: str | None,
+    session_state: dict[str, Any],
+    merged_params: schemas.InputParams,
+    dirty_stages: list[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any] | None, list[list[dict[str, Any]]]]:
+    # 진행 로그 이벤트를 담을 리스트를 준비한다.
+    progress_events: list[list[dict[str, Any]]] = []
+    # 단계별 진행 로그를 수집하는 콜백을 정의한다.
+    def progress_cb(stage: str) -> None:
+        logs = state._build_progress_logs(
+            route,
+            action,
+            session_state.get("stage_status"),
+            current_stage=stage,
+            is_final=False,
+        )
+        if logs:
+            progress_events.append(logs)
+    # DB 시뮬레이션을 실행한다.
+    tables, charts, stage_notes, gap = db_production.build_simulation_from_db(
+        merged_params,
+        session_state["configs"],
+        session_state["selections"],
+        session_state["user_prefs"],
+        dirty_stages=dirty_stages,
+        progress_cb=progress_cb,
+    )
+    # 결과와 진행 로그를 함께 반환한다.
+    return tables, charts, stage_notes, gap, progress_events
+
+
+def _finalize_gap_stream_response(
+    route: str,
+    action: str | None,
+    session_state: dict[str, Any],
+    merged_params: schemas.InputParams,
+    tables: dict[str, Any],
+    charts: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+    stage_notes: dict[str, str],
+    missing: list[str],
+    dirty_stages: list[str],
+    pending_action: dict[str, Any],
+    demo: bool,
+) -> dict[str, Any]:
+    # 선택 강조 표시를 적용한다.
+    state._apply_table_highlights(tables, session_state.get("selections", {}))
+    # 상태를 업데이트한다.
+    state._update_state(
+        session_state,
+        merged_params,
+        tables,
+        charts,
+        blocks,
+        stage_notes,
+        missing,
+        demo,
+        dirty_stages=dirty_stages,
+        pending_action=pending_action,
+    )
+    # 최종 응답 페이로드를 만든다.
+    return _build_final_payload(
+        route,
+        action,
+        session_state,
+        blocks,
+        tables,
+        charts,
+        debug_note="final_stream_response",
+    )
+
 def _build_final_payload(
     route: str,
     action: str | None,
@@ -302,39 +672,21 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                     session_state, pending_action
                 )
             elif command.action == "explain_stage":
-                # 설명 요청은 별도로 처리한다.
                 action = "explain_stage"
-                # 설명 단계 진행 로그를 전송한다.
-                progress_logs = state._build_progress_logs(
+                (
+                    progress_logs,
+                    blocks,
+                    tables,
+                    charts,
+                ) = await _handle_explain_stage_request(
+                    session_state,
+                    command,
+                    request.message,
                     route,
-                    action,
-                    session_state.get("stage_status"),
-                    is_final=False,
                 )
                 yield _format_sse("progress", {"logs": progress_logs})
-                # 요청 단계가 없으면 마지막 설명 단계를 재사용한다.
-                target_stage = state._normalize_stage(
-                    command.target_stage or session_state.get("last_explain_stage"),
-                    session_state["stage_status"],
-                )
-                # 설명용 LLM을 호출해 답변을 만든다.
-                blocks, tables, charts = await state._build_explain_response(
-                    session_state, target_stage, request.message
-                )
-                # 마지막 설명 단계를 저장한다.
-                if target_stage:
-                    session_state["last_explain_stage"] = target_stage
-                session_state["history"].append(
-                    {
-                        "action": "explain_stage",
-                        "payload": {"target_stage": target_stage},
-                        "at": state._utc_now(),
-                    }
-                )
             else:
-                # 설명 요청이 아니면 모두 run으로 처리한다.
                 action = "run"
-                # 입력 수집 단계 로그를 전송한다.
                 progress_logs = state._build_progress_logs(
                     route,
                     action,
@@ -343,108 +695,37 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                     is_final=False,
                 )
                 yield _format_sse("progress", {"logs": progress_logs})
-                # 기존 브리핑 완료 여부를 확인한다.
+                # ?? ??? ?? ??? ????.
                 had_results = bool(
                     session_state["stage_status"].get("1-8", {}).get("done")
                 )
-                # 입력과 변경 요청을 함께 파싱한다.
-                if pending_selection:
-                    input_params = schemas.InputParams(**session_state["input_params"])
-                    update = schemas.UpdateDecision(
-                        selections=schemas.UpdateSelections(
-                            chip_type_ids=pending_selection
-                        )
-                    )
-                    session_state["pending_action"] = None
-                else:
-                    input_params = await agents._parse_input_with_llm(request.message)
-                    update = await agents._parse_update_with_llm(request.message)
-                missing_update = update.missing_fields or []
-                if not had_results:
-                    # 결과가 없으면 업데이트 누락 처리를 건너뛴다.
-                    missing_update = []
-                # 입력 병합과 dirty 계산을 한번에 처리한다.
-                merged_params, dirty_stages = state._merge_update_and_collect_dirty(
+                # ??? ?? ??? ????.
+                input_params, update, missing_update = await _resolve_input_and_update(
+                    session_state,
+                    request.message,
+                    pending_selection,
+                    had_results,
+                )
+                # ?? ??? dirty ??? ????.
+                merged_params, dirty_stages = _apply_update_and_dirty(
                     session_state,
                     input_params,
                     update,
                     missing_update,
                 )
-                # 입력 변경에 따라 dirty를 표시한다.
-                session_state["input_params"] = merged_params.dict()
-                state._apply_update_fields(session_state, update)
-                state._mark_dirty(session_state, dirty_stages)
-                # 업데이트 누락이 있으면 요청만 반환한다.
-                if missing_update:
-                    missing = missing_update
-                    session_state["pending_action"] = state._build_pending_action(
-                        missing_update
-                    )
-                    session_state["history"].append(
-                        {
-                            "action": "update_input_pending",
-                            "payload": {"missing": missing_update},
-                            "at": state._utc_now(),
-                        }
-                    )
-                    blocks = [
-                        {
-                            "type": "text",
-                            "section": "summary",
-                            "value": state._format_update_missing(missing_update),
-                        }
-                    ]
-                    tables, charts = {}, []
-                else:
-                    # 누락된 입력을 확인한다.
+                # ???? ?? ??? ?? ????.
+                handled_missing, missing, blocks, tables, charts, pending_action = (
+                    _handle_missing_update_request(session_state, missing_update)
+                )
+                if not handled_missing:
+                    # ??? ??? ????.
                     missing = state._get_missing_fields(merged_params)
                     pending_action = None
-                    
-                    # 스트림에서도 동일한 위젯 로직 적용
-                    target_keys = ["temperature", "size", "capacity", "voltage"]
-                    missing_targets = [k for k in missing if k in target_keys]
-
-                    if missing_targets:
-                         # 폼 필드를 구성한다.
-                        fields = []
-                        for key in target_keys:
-                            current_val = merged_params.dict().get(key)
-                            field_def = {
-                                "key": key,
-                                "label": state.INPUT_LABEL_MAP.get(key, key),
-                                "type": "text",
-                                "value": current_val or ""
-                            }
-                            if key == "temperature":
-                                field_def["type"] = "select"
-                                field_def["options"] = ["A", "B", "D"]
-                                field_def["unit"] = "특성"
-                            elif key == "voltage":
-                                field_def["type"] = "number"
-                                field_def["unit"] = "V"
-                            elif key == "size":
-                                field_def["type"] = "select"
-                                field_def["options"] = ["1005", "1608", "2012", "3216"]
-                            elif key == "capacity":
-                                field_def["type"] = "number"
-                                field_def["unit"] = "pF"
-                                field_def["unit_options"] = ["pF", "nF", "uF"]
-                            fields.append(field_def)
-
-                        blocks = [
-                            {
-                                "type": "input_form",
-                                "form_id": "mlcc_basic_params",
-                                "title": "시뮬레이션 조건 입력",
-                                "description": "다음 핵심 정보를 입력해주세요.",
-                                "fields": fields,
-                                "submit_label": "시뮬레이션 시작",
-                                "submitted": False
-                            }
-                        ]
-                        tables, charts = {}, []
-                        stage_notes = {}
-                    else:
+                    # ?? ? ?? ??? ????.
+                    handled_form, blocks, tables, charts, stage_notes = (
+                        _handle_missing_targets_form(missing, merged_params)
+                    )
+                    if not handled_form:
                         if request.demo:
                             blocks, tables, charts, stage_notes = (
                                 demo._build_simulation_stub(
@@ -456,48 +737,33 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                                 )
                             )
                         else:
-                            # 진행 로그 이벤트를 모아둔다.
-                            progress_events: list[list[dict[str, Any]]] = []
-
-                            def progress_cb(stage: str) -> None:
-                                # 단계 진행 로그를 수집한다.
-                                logs = state._build_progress_logs(
-                                    route,
-                                    action,
-                                    session_state.get("stage_status"),
-                                    current_stage=stage,
-                                    is_final=False,
-                                )
-                                if logs:
-                                    progress_events.append(logs)
-
-                            tables, charts, stage_notes, gap = (
-                                db_production.build_simulation_from_db(
-                                    merged_params,
-                                    session_state["configs"],
-                                    session_state["selections"],
-                                    session_state["user_prefs"],
-                                    dirty_stages=dirty_stages,
-                                    progress_cb=progress_cb,
-                                )
+                            # ?? ??? ????? ??? ?? ????.
+                            (
+                                tables,
+                                charts,
+                                stage_notes,
+                                gap,
+                                progress_events,
+                            ) = _run_simulation_with_progress(
+                                route,
+                                action,
+                                session_state,
+                                merged_params,
+                                dirty_stages,
                             )
-                            # 수집한 진행 로그를 순서대로 전송한다.
                             for logs in progress_events:
                                 yield _format_sse("progress", {"logs": logs})
                             if gap:
                                 gap_context = _build_gap_context(gap)
-                                question = await agents._build_gap_question(
-                                    gap_context
-                                )
+                                question = await agents._build_gap_question(gap_context)
                                 pending_action, blocks = _build_gap_pending_payload(
                                     gap, question
                                 )
                                 session_state["last_gap"] = gap_context
-                                # gap이면 최종 응답만 전송하고 종료한다.
-                                state._apply_table_highlights(
-                                    tables, session_state.get("selections", {})
-                                )
-                                state._update_state(
+                                # gap?? ?? ??? ???? ????.
+                                final_payload = _finalize_gap_stream_response(
+                                    route,
+                                    action,
                                     session_state,
                                     merged_params,
                                     tables,
@@ -505,87 +771,46 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                                     blocks,
                                     stage_notes,
                                     missing,
+                                    dirty_stages,
+                                    pending_action,
                                     request.demo,
-                                    dirty_stages=dirty_stages,
-                                    pending_action=pending_action,
-                                )
-                                final_payload = _build_final_payload(
-                                    route,
-                                    action,
-                                    session_state,
-                                    blocks,
-                                    tables,
-                                    charts,
-                                    debug_note="final_stream_response",
                                 )
                                 yield _format_sse("final", final_payload)
                                 return
                             else:
                                 pending_action = None
-                                # 브리핑 생성 전에 사용할 빈 블록을 준비한다.
+                                # ??? ?? ?? ??? ? ??? ????.
                                 blocks = []
-                    # 테이블 강조 표시를 적용한다.
+                    # ??? ?? ??? ????.
                     state._apply_table_highlights(tables, session_state["selections"])
-                    # LLM에 전달할 요약본을 만든다.
+                    # LLM? ??? ???? ???.
                     llm_tables, llm_charts = state._build_llm_payload(
                         tables, charts, session_state["configs"]
                     )
                     if not missing and not pending_action:
-                        # 브리핑 작성 단계 로그를 전송한다.
-                        progress_logs = state._build_progress_logs(
+                        blocks, progress_logs = await _build_briefing_blocks_for_run(
                             route,
                             action,
-                            session_state.get("stage_status"),
-                            current_stage="1-8",
-                            is_final=False,
-                        )
-                        yield _format_sse("progress", {"logs": progress_logs})
-                        # 변경 시작 단계를 정리한다.
-                        briefing_start = None
-                        briefing_hint = None
-                        if had_results and dirty_stages:
-                            briefing_start = state._pick_briefing_start_stage(
-                                dirty_stages
-                            )
-                            briefing_hint = state._build_briefing_hint(briefing_start)
-                        # 브리핑 순서를 단계 기준으로 만든다.
-                        briefing_sequence = state._build_briefing_sequence(
-                            stage_notes, briefing_start
-                        )
-                        briefing_tables, briefing_charts, _ = (
-                            state._filter_briefing_outputs(
-                                llm_tables, llm_charts, briefing_start
-                            )
-                        )
-                        blocks = await agents._build_briefing_blocks(
-                            briefing_tables,
-                            briefing_charts,
-                            briefing_hint,
-                            briefing_sequence,
-                        )
-                        # 블록 참조 키를 실제 데이터 키로 정리한다.
-                        blocks = state._normalize_block_refs(blocks, tables, charts)
-                        # 참조 블록이 없으면 단계 순서 기준으로 보정한다.
-                        blocks = state._ensure_block_refs(
-                            blocks,
+                            session_state,
+                            had_results,
+                            dirty_stages,
+                            stage_notes,
+                            llm_tables,
+                            llm_charts,
                             tables,
                             charts,
-                            briefing_sequence,
                         )
+                        yield _format_sse("progress", {"logs": progress_logs})
                     if not missing and not pending_action:
-                        # 이전 raw 출력과 병합해 누락된 표/차트를 보정한다.
-                        tables, charts = state._merge_raw_outputs_with_history(
+                        tables, charts = _post_process_run_tables(
                             session_state,
                             tables,
                             charts,
                             dirty_stages,
+                            missing,
+                            pending_action,
                         )
-                        # 병합된 테이블에 강조 표시를 다시 적용한다.
-                        state._apply_table_highlights(
-                            tables,
-                            session_state["selections"],
-                        )
-                    state._update_state(
+                    _update_run_state(
                         session_state,
                         merged_params,
                         tables,
@@ -594,14 +819,11 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                         stage_notes,
                         missing,
                         request.demo,
-                        llm_tables=llm_tables,
-                        llm_charts=llm_charts,
-                        dirty_stages=dirty_stages,
-                        pending_action=pending_action,
+                        llm_tables,
+                        llm_charts,
+                        dirty_stages,
+                        pending_action,
                     )
-                    # 재실행 완료 단계의 dirty를 해소한다.
-                    if not missing and not pending_action:
-                        state._mark_clean(session_state, dirty_stages)
         else:
             # 캐주얼 응답 로그를 전송한다.
             progress_logs = state._build_progress_logs(
