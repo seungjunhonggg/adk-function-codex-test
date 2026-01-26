@@ -159,6 +159,13 @@ def _get_session_state(session_id: str) -> dict[str, Any]:
     return _SESSION_STORE[session_id]
 
 
+def _reset_session_state(session_id: str) -> dict[str, Any]:
+    # 세션 상태를 새로 만든다.
+    _SESSION_STORE[session_id] = _init_session_state(session_id)
+    # 초기화된 세션 상태를 반환한다.
+    return _SESSION_STORE[session_id]
+
+
 def _build_command_hint(state: dict[str, Any]) -> str:
     # 커맨드 에이전트 힌트를 만든다.
     stage_status = state.get("stage_status", {})

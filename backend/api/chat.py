@@ -666,6 +666,34 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                 command = schemas.CommandDecision(action="run", target_stage=None)
             else:
                 command = await agents._decide_command_with_llm(session, command_message)
+            if command.action == "reset":
+                # 리셋 액션을 기록한다.
+                action = "reset"
+                # 세션 상태를 초기화한다.
+                session_state = state._reset_session_state(request.session_id)
+                # 리셋 안내 블록을 만든다.
+                blocks = [
+                    {
+                        "type": "text",
+                        "section": "summary",
+                        "value": "시뮬레이션 상태를 초기화했어. 새로 시작해줘.",
+                    }
+                ]
+                # 표/차트는 비운다.
+                tables, charts = {}, []
+                # 최종 응답을 만든다.
+                final_payload = _build_final_payload(
+                    route,
+                    action,
+                    session_state,
+                    blocks,
+                    tables,
+                    charts,
+                    debug_note="final_stream_response",
+                )
+                # 최종 응답을 전송하고 종료한다.
+                yield _format_sse("final", final_payload)
+                return
             if pending_action and pending_action.get("action") == "select_candidates" and not pending_selection:
                 action = "run"
                 blocks, tables, charts = _build_pending_repeat_response(

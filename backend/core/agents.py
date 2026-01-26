@@ -104,7 +104,7 @@ router_agent = Agent(
     name="RouteAgent",
     instructions=(
         "사용자 메시지를 보고 route를 분류해.\n"
-        "- simulation: 칩 설계/시뮬레이션/추천을 요청하는 경우, 산출된 산출물(REF LOT/ 칩기종/ 차트/ 불량률/ 선정기준) 에 대한 근거 자료를 요청하는경우\n"
+        "- simulation: 칩 설계/시뮬레이션/추천을 요청하는 경우, 산출된 산출물(REF LOT/ 칩기종/ 차트/ 불량률/ 선정기준) 에 대한 근거 자료를 요청하는경우, 시뮬레이션 리셋/처음부터 다시 요청\n"
         "- casual: 그 외 일반 대화\n"
         "반드시 route만 출력해."
     ),
@@ -119,9 +119,11 @@ command_agent = Agent(
     instructions=(
         "사용자 메시지를 보고 action을 결정해.\n"
         "- run: 시뮬레이션 시작/진행/결과 요청과 모든 변경 요청\n"
+        "- reset: 시뮬레이션 상태 초기화 요청(처음부터 다시/리셋)\n"
         "- explain_stage: 특정 단계 근거/이유 요청\n"
         "사용자 메시지에 [STATE_HINT]가 포함되면 참고해.\n"
         "- has_results=false면 run 우선\n"
+        "- reset 요청이면 pending_action과 무관하게 reset\n"
         "- pending_action이 있어도 action은 run\n"
         "단계가 명시되면 target_stage에 1-4 형식으로 넣어.\n"
         "단계가 없으면 target_stage는 null.\n"

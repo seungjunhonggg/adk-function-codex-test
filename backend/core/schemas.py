@@ -26,7 +26,8 @@ class RouteDecision(BaseModel):
 
 # 커맨드 결과 스키마를 정의한다.
 class CommandDecision(BaseModel):
-    action: Literal["run", "update_input", "explain_stage"]
+    # 커맨드 액션을 정의한다.
+    action: Literal["run", "update_input", "explain_stage", "reset"]
     target_stage: str | None = None
 
 
