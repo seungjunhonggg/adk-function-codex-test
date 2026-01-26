@@ -193,6 +193,28 @@ def _build_pending_repeat_response(
     return blocks, tables, charts
 
 
+def _extract_candidate_ids(
+    rows: list[dict[str, Any]] | None,
+    id_field: str,
+) -> list[str]:
+    # 후보 ID 목록을 만든다.
+    candidate_ids: list[str] = []
+    # 행을 하나씩 확인한다.
+    for row in rows or []:
+        # dict가 아니면 건너뛴다.
+        if not isinstance(row, dict):
+            continue
+        # ID 값을 꺼낸다.
+        value = row.get(id_field)
+        # 값이 없으면 건너뛴다.
+        if value is None:
+            continue
+        # 문자열로 변환해 저장한다.
+        candidate_ids.append(str(value))
+    # 후보 ID 목록을 반환한다.
+    return candidate_ids
+
+
 def _build_gap_context(gap: dict[str, Any]) -> dict[str, Any]:
     # gap 정보를 질문 생성용 컨텍스트로 정리한다.
     return {
@@ -695,11 +717,41 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                 yield _format_sse("final", final_payload)
                 return
             if pending_action and pending_action.get("action") == "select_candidates" and not pending_selection:
-                action = "run"
-                blocks, tables, charts = _build_pending_repeat_response(
-                    session_state, pending_action
+                # 후보 테이블을 불러온다.
+                pending_tables, _ = _load_pending_tables(session_state)
+                # 테이블 키를 꺼낸다.
+                table_key = pending_action.get("table_key")
+                # ID 필드를 꺼낸다.
+                id_field = pending_action.get("id_field", "chip_type_id")
+                # 후보 행을 꺼낸다.
+                candidate_rows = pending_tables.get(table_key) if table_key else []
+                # 후보 ID 목록을 만든다.
+                candidate_ids = _extract_candidate_ids(candidate_rows, id_field)
+                # LLM으로 선택을 추출한다.
+                pending_selection = await agents._select_candidates_with_llm(
+                    request.message,
+                    candidate_ids,
                 )
-            elif command.action == "explain_stage":
+                # 선택이 없으면 UI를 다시 보낸다.
+                if not pending_selection:
+                    action = "run"
+                    blocks, tables, charts = _build_pending_repeat_response(
+                        session_state, pending_action
+                    )
+                    # 최종 응답을 만든다.
+                    final_payload = _build_final_payload(
+                        route,
+                        action,
+                        session_state,
+                        blocks,
+                        tables,
+                        charts,
+                        debug_note="final_stream_response",
+                    )
+                    # 최종 응답을 전송하고 종료한다.
+                    yield _format_sse("final", final_payload)
+                    return
+            if command.action == "explain_stage":
                 action = "explain_stage"
                 (
                     progress_logs,

@@ -11,6 +11,7 @@ from .schemas import (
     GapQuestionOutput,
     InputParams,
     RouteDecision,
+    SelectionDecision,
     UpdateDecision,
 )
 from agents import ModelSettings
@@ -243,6 +244,26 @@ gap_agent = Agent(
 )
 
 
+# 선택 에이전트를 정의한다.
+selection_agent = Agent(
+    name="SelectionAgent",
+    instructions=(
+        "다음 JSON을 보고 후보 선택 결과를 만들어.\n"
+        "- message: 사용자 메시지\n"
+        "- candidate_ids: 후보 ID 리스트\n"
+        "규칙:\n"
+        "- candidate_ids에 있는 값만 선택해.\n"
+        "- 전체/전부/다 선택 요청이면 전부 선택해.\n"
+        "- 'XX로 시작' 또는 'XX로 시작하는'은 접두사 매칭으로 처리해.\n"
+        "- 부분 일치 요청이면 포함되는 후보를 모두 선택해.\n"
+        "- 매칭이 없으면 빈 리스트를 반환해.\n"
+        "selected_ids만 출력해."
+    ),
+    output_type=SelectionDecision,
+    **MODEL_KWARGS,
+)
+
+
 # 브리핑 에이전트를 정의한다.
 briefing_agent = Agent(
     name="BriefingAgent",
@@ -367,6 +388,21 @@ async def _build_gap_question(context: dict[str, Any]) -> str:
     # LLM으로 확인 질문을 생성한다.
     result = await Runner.run(gap_agent, payload)
     return result.final_output.question
+
+
+async def _select_candidates_with_llm(
+    message: str,
+    candidate_ids: list[str],
+) -> list[str]:
+    # 선택용 컨텍스트를 만든다.
+    payload = json.dumps(
+        {"message": message, "candidate_ids": candidate_ids},
+        ensure_ascii=False,
+    )
+    # LLM으로 선택을 추출한다.
+    result = await Runner.run(selection_agent, payload)
+    # 선택 결과를 반환한다.
+    return result.final_output.selected_ids
 
 
 async def _build_casual_blocks(session, message: str) -> list[dict[str, Any]]:

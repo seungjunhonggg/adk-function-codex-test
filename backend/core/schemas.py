@@ -31,6 +31,11 @@ class CommandDecision(BaseModel):
     target_stage: str | None = None
 
 
+# 선택 결과 스키마를 정의한다.
+class SelectionDecision(BaseModel):
+    selected_ids: list[str] = []
+
+
 # 입력 파라미터 스키마를 정의한다.
 class InputParams(BaseModel):
     temperature: str | None = None
