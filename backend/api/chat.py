@@ -782,11 +782,43 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                             for logs in progress_events:
                                 yield _format_sse("progress", {"logs": logs})
                             if gap:
+                                # notice 타입 gap이면 안내만 하고 종료한다.
+                                if gap.get("type") == "notice":
+                                    # 안내 문구를 준비한다.
+                                    notice_message = gap.get("message") or "해당 단계 결과를 찾을 수 없어 진행할 수 없어."
+                                    # 안내 블록을 만든다.
+                                    blocks = [
+                                        {
+                                            "type": "text",
+                                            "section": "summary",
+                                            "value": notice_message,
+                                        }
+                                    ]
+                                    # 마지막 gap 정보를 저장한다.
+                                    session_state["last_gap"] = {
+                                        "type": "notice",
+                                        "stage": gap.get("stage"),
+                                        "message": notice_message,
+                                    }
+                                    # 최종 응답을 만든다.
+                                    final_payload = {
+                                        "route": route,
+                                        "blocks": blocks,
+                                        "tables": {},
+                                        "charts": [],
+                                    }
+                                    # 최종 응답을 전송하고 종료한다.
+                                    yield _format_sse("final", final_payload)
+                                    return
+                                # gap 질문 컨텍스트를 만든다.
                                 gap_context = _build_gap_context(gap)
+                                # gap 질문을 생성한다.
                                 question = await agents._build_gap_question(gap_context)
+                                # pending_action과 블록을 만든다.
                                 pending_action, blocks = _build_gap_pending_payload(
                                     gap, question
                                 )
+                                # 마지막 gap 정보를 저장한다.
                                 session_state["last_gap"] = gap_context
                                 # gap?? ?? ??? ???? ????.
                                 final_payload = _finalize_gap_stream_response(
