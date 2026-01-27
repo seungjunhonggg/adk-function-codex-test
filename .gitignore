@@ -1,5 +1,5 @@
 venv/
 .tmp/
-backend/__pycache__
+__pycache__/
 backend/config.py
 sessions.db
