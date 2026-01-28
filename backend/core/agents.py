@@ -342,13 +342,15 @@ async def _parse_update_with_llm(message: str) -> UpdateDecision:
 
 
 async def _build_briefing_blocks(
-    tables: dict[str, Any],
-    charts: list[dict[str, Any]],
+    llm_tables: dict[str, Any],
+    llm_charts: list[dict[str, Any]],
     briefing_hint: str | None = None,
     stage_sequence: list[dict[str, Any]] | None = None,
+    full_tables: dict[str, Any] | None = None,
+    full_charts: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    # 브리핑 입력을 만든다.
-    payload_obj: dict[str, Any] = {"tables": tables, "charts": charts}
+    # 브리핑 입력을 만든다 (LLM에는 축소된 데이터 전달).
+    payload_obj: dict[str, Any] = {"tables": llm_tables, "charts": llm_charts}
     if briefing_hint:
         payload_obj["briefing_hint"] = briefing_hint
     if stage_sequence:
@@ -360,10 +362,13 @@ async def _build_briefing_blocks(
     text_map: dict[str, str] = {}
     for text_block in result.final_output.texts:
         text_map[text_block.section] = text_block.value
+    # ref 삽입은 전체 테이블/차트 기준으로 한다.
+    ref_tables = full_tables if full_tables is not None else llm_tables
+    ref_charts = full_charts if full_charts is not None else llm_charts
     # 차트 ID 집합을 만든다.
     chart_id_set = {
         chart.get("chart_id")
-        for chart in (charts or [])
+        for chart in (ref_charts or [])
         if isinstance(chart, dict) and chart.get("chart_id")
     }
     # 최종 블록을 조립한다: text + ref를 stage_sequence 순서대로 배치.
@@ -378,11 +383,11 @@ async def _build_briefing_blocks(
             # 해당 단계의 text가 있으면 추가한다.
             if stage in text_map:
                 blocks.append({"type": "text", "section": stage, "value": text_map[stage]})
-            # 해당 단계의 table_ref를 추가한다 (실제 존재하는 것만).
+            # 해당 단계의 table_ref를 추가한다 (전체 테이블 기준).
             for table_key in stage_info.get("table_keys", []):
-                if table_key in (tables or {}):
+                if table_key in (ref_tables or {}):
                     blocks.append({"type": "table_ref", "table_key": table_key})
-            # 해당 단계의 chart_ref를 추가한다 (실제 존재하는 것만).
+            # 해당 단계의 chart_ref를 추가한다 (전체 차트 기준).
             for chart_id in stage_info.get("chart_ids", []):
                 if chart_id in chart_id_set:
                     blocks.append({"type": "chart_ref", "chart_id": chart_id})

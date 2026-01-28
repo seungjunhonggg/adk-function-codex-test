@@ -469,6 +469,8 @@ async def _build_briefing_blocks_for_run(
         briefing_charts,
         briefing_hint,
         briefing_sequence,
+        full_tables=tables,
+        full_charts=charts,
     )
     # 브리핑 블록과 진행 로그를 반환한다.
     return blocks, progress_logs
