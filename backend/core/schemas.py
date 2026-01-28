@@ -86,23 +86,6 @@ class BriefingOutput(BaseModel):
     blocks: list[BriefingBlock]
 
 
-# 단계별 브리핑 텍스트 스키마 (ref는 코드에서 삽입)
-class StageBriefingText(BaseModel):
-    section: str = Field(description="단계 ID (예: '1-2', '1-3', 'summary', 'conclusion')")
-    value: str = Field(
-        description=(
-            "해당 단계의 브리핑 텍스트. "
-            "문장마다 줄바꿈(\\n)으로 끝내고, 한 줄에 문장 1개만 작성. 빈 줄 금지."
-        )
-    )
-
-
-class StageBriefingOutput(BaseModel):
-    texts: list[StageBriefingText] = Field(
-        description="단계별 브리핑 텍스트 목록. stage_sequence 순서대로 작성."
-    )
-
-
 # 캐주얼 응답 구조를 정의한다.
 class CasualOutput(BaseModel):
     answer: str

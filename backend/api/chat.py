@@ -463,14 +463,21 @@ async def _build_briefing_blocks_for_run(
     briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
         llm_tables, llm_charts, briefing_start
     )
-    # LLM 브리핑 블록을 생성한다 (text는 LLM, ref는 코드에서 삽입).
+    # LLM 브리핑 블록을 생성한다.
     blocks = await agents._build_briefing_blocks(
         briefing_tables,
         briefing_charts,
         briefing_hint,
         briefing_sequence,
-        full_tables=tables,
-        full_charts=charts,
+    )
+    # 블록 참조를 정규화한다.
+    blocks = state._normalize_block_refs(blocks, tables, charts)
+    # 참조 누락 블록을 보정한다.
+    blocks = state._ensure_block_refs(
+        blocks,
+        tables,
+        charts,
+        briefing_sequence,
     )
     # 브리핑 블록과 진행 로그를 반환한다.
     return blocks, progress_logs
