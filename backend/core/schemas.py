@@ -42,6 +42,7 @@ class InputParams(BaseModel):
     voltage: str | None = None
     size: str | None = None
     capacity: str | None = None
+    chip_prod_id : str | None = None
 
 
 # 변경 대상 스키마를 정의한다.

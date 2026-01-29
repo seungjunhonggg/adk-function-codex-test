@@ -959,6 +959,10 @@ body::before {
   .thread {
     padding: 20px 16px 120px;
   }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* 입력 폼 위젯 스타일 */
@@ -995,6 +999,12 @@ body::before {
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.form-column {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 

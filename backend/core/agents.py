@@ -168,8 +168,8 @@ input_agent = Agent(
     name="InputAgent",
     instructions = (
     "메시지에서 다음 필드만 추출해 JSON으로 출력해: "
-    "temperature, voltage, size, capacity.\n"
-    "없으면 null. 추측 금지. 위 4개 필드 외에는 출력 금지.\n"
+    "temperature, voltage, size, capacity, chip_prod_id.\n"
+    "없으면 null. 추측 금지. 위 5개 필드 외에는 출력 금지.\n"
     "출력은 반드시 JSON 객체 1개만.\n"
     "사용자가 '예제', '샘플', 'test data', 'example'등 예시 데이터 사용을 요청한 경우에 "
     "아래 <example_output>을 그대로 출력.\n"
@@ -178,7 +178,8 @@ input_agent = Agent(
     "  \"temperature\": 55,\n"
     "  \"voltage\": 6,\n"
     "  \"size\": \"1005\",\n"
-    "  \"capacity\": 10000000\n"
+    "  \"capacity\": 10000000,\n"
+    "  \"chip_prod_id\": null\n"
     "}\n"
     "</example_output>"
 ),
@@ -192,7 +193,7 @@ update_agent = Agent(
     name="UpdateAgent",
     instructions=(
         "사용자 메시지에서 변경 요청을 추출해.\n"
-        "- input_params: temperature, voltage, size, capacity\n"
+        "- input_params: temperature, voltage, size, capacity, chip_prod_id\n"
         "- selections: chip_type_ids(리스트), reference_lot_id\n"
         "- configs: top_k\n"
         "- user_prefs: chart_type(bar|line|scatter)\n"

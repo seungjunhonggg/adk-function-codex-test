@@ -15,6 +15,7 @@ INPUT_LABEL_MAP = {
     "voltage": "전압",
     "size": "크기",
     "capacity": "용량",
+    "chip_prod_id": "CHIP 기종",
 }
 
 # 변경 라벨 맵을 정의한다.
@@ -507,12 +508,14 @@ async def _build_explain_response(
 
 
 def _get_missing_fields(input_params: InputParams) -> list[str]:
-    # 누락된 입력 필드를 찾는다.
-    return [
-        name
-        for name, value in input_params.dict().items()
-        if not value
-    ]
+    # 칩 기종 입력 여부를 확인한다.
+    has_chip = bool(input_params.chip_prod_id)
+    # 칩 기종이 있으면 누락을 비운다.
+    if has_chip:
+        return []
+    # 기본 입력 필드만 누락 체크한다.
+    required_fields = ["temperature", "voltage", "size", "capacity"]
+    return [name for name in required_fields if not getattr(input_params, name, None)]
 
 
 def _format_missing_summary(missing: list[str]) -> str:

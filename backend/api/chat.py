@@ -262,18 +262,21 @@ def _build_gap_pending_payload(
 
 
 def _build_input_form_blocks(merged_params: schemas.InputParams) -> list[dict[str, Any]]:
-    # 입력 폼에 필요한 필드 목록을 준비한다.
-    target_keys = ["temperature", "size", "capacity", "voltage"]
+    # 왼쪽 입력 필드 목록을 준비한다.
+    left_keys = ["temperature", "size", "capacity", "voltage"]
+    # 오른쪽 입력 필드 목록을 준비한다.
+    right_keys = ["chip_prod_id"]
     # 폼 필드를 담을 리스트를 만든다.
     fields: list[dict[str, Any]] = []
-    # 각 입력 항목을 순서대로 구성한다.
-    for key in target_keys:
+    # 왼쪽 입력 항목을 순서대로 구성한다.
+    for key in left_keys:
         current_val = merged_params.dict().get(key)
         field_def = {
             "key": key,
             "label": state.INPUT_LABEL_MAP.get(key, key),
             "type": "text",
             "value": current_val or "",
+            "column": "left",
         }
         # 필드별 UI 설정을 추가한다.
         if key == "temperature":
@@ -292,13 +295,27 @@ def _build_input_form_blocks(merged_params: schemas.InputParams) -> list[dict[st
             field_def["unit_options"] = ["pF", "nF", "uF"]
         # 구성된 필드를 목록에 추가한다.
         fields.append(field_def)
+    # 오른쪽 입력 항목을 구성한다.
+    for key in right_keys:
+        current_val = merged_params.dict().get(key)
+        # CHIP 기종 입력 필드를 만든다.
+        fields.append(
+            {
+                "key": key,
+                "label": state.INPUT_LABEL_MAP.get(key, key),
+                "type": "text",
+                "value": current_val or "",
+                "placeholder": "예: CL32Y106KCBNB",
+                "column": "right",
+            }
+        )
     # 입력 폼 블록을 반환한다.
     return [
         {
             "type": "input_form",
             "form_id": "mlcc_basic_params",
             "title": "시뮬레이션 조건 입력",
-            "description": "다음 핵심 정보를 입력해주세요.",
+            "description": "4개 조건 또는 CHIP 기종 중 하나를 입력해주세요.",
             "fields": fields,
             "submit_label": "시뮬레이션 시작",
             "submitted": False,

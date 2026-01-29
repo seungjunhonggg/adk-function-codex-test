@@ -312,6 +312,12 @@ function renderInputForm(block) {
   // 폼 그리드
   const grid = document.createElement("div");
   grid.className = "form-grid";
+  // 좌측 컬럼을 만든다.
+  const leftColumn = document.createElement("div");
+  leftColumn.className = "form-column form-column--left";
+  // 우측 컬럼을 만든다.
+  const rightColumn = document.createElement("div");
+  rightColumn.className = "form-column form-column--right";
 
   const fields = Array.isArray(block.fields) ? block.fields : [];
   fields.forEach((field) => {
@@ -398,8 +404,16 @@ function renderInputForm(block) {
     errorText.textContent = "입력이 필요합니다";
 
     group.appendChild(errorText);
-    grid.appendChild(group);
+    // 컬럼 정보를 확인한다.
+    const column = field.column || "left";
+    if (column === "right") {
+      rightColumn.appendChild(group);
+    } else {
+      leftColumn.appendChild(group);
+    }
   });
+  grid.appendChild(leftColumn);
+  grid.appendChild(rightColumn);
   card.appendChild(grid);
 
   // 액션 버튼
@@ -433,7 +447,12 @@ function handleFormSubmit(cardEl, formId) {
   // data 수집 방식을 form-group 기준으로 변경
   const groups = cardEl.querySelectorAll(".form-group");
   const data = {};
+  const entries = [];
   let isValid = true;
+  // 기본 입력 키를 정의한다.
+  const coreKeys = ["temperature", "size", "capacity", "voltage"];
+  // 칩 기종 키를 정의한다.
+  const chipKey = "chip_prod_id";
 
   groups.forEach(group => {
     // 주요 입력 필드 찾기 (unit select 제외하고, name이 _unit으로 끝나지 않는 것)
@@ -442,37 +461,44 @@ function handleFormSubmit(cardEl, formId) {
 
     const errorText = group.querySelector(".form-error-text");
     const unitSelect = group.querySelector(`select[name="${input.name}_unit"]`);
-
-    // 초기화
-    input.classList.remove("has-error");
-    if (errorText) errorText.classList.remove("is-visible");
-
-    // 강제로 리플로우를 발생시켜 애니메이션 다시 실행 가능하게 함
-    void input.offsetWidth;
-
     const val = input.value.trim();
+    entries.push({ input, errorText, unitSelect, value: val, key: input.name });
+  });
 
-    if (!val) {
+  // 칩 기종 입력 여부를 확인한다.
+  const hasChip = entries.some((entry) => entry.key === chipKey && entry.value);
+  entries.forEach((entry) => {
+    // 초기화
+    entry.input.classList.remove("has-error");
+    if (entry.errorText) entry.errorText.classList.remove("is-visible");
+    // 강제로 리플로우를 발생시켜 애니메이션 다시 실행 가능하게 함
+    void entry.input.offsetWidth;
+    // 칩 기종이 없으면 기본 입력은 필수다.
+    const isRequired = !hasChip && coreKeys.includes(entry.key);
+    if (isRequired && !entry.value) {
       isValid = false;
-      input.classList.add("has-error");
-      if (errorText) errorText.classList.add("is-visible");
-    } else {
-      let finalValue = val;
-      // 단위 변환 로직 check
-      if (unitSelect) {
-        const unit = unitSelect.value;
-        const numVal = parseFloat(val);
-        if (!isNaN(numVal)) {
-          if (unit === "nF") {
-            finalValue = String(numVal * 1000); // 1nF = 1000pF
-          } else if (unit === "uF") {
-            finalValue = String(numVal * 1000000); // 1uF = 1,000,000pF
-          }
-          // pF는 그대로
-        }
-      }
-      data[input.name] = finalValue;
+      entry.input.classList.add("has-error");
+      if (entry.errorText) entry.errorText.classList.add("is-visible");
+      return;
     }
+    if (!entry.value) {
+      return;
+    }
+    let finalValue = entry.value;
+    // 단위 변환 로직 check
+    if (entry.unitSelect) {
+      const unit = entry.unitSelect.value;
+      const numVal = parseFloat(entry.value);
+      if (!isNaN(numVal)) {
+        if (unit === "nF") {
+          finalValue = String(numVal * 1000); // 1nF = 1000pF
+        } else if (unit === "uF") {
+          finalValue = String(numVal * 1000000); // 1uF = 1,000,000pF
+        }
+        // pF는 그대로
+      }
+    }
+    data[entry.key] = finalValue;
   });
 
   if (!isValid) return;
