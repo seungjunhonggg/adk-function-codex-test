@@ -17,10 +17,12 @@
    - simulation → CommandAgent 실행
 2. CommandAgent로 action 결정
    - run → 시뮬레이션 시작/진행
+   - reset → 시뮬레이션 상태 초기화
    - explain_stage → 특정 단계 근거 설명
    - 상태 힌트(브리핑 완료 여부/보류 액션)를 참고해 run 우선
 3. explain_stage면 ExplainAgent로 근거 설명을 생성(필요한 표/차트만 포함)
 4. run이면 1-1~1-8 실행 (변경 요청도 run에서 처리)
+5. reset이면 세션 상태를 초기화하고 안내 블록만 반환
 
 ## 입력 파싱 (LLM)
 - simulation + action이 run일 때 InputAgent로 1-1 입력을 추출한다.
@@ -43,6 +45,9 @@
 - GapAgent가 확인 질문을 생성한다.
 - 후보 선택이 필요한 경우 `table_select` 블록을 반환한다.
 - 사용자가 선택을 제출하면 해당 단계부터 재실행한다.
+- gap이 `type: notice`이면 안내 메시지만 반환하고 pending_action은 설정하지 않는다.
+- pending_action이 `select_candidates`이고 JSON 선택이 없으면 SelectionAgent가 후보 ID 리스트를 보고 텍스트 선택을 추출한다.
+- SelectionAgent가 선택을 못하면 선택 UI를 다시 보낸다.
 
 ## 요청/응답 스키마 (v0)
 ### 요청
@@ -143,16 +148,22 @@
 ## 메모리/상태
 - 세션 메모리: input_params, stage_outputs(요약본), stage_notes, last_explain_stage
 - dirty 업데이트 시 stage_outputs/stage_notes는 변경된 단계만 덮어쓰고 나머지는 유지한다.
+- reset 액션은 세션 상태를 초기화하고 브리핑 결과를 비운다.
 - 중간 변경 시 무효화:
   - 1-1 변경 → 1-2~1-8 재계산
   - 1-3 변경 → 1-4~1-8 재계산
   - 1-5 변경(k 변경) → 1-6~1-8 재계산
 - 값 없는 변경 요청은 pending_action으로 보류하고 재질문한다.
 - 입력 파싱 결과는 기존 input_params와 병합한다(새 값만 덮어씀).
-- 데모 단계는 인메모리 세션 스토어로 상태를 유지한다.
+- 프로덕션은 Postgres(data_portal 스키마)에 상태/대화를 영속화한다.
+- 데모 모드는 인메모리 세션 스토어로 상태를 유지한다.
 - 원본 표/차트는 `data/raw_outputs/<session_id>/*.json`에 저장한다.
 
 상태 스키마 상세는 `docs/state-schema.md`를 따른다.
+
+### DB 저장 위치 (production)
+- 세션 상태: `data_portal.agent_session_state`
+- 대화 히스토리: `data_portal.agent_sessions`, `data_portal.agent_messages`
 
 ## 후속 질문 처리
 - 사용자가 특정 단계 근거를 요청하면 explain_stage로 stage_notes + 증거를 LLM에 전달해 설명한다.

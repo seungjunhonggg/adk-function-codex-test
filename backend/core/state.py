@@ -5,6 +5,7 @@ import re
 from typing import Any, Callable
 
 from .agents import _build_explain_answer
+from . import db_production
 from .schemas import InputParams, UpdateDecision
 
 
@@ -152,18 +153,65 @@ def _init_session_state(session_id: str) -> dict[str, Any]:
     }
 
 
-def _get_session_state(session_id: str) -> dict[str, Any]:
-    # 세션 상태를 가져오거나 만든다.
+def _merge_session_state(
+    base_state: dict[str, Any],
+    stored_state: dict[str, Any],
+) -> dict[str, Any]:
+    # 기본 상태에 저장된 값을 덮어쓴다.
+    for key, value in stored_state.items():
+        # 중첩 dict는 얕게 병합한다.
+        if isinstance(value, dict) and isinstance(base_state.get(key), dict):
+            base_state[key].update(value)
+            continue
+        # 그 외에는 그대로 덮어쓴다.
+        base_state[key] = value
+    # 병합된 상태를 반환한다.
+    return base_state
+
+
+def _get_session_state(session_id: str, use_db: bool = False) -> dict[str, Any]:
+    # DB 사용 여부에 따라 분기한다.
+    if use_db:
+        # DB에서 상태를 읽는다.
+        stored_state = db_production.fetch_session_state(session_id)
+        # 저장된 상태가 있으면 병합해서 반환한다.
+        if stored_state:
+            base_state = _init_session_state(session_id)
+            return _merge_session_state(base_state, stored_state)
+        # 상태가 없으면 초기 상태를 저장한다.
+        fresh_state = _init_session_state(session_id)
+        db_production.upsert_session_state(session_id, fresh_state)
+        return fresh_state
+    # 인메모리 스토어를 사용한다.
     if session_id not in _SESSION_STORE:
         _SESSION_STORE[session_id] = _init_session_state(session_id)
     return _SESSION_STORE[session_id]
 
 
-def _reset_session_state(session_id: str) -> dict[str, Any]:
-    # 세션 상태를 새로 만든다.
-    _SESSION_STORE[session_id] = _init_session_state(session_id)
-    # 초기화된 세션 상태를 반환한다.
+def _reset_session_state(session_id: str, use_db: bool = False) -> dict[str, Any]:
+    # 새 상태를 만든다.
+    fresh_state = _init_session_state(session_id)
+    # DB 사용 여부에 따라 저장한다.
+    if use_db:
+        db_production.upsert_session_state(session_id, fresh_state)
+        return fresh_state
+    # 인메모리 스토어에 저장한다.
+    _SESSION_STORE[session_id] = fresh_state
     return _SESSION_STORE[session_id]
+
+
+def _save_session_state(session_state: dict[str, Any], use_db: bool = False) -> None:
+    # DB 사용 여부에 따라 저장한다.
+    if use_db:
+        session_id = session_state.get("session_id")
+        if not session_id:
+            return
+        db_production.upsert_session_state(session_id, session_state)
+        return
+    # 인메모리 스토어에 저장한다.
+    session_id = session_state.get("session_id")
+    if session_id:
+        _SESSION_STORE[session_id] = session_state
 
 
 def _build_command_hint(state: dict[str, Any]) -> str:

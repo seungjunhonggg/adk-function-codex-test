@@ -1,4 +1,7 @@
 from typing import Any, Callable
+import asyncio
+import json
+import threading
 
 from .schemas import InputParams
 import os
@@ -74,6 +77,328 @@ class DatabaseHandler:
 
 # 에이전트에서 바로 import해서 쓸 수 있도록 인스턴스 생성 (선택 사항)
 db = DatabaseHandler()
+
+# 에이전트 세션용 스키마를 정의한다.
+AGENT_SCHEMA = "data_portal"
+# 에이전트 세션 테이블명을 정의한다.
+AGENT_SESSIONS_TABLE = f"{AGENT_SCHEMA}.agent_sessions"
+# 에이전트 메시지 테이블명을 정의한다.
+AGENT_MESSAGES_TABLE = f"{AGENT_SCHEMA}.agent_messages"
+# 에이전트 상태 테이블명을 정의한다.
+AGENT_STATE_TABLE = f"{AGENT_SCHEMA}.agent_session_state"
+# 테이블 준비 여부를 캐시한다.
+_AGENT_TABLES_READY = False
+# 테이블 준비 락을 준비한다.
+_AGENT_TABLES_LOCK = threading.Lock()
+# 스레드별 DB 커넥션을 보관한다.
+_AGENT_LOCAL = threading.local()
+
+
+def _get_agent_db_config() -> dict[str, Any]:
+    # 환경 변수에서 에이전트 DB 설정을 읽는다.
+    return {
+        "host": os.getenv("DB_HOST"),
+        "dbname": os.getenv("DB_NAME"),
+        "user": os.getenv("DB_USER"),
+        "password": os.getenv("DB_PASSWORD"),
+        "port": os.getenv("DB_PORT"),
+    }
+
+
+def _get_agent_connection() -> psycopg2.extensions.connection:
+    # 스레드 로컬 커넥션을 꺼낸다.
+    connection = getattr(_AGENT_LOCAL, "connection", None)
+    # 커넥션이 없거나 닫혔으면 새로 만든다.
+    if connection is None or connection.closed:
+        config = _get_agent_db_config()
+        connection = psycopg2.connect(**config)
+        _AGENT_LOCAL.connection = connection
+    # 커넥션을 반환한다.
+    return connection
+
+
+def _ensure_agent_tables() -> None:
+    # 이미 준비됐으면 종료한다.
+    global _AGENT_TABLES_READY
+    if _AGENT_TABLES_READY:
+        return
+    # 동시 생성 방지를 위해 락을 잡는다.
+    with _AGENT_TABLES_LOCK:
+        # 락 안에서 다시 확인한다.
+        if _AGENT_TABLES_READY:
+            return
+        # 커넥션을 준비한다.
+        connection = _get_agent_connection()
+        # 스키마와 테이블을 만든다.
+        with connection.cursor() as cursor:
+            # 스키마를 만든다.
+            cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {AGENT_SCHEMA}")
+            # 세션 메타 테이블을 만든다.
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {AGENT_SESSIONS_TABLE} (
+                    session_id TEXT PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            # 메시지 테이블을 만든다.
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {AGENT_MESSAGES_TABLE} (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    message_data TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id)
+                        REFERENCES {AGENT_SESSIONS_TABLE} (session_id)
+                        ON DELETE CASCADE
+                )
+                """
+            )
+            # 메시지 인덱스를 만든다.
+            cursor.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_agent_messages_session_id
+                ON {AGENT_MESSAGES_TABLE} (session_id, id)
+                """
+            )
+            # 상태 테이블을 만든다.
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {AGENT_STATE_TABLE} (
+                    session_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        # 변경사항을 반영한다.
+        connection.commit()
+        # 준비 완료 플래그를 세운다.
+        _AGENT_TABLES_READY = True
+
+
+def fetch_session_state(session_id: str) -> dict[str, Any] | None:
+    # 테이블을 준비한다.
+    _ensure_agent_tables()
+    # 커넥션을 준비한다.
+    connection = _get_agent_connection()
+    # 상태를 조회한다.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT state FROM {AGENT_STATE_TABLE} WHERE session_id = %s",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+    # 결과가 없으면 None을 반환한다.
+    if not row:
+        return None
+    # 저장된 상태 문자열을 꺼낸다.
+    raw_state = row[0]
+    # 상태가 비어 있으면 None을 반환한다.
+    if not raw_state:
+        return None
+    # JSON을 파싱해 반환한다.
+    try:
+        if isinstance(raw_state, str):
+            return json.loads(raw_state)
+        return raw_state
+    except json.JSONDecodeError:
+        return None
+
+
+def upsert_session_state(session_id: str, state: dict[str, Any]) -> None:
+    # 테이블을 준비한다.
+    _ensure_agent_tables()
+    # 커넥션을 준비한다.
+    connection = _get_agent_connection()
+    # 상태를 JSON으로 직렬화한다.
+    payload = json.dumps(state, ensure_ascii=False)
+    # upsert를 수행한다.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            INSERT INTO {AGENT_STATE_TABLE} (session_id, state)
+            VALUES (%s, %s)
+            ON CONFLICT (session_id)
+            DO UPDATE SET
+                state = EXCLUDED.state,
+                version = {AGENT_STATE_TABLE}.version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (session_id, payload),
+        )
+    # 변경사항을 반영한다.
+    connection.commit()
+
+
+class PostgresSession:
+    def __init__(
+        self,
+        session_id: str,
+        sessions_table: str = AGENT_SESSIONS_TABLE,
+        messages_table: str = AGENT_MESSAGES_TABLE,
+    ) -> None:
+        # 세션 ID를 저장한다.
+        self.session_id = session_id
+        # 세션 테이블명을 저장한다.
+        self.sessions_table = sessions_table
+        # 메시지 테이블명을 저장한다.
+        self.messages_table = messages_table
+
+    async def get_items(self, limit: int | None = None) -> list[dict[str, Any]]:
+        # 세션 메시지를 조회한다.
+        def _get_items_sync() -> list[dict[str, Any]]:
+            # 테이블을 준비한다.
+            _ensure_agent_tables()
+            # 커넥션을 준비한다.
+            connection = _get_agent_connection()
+            # 쿼리를 실행한다.
+            with connection.cursor() as cursor:
+                if limit is None:
+                    cursor.execute(
+                        f"""
+                        SELECT message_data FROM {self.messages_table}
+                        WHERE session_id = %s
+                        ORDER BY id ASC
+                        """,
+                        (self.session_id,),
+                    )
+                    rows = cursor.fetchall()
+                else:
+                    cursor.execute(
+                        f"""
+                        SELECT message_data FROM {self.messages_table}
+                        WHERE session_id = %s
+                        ORDER BY id DESC
+                        LIMIT %s
+                        """,
+                        (self.session_id, limit),
+                    )
+                    rows = cursor.fetchall()
+                    rows = list(reversed(rows))
+            # JSON으로 파싱한다.
+            items: list[dict[str, Any]] = []
+            for (message_data,) in rows:
+                try:
+                    items.append(json.loads(message_data))
+                except json.JSONDecodeError:
+                    continue
+            # 결과를 반환한다.
+            return items
+
+        return await asyncio.to_thread(_get_items_sync)
+
+    async def add_items(self, items: list[dict[str, Any]]) -> None:
+        # 추가할 아이템이 없으면 종료한다.
+        if not items:
+            return
+
+        # 아이템을 저장한다.
+        def _add_items_sync() -> None:
+            # 테이블을 준비한다.
+            _ensure_agent_tables()
+            # 커넥션을 준비한다.
+            connection = _get_agent_connection()
+            # 트랜잭션을 연다.
+            with connection.cursor() as cursor:
+                # 세션 메타를 보장한다.
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self.sessions_table} (session_id)
+                    VALUES (%s)
+                    ON CONFLICT (session_id) DO NOTHING
+                    """,
+                    (self.session_id,),
+                )
+                # 메시지를 준비한다.
+                payload = [
+                    (self.session_id, json.dumps(item, ensure_ascii=False))
+                    for item in items
+                ]
+                # 메시지를 저장한다.
+                cursor.executemany(
+                    f"""
+                    INSERT INTO {self.messages_table} (session_id, message_data)
+                    VALUES (%s, %s)
+                    """,
+                    payload,
+                )
+                # 업데이트 시각을 갱신한다.
+                cursor.execute(
+                    f"""
+                    UPDATE {self.sessions_table}
+                    SET updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = %s
+                    """,
+                    (self.session_id,),
+                )
+            # 변경사항을 반영한다.
+            connection.commit()
+
+        await asyncio.to_thread(_add_items_sync)
+
+    async def pop_item(self) -> dict[str, Any] | None:
+        # 마지막 메시지를 꺼낸다.
+        def _pop_item_sync() -> dict[str, Any] | None:
+            # 테이블을 준비한다.
+            _ensure_agent_tables()
+            # 커넥션을 준비한다.
+            connection = _get_agent_connection()
+            # 메시지를 삭제하고 반환한다.
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    DELETE FROM {self.messages_table}
+                    WHERE id = (
+                        SELECT id FROM {self.messages_table}
+                        WHERE session_id = %s
+                        ORDER BY id DESC
+                        LIMIT 1
+                    )
+                    RETURNING message_data
+                    """,
+                    (self.session_id,),
+                )
+                row = cursor.fetchone()
+            # 변경사항을 반영한다.
+            connection.commit()
+            # 결과가 없으면 None을 반환한다.
+            if not row:
+                return None
+            # JSON을 파싱해 반환한다.
+            try:
+                return json.loads(row[0])
+            except json.JSONDecodeError:
+                return None
+
+        return await asyncio.to_thread(_pop_item_sync)
+
+    async def clear_session(self) -> None:
+        # 세션 메시지를 모두 삭제한다.
+        def _clear_session_sync() -> None:
+            # 테이블을 준비한다.
+            _ensure_agent_tables()
+            # 커넥션을 준비한다.
+            connection = _get_agent_connection()
+            # 삭제를 수행한다.
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"DELETE FROM {self.messages_table} WHERE session_id = %s",
+                    (self.session_id,),
+                )
+                cursor.execute(
+                    f"DELETE FROM {self.sessions_table} WHERE session_id = %s",
+                    (self.session_id,),
+                )
+            # 변경사항을 반영한다.
+            connection.commit()
+
+        await asyncio.to_thread(_clear_session_sync)
 
 # 라벨 매핑 테이블/컬럼명을 정의한다.
 _COLUMN_LABEL_TABLE = "column_label_map"

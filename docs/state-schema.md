@@ -128,3 +128,5 @@
 - 브리핑은 stage_outputs.briefing_blocks로 저장한다.
 - 단계 근거 요약은 stage_notes에 저장한다.
 - 설명 후속 처리를 위해 last_explain_stage를 저장한다.
+- 프로덕션 상태는 `data_portal.agent_session_state`에 JSON으로 저장한다.
+- 대화 히스토리는 `data_portal.agent_sessions`, `data_portal.agent_messages`에 저장한다.

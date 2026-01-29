@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from ..core import agents, db_production, demo, schemas, state
+from ..core.db_production import PostgresSession
 from agents import SQLiteSession
 
 router = APIRouter()
@@ -654,7 +655,14 @@ def _build_final_payload(
 @router.post("/api/chat/stream")
 async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
     # SSE 스트림 응답을 만든다.
-    session = SQLiteSession(request.session_id, "conversation_123")
+    # 데모 여부에 따라 세션 스토어를 선택한다.
+    use_db = not request.demo
+    # DB 또는 SQLite 세션을 만든다.
+    session = (
+        PostgresSession(request.session_id)
+        if use_db
+        else SQLiteSession(request.session_id, "conversation_123")
+    )
 
     async def event_stream():
         # 라우팅을 먼저 수행한다.
@@ -665,12 +673,16 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
             else await agents._route_with_llm(session, request.message)
         )
         # 세션 상태를 가져온다.
-        session_state = state._get_session_state(request.session_id)
+        session_state = state._get_session_state(request.session_id, use_db=use_db)
         action: str | None = None
         missing: list[str] = []
         blocks: list[dict[str, Any]] = []
         tables: dict[str, Any] = {}
         charts: list[dict[str, Any]] = []
+        # 세션 상태 저장 헬퍼를 만든다.
+        def _persist_state() -> None:
+            # 현재 세션 상태를 저장한다.
+            state._save_session_state(session_state, use_db=use_db)
 
         if route == "simulation":
             pending_action = (
@@ -692,7 +704,7 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                 # 리셋 액션을 기록한다.
                 action = "reset"
                 # 세션 상태를 초기화한다.
-                session_state = state._reset_session_state(request.session_id)
+                session_state = state._reset_session_state(request.session_id, use_db=use_db)
                 # 리셋 안내 블록을 만든다.
                 blocks = [
                     {
@@ -713,6 +725,8 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                     charts,
                     debug_note="final_stream_response",
                 )
+                # 세션 상태를 저장한다.
+                _persist_state()
                 # 최종 응답을 전송하고 종료한다.
                 yield _format_sse("final", final_payload)
                 return
@@ -748,6 +762,8 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                         charts,
                         debug_note="final_stream_response",
                     )
+                    # 세션 상태를 저장한다.
+                    _persist_state()
                     # 최종 응답을 전송하고 종료한다.
                     yield _format_sse("final", final_payload)
                     return
@@ -859,6 +875,8 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                                         "tables": {},
                                         "charts": [],
                                     }
+                                    # 세션 상태를 저장한다.
+                                    _persist_state()
                                     # 최종 응답을 전송하고 종료한다.
                                     yield _format_sse("final", final_payload)
                                     return
@@ -887,6 +905,8 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
                                     pending_action,
                                     request.demo,
                                 )
+                                # 세션 상태를 저장한다.
+                                _persist_state()
                                 yield _format_sse("final", final_payload)
                                 return
                             else:
@@ -960,6 +980,8 @@ async def api_chat_stream(request: schemas.ChatRequest) -> StreamingResponse:
             charts,
             debug_note="final_stream_response",
         )
+        # 세션 상태를 저장한다.
+        _persist_state()
         # 최종 응답을 전송한다.
         yield _format_sse("final", final_payload)
 
