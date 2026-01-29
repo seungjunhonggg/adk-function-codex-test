@@ -143,6 +143,13 @@ def _ensure_agent_tables() -> None:
                 )
                 """
             )
+            # 세션 IP 컬럼을 보장한다.
+            cursor.execute(
+                f"""
+                ALTER TABLE {AGENT_SESSIONS_TABLE}
+                ADD COLUMN IF NOT EXISTS client_ip TEXT
+                """
+            )
             # 메시지 테이블을 만든다.
             cursor.execute(
                 f"""
@@ -231,6 +238,31 @@ def upsert_session_state(session_id: str, state: dict[str, Any]) -> None:
                 updated_at = CURRENT_TIMESTAMP
             """,
             (session_id, payload),
+        )
+    # 변경사항을 반영한다.
+    connection.commit()
+
+
+def upsert_session_ip(session_id: str, client_ip: str | None) -> None:
+    # IP가 없으면 처리하지 않는다.
+    if not client_ip:
+        return
+    # 테이블을 준비한다.
+    _ensure_agent_tables()
+    # 커넥션을 준비한다.
+    connection = _get_agent_connection()
+    # 세션 IP를 저장한다.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            INSERT INTO {AGENT_SESSIONS_TABLE} (session_id, client_ip)
+            VALUES (%s, %s)
+            ON CONFLICT (session_id)
+            DO UPDATE SET
+                client_ip = EXCLUDED.client_ip,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (session_id, client_ip),
         )
     # 변경사항을 반영한다.
     connection.commit()

@@ -164,6 +164,7 @@
 ### DB 저장 위치 (production)
 - 세션 상태: `data_portal.agent_session_state`
 - 대화 히스토리: `data_portal.agent_sessions`, `data_portal.agent_messages`
+- 클라이언트 IP: `data_portal.agent_sessions.client_ip`
 
 ## 후속 질문 처리
 - 사용자가 특정 단계 근거를 요청하면 explain_stage로 stage_notes + 증거를 LLM에 전달해 설명한다.
