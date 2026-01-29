@@ -12,6 +12,7 @@ from .schemas import (
     InputParams,
     RouteDecision,
     SelectionDecision,
+    StageBriefingOutput,
     UpdateDecision,
 )
 from agents import ModelSettings
@@ -264,51 +265,36 @@ selection_agent = Agent(
 )
 
 
-# 브리핑 에이전트를 정의한다.
+# 브리핑 에이전트를 정의한다 (text만 생성, ref는 코드에서 삽입).
 briefing_agent = Agent(
     name="BriefingAgent",
     instructions=(
-        "아래 표/차트 데이터를 보고 브리핑 블록을 생성해.\n"
-        "- 출력 형식: blocks 배열만\n"
-        "- block.type은 text|table_ref|chart_ref만 사용\n"
-        "- text는 한국어로 친절한 문장으로 작성.\n"
-        "- text는 문장마다 **반드시 **줄바꿈(\\n)으로 끝내고, 한 줄에 문장 1개만 작성\n"
+        "아래 표/차트 데이터를 보고 각 단계별 브리핑 텍스트를 생성해.\n"
+        "- 출력 형식: texts 배열 (단계별 텍스트만)\n"
+        "- table_ref/chart_ref는 생성하지 않음 (코드에서 자동 삽입됨)\n"
+        "- text는 한국어로 친절한 문장으로 작성\n"
+        "- 문장마다 줄바꿈(\\n)으로 끝내고, 한 줄에 문장 1개만 작성\n"
         "- 빈 줄 금지\n"
-        "- 표/차트 값만 인용\n"
-        "- 전달된 tables/charts가 있으면 반드시 table_ref/chart_ref를 포함\n"
-        "- table_ref/chart_ref는 관련 text 블록 바로 다음에 배치\n"
-        "- briefing_hint가 있으면 첫 문장에 반영\n"
-        "- stage_sequence가 있으면 그 순서대로 작성\n"
-        "- stage_sequence.note(근거)만 사용하며, 근거로 사용하였다는 말을 직접적으로 언급하지 않음.\n"
-        "- 각 stage는 text 1개 + 관련 table_ref/chart_ref를 바로 배치\n"
-        "- 전달된 tables/charts 안에서만 block을 만든다\n"
+        "- 표/차트 값을 인용하여 설명\n"
+        "- briefing_hint가 있으면 첫 텍스트(summary)에 반영\n"
+        "- stage_sequence 순서대로 작성\n"
+        "- stage_sequence.note(근거)를 활용하되, '근거'라는 단어는 직접 언급하지 않음\n"
         "- 테이블에서 __로 시작하는 메타 필드는 무시\n"
         "- children 지표는 언급하지 않음\n"
-        "- 길이 목표: 1k ~ 2k 토큰\n"
-        "필수 table_key: input_params_table, chip_type_candidates_table, "
-        "reference_lot_candidates_table, top_k_table, "
-        "recent_similar_table, defect_rate_table\n"
-        "필수 chart_id: defect_rate_summary\n"
         "\n[출력 템플릿 예시]\n"
-        "[\n"
-        "  {\"type\": \"text\", \"section\": \"summary\", \"value\": \"전체 요약 문장1\\n전체 요약 문장2\"},\n"
-        "  {\"type\": \"table_ref\", \"table_key\": \"input_params_table\"},\n"
-        "  {\"type\": \"text\", \"section\": \"1-2\", \"value\": \"칩기종 후보를 설명\"},\n"
-        "  {\"type\": \"table_ref\", \"table_key\": \"chip_type_candidates_table\"},\n"
-        "  {\"type\": \"text\", \"section\": \"1-3\", \"value\": \"레퍼런스 LOT 선정 근거\"},\n"
-        "  {\"type\": \"table_ref\", \"table_key\": \"reference_lot_candidates_table\"},\n"
-        "  {\"type\": \"table_ref\", \"table_key\": \"reference_lot_table\"},\n"
-        "  {\"type\": \"text\", \"section\": \"1-5\", \"value\": \"top-k 후보 요약\"},\n"
-        "  {\"type\": \"table_ref\", \"table_key\": \"top_k_table\"},\n"
-        "  {\"type\": \"text\", \"section\": \"1-6\", \"value\": \"최근 유사 설계 요약\"},\n"
-        "  {\"type\": \"table_ref\", \"table_key\": \"recent_similar_table\"},\n"
-        "  {\"type\": \"text\", \"section\": \"1-7\", \"value\": \"불량률 요약\"},\n"
-        "  {\"type\": \"table_ref\", \"table_key\": \"defect_rate_table\"},\n"
-        "  {\"type\": \"chart_ref\", \"chart_id\": \"defect_rate_summary\"},\n"
-        "  {\"type\": \"text\", \"section\": \"conclusion\", \"value\": \"최종 결론\"}\n"
-        "]\n"
+        "{\n"
+        "  \"texts\": [\n"
+        "    {\"section\": \"summary\", \"value\": \"전체 요약 문장1\\n전체 요약 문장2\"},\n"
+        "    {\"section\": \"1-2\", \"value\": \"칩기종 후보 설명\"},\n"
+        "    {\"section\": \"1-3\", \"value\": \"레퍼런스 LOT 선정 설명\"},\n"
+        "    {\"section\": \"1-5\", \"value\": \"top-k 후보 요약\"},\n"
+        "    {\"section\": \"1-6\", \"value\": \"최근 유사 설계 요약\"},\n"
+        "    {\"section\": \"1-7\", \"value\": \"불량률 요약\"},\n"
+        "    {\"section\": \"conclusion\", \"value\": \"최종 결론\"}\n"
+        "  ]\n"
+        "}\n"
     ),
-    output_type=BriefingOutput,
+    output_type=StageBriefingOutput,
     **MODEL_KWARGS,
 )
 
@@ -368,10 +354,42 @@ async def _build_briefing_blocks(
     if stage_sequence:
         payload_obj["stage_sequence"] = stage_sequence
     payload = json.dumps(payload_obj, ensure_ascii=False)
-    # LLM으로 브리핑 블록을 만든다.
+    # LLM으로 브리핑 텍스트만 생성한다.
     result = await Runner.run(briefing_agent, payload)
-    # Pydantic 객체를 dict로 변환한다.
-    return [block.dict() for block in result.final_output.blocks]
+    # 텍스트를 section별로 매핑한다.
+    text_map: dict[str, str] = {}
+    for text_block in result.final_output.texts:
+        text_map[text_block.section] = text_block.value
+    # 차트 ID 집합을 만든다.
+    chart_id_set = {
+        chart.get("chart_id")
+        for chart in (charts or [])
+        if isinstance(chart, dict) and chart.get("chart_id")
+    }
+    # 최종 블록을 조립한다: text + ref를 stage_sequence 순서대로 배치.
+    blocks: list[dict[str, Any]] = []
+    # summary가 있으면 먼저 추가한다.
+    if "summary" in text_map:
+        blocks.append({"type": "text", "section": "summary", "value": text_map["summary"]})
+    # stage_sequence에 따라 text와 ref를 배치한다.
+    if stage_sequence:
+        for stage_info in stage_sequence:
+            stage = stage_info.get("stage", "")
+            # 해당 단계의 text가 있으면 추가한다.
+            if stage in text_map:
+                blocks.append({"type": "text", "section": stage, "value": text_map[stage]})
+            # 해당 단계의 table_ref를 추가한다 (실제 존재하는 것만).
+            for table_key in stage_info.get("table_keys", []):
+                if table_key in (tables or {}):
+                    blocks.append({"type": "table_ref", "table_key": table_key})
+            # 해당 단계의 chart_ref를 추가한다 (실제 존재하는 것만).
+            for chart_id in stage_info.get("chart_ids", []):
+                if chart_id in chart_id_set:
+                    blocks.append({"type": "chart_ref", "chart_id": chart_id})
+    # conclusion이 있으면 마지막에 추가한다.
+    if "conclusion" in text_map:
+        blocks.append({"type": "text", "section": "conclusion", "value": text_map["conclusion"]})
+    return blocks
 
 
 async def _build_explain_answer(context: dict[str, Any]) -> str:
