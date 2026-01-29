@@ -29,6 +29,10 @@ const baseUrlInputEl = document.getElementById("baseUrlInput");
 let isComposing = false;
 // 조합 종료 후 전송 예약 여부를 저장한다.
 let pendingSubmit = false;
+// 현재 활성 스트림 컨트롤러를 저장한다.
+let activeStreamController = null;
+// 현재 활성 요청 ID를 저장한다.
+let activeRequestId = null;
 
 // 화면 상태를 단순 객체로 관리한다.
 const state = {
@@ -41,6 +45,20 @@ const state = {
   baseUrl: "",
   insightsHidden: true,
 };
+
+// 요청 아이디를 생성한다.
+function createRequestId() {
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+// 활성 스트림을 중단한다.
+function cancelActiveStream() {
+  if (!activeStreamController) {
+    return;
+  }
+  activeStreamController.abort();
+  activeStreamController = null;
+}
 
 // 타이핑 로그를 갱신한다.
 function updateTypingLogs(logs) {
@@ -1145,6 +1163,14 @@ function buildOverrides() {
 // 사용자 입력을 서버로 전송한다.
 async function sendMessage(text) {
   setTyping(true);
+  // 새로운 요청 ID를 만든다.
+  const requestId = createRequestId();
+  // 활성 요청 ID를 갱신한다.
+  activeRequestId = requestId;
+  // 이전 스트림이 있으면 중단한다.
+  cancelActiveStream();
+  // 새 AbortController를 준비한다.
+  activeStreamController = new AbortController();
   try {
     // 요청 페이로드를 준비한다.
     const overrides = buildOverrides();
@@ -1161,6 +1187,7 @@ async function sendMessage(text) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: activeStreamController.signal,
     });
     // 스트림 응답을 확인한다.
     if (!response.ok || !response.body) {
@@ -1176,6 +1203,11 @@ async function sendMessage(text) {
       const { value, done } = await reader.read();
       if (done) {
         break;
+      }
+      // 활성 요청이 바뀌었으면 스트림을 중단한다.
+      if (requestId !== activeRequestId) {
+        await reader.cancel();
+        return;
       }
       // SSE 메시지를 파싱 가능한 버퍼로 모은다.
       buffer += decoder.decode(value, { stream: true });
@@ -1198,6 +1230,10 @@ async function sendMessage(text) {
           return;
         }
         if (parsed.event === "final") {
+          // 활성 요청이 아니면 무시한다.
+          if (requestId !== activeRequestId) {
+            return;
+          }
           // 최종 응답을 추가한다.
           const data = JSON.parse(parsed.data || "{}");
           hasFinal = true;
@@ -1212,10 +1248,18 @@ async function sendMessage(text) {
       });
     }
     // 최종 응답이 없으면 오류로 처리한다.
-    if (!hasFinal) {
+    if (!hasFinal && requestId === activeRequestId) {
       throw new Error("final missing");
     }
   } catch (error) {
+    // 중단된 요청은 조용히 종료한다.
+    if (error && error.name === "AbortError") {
+      return;
+    }
+    // 활성 요청이 아니면 오류를 무시한다.
+    if (requestId !== activeRequestId) {
+      return;
+    }
     addMessage({
       role: "assistant",
       route: "error",
@@ -1230,7 +1274,12 @@ async function sendMessage(text) {
       charts: [],
     });
   } finally {
-    setTyping(false);
+    // 활성 요청일 때만 타이핑 표시를 내린다.
+    if (requestId === activeRequestId) {
+      setTyping(false);
+      activeStreamController = null;
+      activeRequestId = null;
+    }
   }
 }
 
@@ -1372,6 +1421,12 @@ if (insightsToggleEl) {
 
 // 대화를 초기화한다.
 function resetConversation() {
+  // 진행 중인 스트림을 중단한다.
+  cancelActiveStream();
+  // 타이핑 표시를 제거한다.
+  setTyping(false);
+  // 활성 요청 ID를 비운다.
+  activeRequestId = null;
   state.sessionId = createSessionId();
   state.messages = [];
   saveState();
