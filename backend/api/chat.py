@@ -694,93 +694,57 @@ async def api_chat_stream(
     )
 
     async def event_stream():
-        # 라우팅을 먼저 수행한다.
-        action_payload = _parse_action_payload(request.message)
-        route = (
-            "simulation"
-            if _is_action_payload(action_payload)
-            else await agents._route_with_llm(session, request.message)
-        )
-        # 세션 상태를 가져온다.
-        session_state = state._get_session_state(request.session_id, use_db=use_db)
-        action: str | None = None
-        missing: list[str] = []
-        blocks: list[dict[str, Any]] = []
-        tables: dict[str, Any] = {}
-        charts: list[dict[str, Any]] = []
-        # 세션 상태 저장 헬퍼를 만든다.
-        def _persist_state() -> None:
-            # 현재 세션 상태를 저장한다.
-            state._save_session_state(session_state, use_db=use_db)
-
-        if route == "simulation":
-            pending_action = (
-                session_state.get("pending_action")
-                if isinstance(session_state.get("pending_action"), dict)
-                else None
+        try:
+            # 라우팅을 먼저 수행한다.
+            action_payload = _parse_action_payload(request.message)
+            route = (
+                "simulation"
+                if _is_action_payload(action_payload)
+                else await agents._route_with_llm(session, request.message)
             )
-            pending_selection = _extract_pending_selection(
-                action_payload, pending_action
-            )
-            # 커맨드를 결정한다.
-            command_hint = state._build_command_hint(session_state)
-            command_message = f"{command_hint}\n\n[사용자 메시지]\n{request.message}"
-            if _is_action_payload(action_payload):
-                command = schemas.CommandDecision(action="run", target_stage=None)
-            else:
-                command = await agents._decide_command_with_llm(session, command_message)
-            if command.action == "reset":
-                # 리셋 액션을 기록한다.
-                action = "reset"
-                # 세션 상태를 초기화한다.
-                session_state = state._reset_session_state(request.session_id, use_db=use_db)
-                # 리셋 안내 블록을 만든다.
-                blocks = [
-                    {
-                        "type": "text",
-                        "section": "summary",
-                        "value": "시뮬레이션 상태를 초기화했어. 새로 시작해줘.",
-                    }
-                ]
-                # 표/차트는 비운다.
-                tables, charts = {}, []
-                # 최종 응답을 만든다.
-                final_payload = _build_final_payload(
-                    route,
-                    action,
-                    session_state,
-                    blocks,
-                    tables,
-                    charts,
-                    debug_note="final_stream_response",
+            # 세션 상태를 가져온다.
+            session_state = state._get_session_state(request.session_id, use_db=use_db)
+            action: str | None = None
+            missing: list[str] = []
+            blocks: list[dict[str, Any]] = []
+            tables: dict[str, Any] = {}
+            charts: list[dict[str, Any]] = []
+            # 세션 상태 저장 헬퍼를 만든다.
+            def _persist_state() -> None:
+                # 현재 세션 상태를 저장한다.
+                state._save_session_state(session_state, use_db=use_db)
+    
+            if route == "simulation":
+                pending_action = (
+                    session_state.get("pending_action")
+                    if isinstance(session_state.get("pending_action"), dict)
+                    else None
                 )
-                # 세션 상태를 저장한다.
-                _persist_state()
-                # 최종 응답을 전송하고 종료한다.
-                yield _format_sse("final", final_payload)
-                return
-            if pending_action and pending_action.get("action") == "select_candidates" and not pending_selection:
-                # 후보 테이블을 불러온다.
-                pending_tables, _ = _load_pending_tables(session_state)
-                # 테이블 키를 꺼낸다.
-                table_key = pending_action.get("table_key")
-                # ID 필드를 꺼낸다.
-                id_field = pending_action.get("id_field", "chip_type_id")
-                # 후보 행을 꺼낸다.
-                candidate_rows = pending_tables.get(table_key) if table_key else []
-                # 후보 ID 목록을 만든다.
-                candidate_ids = _extract_candidate_ids(candidate_rows, id_field)
-                # LLM으로 선택을 추출한다.
-                pending_selection = await agents._select_candidates_with_llm(
-                    request.message,
-                    candidate_ids,
+                pending_selection = _extract_pending_selection(
+                    action_payload, pending_action
                 )
-                # 선택이 없으면 UI를 다시 보낸다.
-                if not pending_selection:
-                    action = "run"
-                    blocks, tables, charts = _build_pending_repeat_response(
-                        session_state, pending_action
-                    )
+                # 커맨드를 결정한다.
+                command_hint = state._build_command_hint(session_state)
+                command_message = f"{command_hint}\n\n[사용자 메시지]\n{request.message}"
+                if _is_action_payload(action_payload):
+                    command = schemas.CommandDecision(action="run", target_stage=None)
+                else:
+                    command = await agents._decide_command_with_llm(session, command_message)
+                if command.action == "reset":
+                    # 리셋 액션을 기록한다.
+                    action = "reset"
+                    # 세션 상태를 초기화한다.
+                    session_state = state._reset_session_state(request.session_id, use_db=use_db)
+                    # 리셋 안내 블록을 만든다.
+                    blocks = [
+                        {
+                            "type": "text",
+                            "section": "summary",
+                            "value": "시뮬레이션 상태를 초기화했어. 새로 시작해줘.",
+                        }
+                    ]
+                    # 표/차트는 비운다.
+                    tables, charts = {}, []
                     # 최종 응답을 만든다.
                     final_payload = _build_final_payload(
                         route,
@@ -796,222 +760,269 @@ async def api_chat_stream(
                     # 최종 응답을 전송하고 종료한다.
                     yield _format_sse("final", final_payload)
                     return
-            if command.action == "explain_stage":
-                action = "explain_stage"
-                (
-                    progress_logs,
-                    blocks,
-                    tables,
-                    charts,
-                ) = await _handle_explain_stage_request(
-                    session_state,
-                    command,
-                    request.message,
-                    route,
-                )
-                yield _format_sse("progress", {"logs": progress_logs})
-            else:
-                action = "run"
-                progress_logs = state._build_progress_logs(
-                    route,
-                    action,
-                    session_state.get("stage_status"),
-                    current_stage="1-1",
-                    is_final=False,
-                )
-                yield _format_sse("progress", {"logs": progress_logs})
-                # ?? ??? ?? ??? ????.
-                had_results = bool(
-                    session_state["stage_status"].get("1-8", {}).get("done")
-                )
-                # ??? ?? ??? ????.
-                input_params, update, missing_update = await _resolve_input_and_update(
-                    session_state,
-                    request.message,
-                    pending_selection,
-                    had_results,
-                )
-                # ?? ??? dirty ??? ????.
-                merged_params, dirty_stages = _apply_update_and_dirty(
-                    session_state,
-                    input_params,
-                    update,
-                    missing_update,
-                )
-                # ???? ?? ??? ?? ????.
-                handled_missing, missing, blocks, tables, charts, pending_action = (
-                    _handle_missing_update_request(session_state, missing_update)
-                )
-                if not handled_missing:
-                    # ??? ??? ????.
-                    missing = state._get_missing_fields(merged_params)
-                    pending_action = None
-                    # ?? ? ?? ??? ????.
-                    handled_form, blocks, tables, charts, stage_notes = (
-                        _handle_missing_targets_form(missing, merged_params)
+                if pending_action and pending_action.get("action") == "select_candidates" and not pending_selection:
+                    # 후보 테이블을 불러온다.
+                    pending_tables, _ = _load_pending_tables(session_state)
+                    # 테이블 키를 꺼낸다.
+                    table_key = pending_action.get("table_key")
+                    # ID 필드를 꺼낸다.
+                    id_field = pending_action.get("id_field", "chip_type_id")
+                    # 후보 행을 꺼낸다.
+                    candidate_rows = pending_tables.get(table_key) if table_key else []
+                    # 후보 ID 목록을 만든다.
+                    candidate_ids = _extract_candidate_ids(candidate_rows, id_field)
+                    # LLM으로 선택을 추출한다.
+                    pending_selection = await agents._select_candidates_with_llm(
+                        request.message,
+                        candidate_ids,
                     )
-                    if not handled_form:
-                        if request.demo:
-                            blocks, tables, charts, stage_notes = (
-                                demo._build_simulation_stub(
-                                    request,
-                                    merged_params,
-                                    session_state["configs"],
-                                    session_state["selections"],
-                                    session_state["user_prefs"],
+                    # 선택이 없으면 UI를 다시 보낸다.
+                    if not pending_selection:
+                        action = "run"
+                        blocks, tables, charts = _build_pending_repeat_response(
+                            session_state, pending_action
+                        )
+                        # 최종 응답을 만든다.
+                        final_payload = _build_final_payload(
+                            route,
+                            action,
+                            session_state,
+                            blocks,
+                            tables,
+                            charts,
+                            debug_note="final_stream_response",
+                        )
+                        # 세션 상태를 저장한다.
+                        _persist_state()
+                        # 최종 응답을 전송하고 종료한다.
+                        yield _format_sse("final", final_payload)
+                        return
+                if command.action == "explain_stage":
+                    action = "explain_stage"
+                    (
+                        progress_logs,
+                        blocks,
+                        tables,
+                        charts,
+                    ) = await _handle_explain_stage_request(
+                        session_state,
+                        command,
+                        request.message,
+                        route,
+                    )
+                    yield _format_sse("progress", {"logs": progress_logs})
+                else:
+                    action = "run"
+                    progress_logs = state._build_progress_logs(
+                        route,
+                        action,
+                        session_state.get("stage_status"),
+                        current_stage="1-1",
+                        is_final=False,
+                    )
+                    yield _format_sse("progress", {"logs": progress_logs})
+                    # ?? ??? ?? ??? ????.
+                    had_results = bool(
+                        session_state["stage_status"].get("1-8", {}).get("done")
+                    )
+                    # ??? ?? ??? ????.
+                    input_params, update, missing_update = await _resolve_input_and_update(
+                        session_state,
+                        request.message,
+                        pending_selection,
+                        had_results,
+                    )
+                    # ?? ??? dirty ??? ????.
+                    merged_params, dirty_stages = _apply_update_and_dirty(
+                        session_state,
+                        input_params,
+                        update,
+                        missing_update,
+                    )
+                    # ???? ?? ??? ?? ????.
+                    handled_missing, missing, blocks, tables, charts, pending_action = (
+                        _handle_missing_update_request(session_state, missing_update)
+                    )
+                    if not handled_missing:
+                        # ??? ??? ????.
+                        missing = state._get_missing_fields(merged_params)
+                        pending_action = None
+                        # ?? ? ?? ??? ????.
+                        handled_form, blocks, tables, charts, stage_notes = (
+                            _handle_missing_targets_form(missing, merged_params)
+                        )
+                        if not handled_form:
+                            if request.demo:
+                                blocks, tables, charts, stage_notes = (
+                                    demo._build_simulation_stub(
+                                        request,
+                                        merged_params,
+                                        session_state["configs"],
+                                        session_state["selections"],
+                                        session_state["user_prefs"],
+                                    )
                                 )
-                            )
-                        else:
-                            # ?? ??? ????? ??? ?? ????.
-                            (
-                                tables,
-                                charts,
-                                stage_notes,
-                                gap,
-                                progress_events,
-                            ) = _run_simulation_with_progress(
-                                route,
-                                action,
-                                session_state,
-                                merged_params,
-                                dirty_stages,
-                            )
-                            for logs in progress_events:
-                                yield _format_sse("progress", {"logs": logs})
-                            if gap:
-                                # notice 타입 gap이면 안내만 하고 종료한다.
-                                if gap.get("type") == "notice":
-                                    # 안내 문구를 준비한다.
-                                    notice_message = gap.get("message") or "해당 단계 결과를 찾을 수 없어 진행할 수 없어."
-                                    # 안내 블록을 만든다.
-                                    blocks = [
-                                        {
-                                            "type": "text",
-                                            "section": "summary",
-                                            "value": notice_message,
-                                        }
-                                    ]
-                                    # 마지막 gap 정보를 저장한다.
-                                    session_state["last_gap"] = {
-                                        "type": "notice",
-                                        "stage": gap.get("stage"),
-                                        "message": notice_message,
-                                    }
-                                    # 최종 응답을 만든다.
-                                    final_payload = {
-                                        "route": route,
-                                        "blocks": blocks,
-                                        "tables": {},
-                                        "charts": [],
-                                    }
-                                    # 세션 상태를 저장한다.
-                                    _persist_state()
-                                    # 최종 응답을 전송하고 종료한다.
-                                    yield _format_sse("final", final_payload)
-                                    return
-                                # gap 질문 컨텍스트를 만든다.
-                                gap_context = _build_gap_context(gap)
-                                # gap 질문을 생성한다.
-                                question = await agents._build_gap_question(gap_context)
-                                # pending_action과 블록을 만든다.
-                                pending_action, blocks = _build_gap_pending_payload(
-                                    gap, question
-                                )
-                                # 마지막 gap 정보를 저장한다.
-                                session_state["last_gap"] = gap_context
-                                # gap?? ?? ??? ???? ????.
-                                final_payload = _finalize_gap_stream_response(
+                            else:
+                                # ?? ??? ????? ??? ?? ????.
+                                (
+                                    tables,
+                                    charts,
+                                    stage_notes,
+                                    gap,
+                                    progress_events,
+                                ) = _run_simulation_with_progress(
                                     route,
                                     action,
                                     session_state,
                                     merged_params,
-                                    tables,
-                                    charts,
-                                    blocks,
-                                    stage_notes,
-                                    missing,
                                     dirty_stages,
-                                    pending_action,
-                                    request.demo,
                                 )
-                                # 세션 상태를 저장한다.
-                                _persist_state()
-                                yield _format_sse("final", final_payload)
-                                return
-                            else:
-                                pending_action = None
-                                # ??? ?? ?? ??? ? ??? ????.
-                                blocks = []
-                    # ??? ?? ??? ????.
-                    state._apply_table_highlights(tables, session_state["selections"])
-                    # LLM? ??? ???? ???.
-                    llm_tables, llm_charts = state._build_llm_payload(
-                        tables, charts, session_state["configs"]
-                    )
-                    if not missing and not pending_action:
-                        blocks, progress_logs = await _build_briefing_blocks_for_run(
-                            route,
-                            action,
+                                for logs in progress_events:
+                                    yield _format_sse("progress", {"logs": logs})
+                                if gap:
+                                    # notice 타입 gap이면 안내만 하고 종료한다.
+                                    if gap.get("type") == "notice":
+                                        # 안내 문구를 준비한다.
+                                        notice_message = gap.get("message") or "해당 단계 결과를 찾을 수 없어 진행할 수 없어."
+                                        # 안내 블록을 만든다.
+                                        blocks = [
+                                            {
+                                                "type": "text",
+                                                "section": "summary",
+                                                "value": notice_message,
+                                            }
+                                        ]
+                                        # 마지막 gap 정보를 저장한다.
+                                        session_state["last_gap"] = {
+                                            "type": "notice",
+                                            "stage": gap.get("stage"),
+                                            "message": notice_message,
+                                        }
+                                        # 최종 응답을 만든다.
+                                        final_payload = {
+                                            "route": route,
+                                            "blocks": blocks,
+                                            "tables": {},
+                                            "charts": [],
+                                        }
+                                        # 세션 상태를 저장한다.
+                                        _persist_state()
+                                        # 최종 응답을 전송하고 종료한다.
+                                        yield _format_sse("final", final_payload)
+                                        return
+                                    # gap 질문 컨텍스트를 만든다.
+                                    gap_context = _build_gap_context(gap)
+                                    # gap 질문을 생성한다.
+                                    question = await agents._build_gap_question(gap_context)
+                                    # pending_action과 블록을 만든다.
+                                    pending_action, blocks = _build_gap_pending_payload(
+                                        gap, question
+                                    )
+                                    # 마지막 gap 정보를 저장한다.
+                                    session_state["last_gap"] = gap_context
+                                    # gap?? ?? ??? ???? ????.
+                                    final_payload = _finalize_gap_stream_response(
+                                        route,
+                                        action,
+                                        session_state,
+                                        merged_params,
+                                        tables,
+                                        charts,
+                                        blocks,
+                                        stage_notes,
+                                        missing,
+                                        dirty_stages,
+                                        pending_action,
+                                        request.demo,
+                                    )
+                                    # 세션 상태를 저장한다.
+                                    _persist_state()
+                                    yield _format_sse("final", final_payload)
+                                    return
+                                else:
+                                    pending_action = None
+                                    # ??? ?? ?? ??? ? ??? ????.
+                                    blocks = []
+                        # ??? ?? ??? ????.
+                        state._apply_table_highlights(tables, session_state["selections"])
+                        # LLM? ??? ???? ???.
+                        llm_tables, llm_charts = state._build_llm_payload(
+                            tables, charts, session_state["configs"]
+                        )
+                        if not missing and not pending_action:
+                            blocks, progress_logs = await _build_briefing_blocks_for_run(
+                                route,
+                                action,
+                                session_state,
+                                had_results,
+                                dirty_stages,
+                                stage_notes,
+                                llm_tables,
+                                llm_charts,
+                                tables,
+                                charts,
+                            )
+                            yield _format_sse("progress", {"logs": progress_logs})
+                        if not missing and not pending_action:
+                            tables, charts = _post_process_run_tables(
+                                session_state,
+                                tables,
+                                charts,
+                                dirty_stages,
+                                missing,
+                                pending_action,
+                            )
+                        _update_run_state(
                             session_state,
-                            had_results,
-                            dirty_stages,
+                            merged_params,
+                            tables,
+                            charts,
+                            blocks,
                             stage_notes,
+                            missing,
+                            request.demo,
                             llm_tables,
                             llm_charts,
-                            tables,
-                            charts,
-                        )
-                        yield _format_sse("progress", {"logs": progress_logs})
-                    if not missing and not pending_action:
-                        tables, charts = _post_process_run_tables(
-                            session_state,
-                            tables,
-                            charts,
                             dirty_stages,
-                            missing,
                             pending_action,
                         )
-                    _update_run_state(
-                        session_state,
-                        merged_params,
-                        tables,
-                        charts,
-                        blocks,
-                        stage_notes,
-                        missing,
-                        request.demo,
-                        llm_tables,
-                        llm_charts,
-                        dirty_stages,
-                        pending_action,
-                    )
-        else:
-            # 캐주얼 응답 로그를 전송한다.
-            progress_logs = state._build_progress_logs(
+            else:
+                # 캐주얼 응답 로그를 전송한다.
+                progress_logs = state._build_progress_logs(
+                    route,
+                    None,
+                    session_state.get("stage_status"),
+                    is_final=False,
+                )
+                yield _format_sse("progress", {"logs": progress_logs})
+                # 캐주얼 응답을 LLM으로 생성한다.
+                blocks = await agents._build_casual_blocks(session, request.message)
+                # 캐주얼 응답에는 표/차트가 없다.
+                tables, charts = {}, []
+    
+            # 최종 진행 로그를 만든다.
+            final_payload = _build_final_payload(
                 route,
-                None,
-                session_state.get("stage_status"),
-                is_final=False,
+                action,
+                session_state,
+                blocks,
+                tables,
+                charts,
+                debug_note="final_stream_response",
             )
-            yield _format_sse("progress", {"logs": progress_logs})
-            # 캐주얼 응답을 LLM으로 생성한다.
-            blocks = await agents._build_casual_blocks(session, request.message)
-            # 캐주얼 응답에는 표/차트가 없다.
-            tables, charts = {}, []
-
-        # 최종 진행 로그를 만든다.
-        final_payload = _build_final_payload(
-            route,
-            action,
-            session_state,
-            blocks,
-            tables,
-            charts,
-            debug_note="final_stream_response",
-        )
-        # 세션 상태를 저장한다.
-        _persist_state()
-        # 최종 응답을 전송한다.
-        yield _format_sse("final", final_payload)
-
+            # 세션 상태를 저장한다.
+            _persist_state()
+            # 최종 응답을 전송한다.
+            yield _format_sse("final", final_payload)
+    
+        except Exception:
+            fallback_payload = {
+                "route": "error",
+                "blocks": [
+                    {"type": "text", "section": "summary", "value": "처리 중 문제가 발생했어요. 잠시 후 다시 시도해주세요."},
+                ],
+                "tables": {},
+                "charts": [],
+            }
+            yield _format_sse("final", fallback_payload)
     return StreamingResponse(event_stream(), media_type="text/event-stream")

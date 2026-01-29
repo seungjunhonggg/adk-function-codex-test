@@ -1293,7 +1293,7 @@ async function sendMessage(text) {
         {
           type: "text",
           section: "error",
-          value: "Request failed. Check the server and try again.",
+          value: "처리 중 문제가 발생했어요. 잠시 후 다시 시도해주세요.",
         },
       ],
       tables: {},
