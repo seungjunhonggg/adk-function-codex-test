@@ -289,8 +289,8 @@ function renderBlock(block, tables, charts) {
 
 // 입력 폼을 만든다.
 function renderInputForm(block) {
-  const card = document.createElement("div");
-  card.className = "input-form-card";
+  const wrapper = document.createElement("div");
+  wrapper.className = "input-form-wrapper";
 
   // 헤더 영역 (타이틀, 설명)
   const header = document.createElement("div");
@@ -301,163 +301,224 @@ function renderInputForm(block) {
     title.textContent = block.title;
     header.appendChild(title);
   }
-  if (block.description) {
-    const desc = document.createElement("div");
-    desc.className = "form-description";
-    desc.textContent = block.description;
-    header.appendChild(desc);
-  }
-  card.appendChild(header);
+  const desc = document.createElement("div");
+  desc.className = "form-description";
+  desc.textContent = "아래 두 가지 방법 중 하나를 선택해주세요.";
+  header.appendChild(desc);
+  wrapper.appendChild(header);
 
-  // 폼 그리드
-  const grid = document.createElement("div");
-  grid.className = "form-grid";
-  // 좌측 컬럼을 만든다.
-  const leftColumn = document.createElement("div");
-  leftColumn.className = "form-column form-column--left";
-  // 우측 컬럼을 만든다.
-  const rightColumn = document.createElement("div");
-  rightColumn.className = "form-column form-column--right";
+  // 두 개의 박스를 담는 컨테이너
+  const boxContainer = document.createElement("div");
+  boxContainer.className = "form-box-container";
 
+  // 필드 분리: left vs right
   const fields = Array.isArray(block.fields) ? block.fields : [];
-  fields.forEach((field) => {
-    const group = document.createElement("div");
-    group.className = "form-group";
+  const leftFields = fields.filter(f => f.column !== "right");
+  const rightFields = fields.filter(f => f.column === "right");
 
-    // 라벨
-    const label = document.createElement("label");
-    label.className = "form-label";
-    label.textContent = field.label || field.key;
-    group.appendChild(label);
+  // ============ 왼쪽 박스 (조건 직접 입력) ============
+  const leftBox = document.createElement("div");
+  leftBox.className = "input-form-card input-form-card--left";
+  leftBox.dataset.formType = "core";
 
-    // 입력 필드 (select vs text/number)
-    if (field.type === "select" && Array.isArray(field.options)) {
-      const input = document.createElement("select");
-      input.className = "form-input";
-      input.name = field.key;
+  const leftHeader = document.createElement("div");
+  leftHeader.className = "form-box-header";
+  const leftLabel = document.createElement("div");
+  leftLabel.className = "form-box-label";
+  leftLabel.textContent = "방법 1";
+  const leftTitle = document.createElement("div");
+  leftTitle.className = "form-box-title";
+  leftTitle.textContent = "조건 직접 입력";
+  leftHeader.appendChild(leftLabel);
+  leftHeader.appendChild(leftTitle);
+  leftBox.appendChild(leftHeader);
 
-      // Placeholder logic for select
-      if (!field.value) {
-        const placeholder = document.createElement("option");
-        placeholder.text = "선택해주세요";
-        placeholder.value = "";
-        placeholder.disabled = true;
-        placeholder.selected = true;
-        input.appendChild(placeholder);
-      }
-
-      field.options.forEach(opt => {
-        const option = document.createElement("option");
-        option.value = opt;
-        option.textContent = opt + (field.unit ? ` ${field.unit}` : "");
-        if (opt === field.value) option.selected = true;
-        input.appendChild(option);
-      });
-      group.appendChild(input);
-    }
-    // 단위 옵션이 있는 경우 (예: Capacity) - 복합 입력 UI
-    else if (field.unit_options && Array.isArray(field.unit_options)) {
-      const wrapper = document.createElement("div");
-      wrapper.className = "form-input-group"; // Flex container style needed
-
-      const input = document.createElement("input");
-      input.className = "form-input";
-      input.type = "number"; // 보통 단위가 있으면 숫자
-      input.name = field.key;
-      input.value = field.value || "";
-      input.placeholder = field.label || "값 입력";
-
-      const unitSelect = document.createElement("select");
-      unitSelect.className = "form-input form-input-unit";
-      unitSelect.name = `${field.key}_unit`;
-
-      field.unit_options.forEach((opt, idx) => {
-        const option = document.createElement("option");
-        option.value = opt;
-        option.textContent = opt;
-        // 기본값은 첫 번째(pF) 또는 지정된 단위
-        if (idx === 0) option.selected = true;
-        unitSelect.appendChild(option);
-      });
-
-      wrapper.appendChild(input);
-      wrapper.appendChild(unitSelect);
-      group.appendChild(wrapper);
-    }
-    else {
-      const input = document.createElement("input");
-      input.className = "form-input";
-      input.type = field.type || "text";
-      input.name = field.key;
-      input.value = field.value || "";
-      if (field.placeholder) {
-        input.placeholder = field.placeholder;
-      } else if (field.label) {
-        input.placeholder = field.label;
-      }
-      group.appendChild(input);
-    }
-
-    // 에러 메시지 요소 추가
-    const errorText = document.createElement("div");
-    errorText.className = "form-error-text";
-    errorText.textContent = "입력이 필요합니다";
-
-    group.appendChild(errorText);
-    // 컬럼 정보를 확인한다.
-    const column = field.column || "left";
-    if (column === "right") {
-      rightColumn.appendChild(group);
-    } else {
-      leftColumn.appendChild(group);
-    }
+  // 2x2 그리드
+  const leftGrid = document.createElement("div");
+  leftGrid.className = "form-grid-2x2";
+  leftFields.forEach((field) => {
+    const group = createFormGroup(field);
+    leftGrid.appendChild(group);
   });
-  grid.appendChild(leftColumn);
-  grid.appendChild(rightColumn);
-  card.appendChild(grid);
+  leftBox.appendChild(leftGrid);
 
-  // 액션 버튼
-  const actions = document.createElement("div");
-  actions.className = "form-actions";
-  const submitBtn = document.createElement("button");
-  submitBtn.className = "form-submit-btn";
-  submitBtn.textContent = block.submit_label || "Submit Parameters";
-  submitBtn.type = "button";
-
+  // 왼쪽 박스 제출 버튼
+  const leftActions = document.createElement("div");
+  leftActions.className = "form-actions";
+  const leftSubmitBtn = document.createElement("button");
+  leftSubmitBtn.className = "form-submit-btn";
+  leftSubmitBtn.textContent = block.submit_label || "시뮬레이션 시작";
+  leftSubmitBtn.type = "button";
   if (block.submitted) {
-    card.classList.add("is-submitted");
-    submitBtn.disabled = true;
-    submitBtn.textContent = "Submitted";
+    leftBox.classList.add("is-submitted");
+    leftSubmitBtn.disabled = true;
+    leftSubmitBtn.textContent = "Submitted";
   }
-
-  submitBtn.addEventListener("click", () => {
-    handleFormSubmit(card, block.form_id);
+  leftSubmitBtn.addEventListener("click", () => {
+    handleFormSubmit(leftBox, block.form_id, "core");
   });
+  leftActions.appendChild(leftSubmitBtn);
+  leftBox.appendChild(leftActions);
 
-  actions.appendChild(submitBtn);
-  card.appendChild(actions);
+  boxContainer.appendChild(leftBox);
 
-  return card;
+  // ============ OR 구분자 ============
+  const orDivider = document.createElement("div");
+  orDivider.className = "form-or-divider";
+  const orText = document.createElement("span");
+  orText.className = "form-or-text";
+  orText.textContent = "또는";
+  orDivider.appendChild(orText);
+  boxContainer.appendChild(orDivider);
+
+  // ============ 오른쪽 박스 (CHIP 기종 검색) ============
+  const rightBox = document.createElement("div");
+  rightBox.className = "input-form-card input-form-card--right";
+  rightBox.dataset.formType = "chip";
+
+  const rightHeader = document.createElement("div");
+  rightHeader.className = "form-box-header";
+  const rightLabel = document.createElement("div");
+  rightLabel.className = "form-box-label";
+  rightLabel.textContent = "방법 2";
+  const rightTitle = document.createElement("div");
+  rightTitle.className = "form-box-title";
+  rightTitle.textContent = "CHIP 기종으로 검색";
+  rightHeader.appendChild(rightLabel);
+  rightHeader.appendChild(rightTitle);
+  rightBox.appendChild(rightHeader);
+
+  // CHIP 기종 필드
+  const rightContent = document.createElement("div");
+  rightContent.className = "form-chip-content";
+  rightFields.forEach((field) => {
+    const group = createFormGroup(field);
+    rightContent.appendChild(group);
+  });
+  rightBox.appendChild(rightContent);
+
+  // 오른쪽 박스 제출 버튼
+  const rightActions = document.createElement("div");
+  rightActions.className = "form-actions";
+  const rightSubmitBtn = document.createElement("button");
+  rightSubmitBtn.className = "form-submit-btn";
+  rightSubmitBtn.textContent = block.submit_label || "시뮬레이션 시작";
+  rightSubmitBtn.type = "button";
+  if (block.submitted) {
+    rightBox.classList.add("is-submitted");
+    rightSubmitBtn.disabled = true;
+    rightSubmitBtn.textContent = "Submitted";
+  }
+  rightSubmitBtn.addEventListener("click", () => {
+    handleFormSubmit(rightBox, block.form_id, "chip");
+  });
+  rightActions.appendChild(rightSubmitBtn);
+  rightBox.appendChild(rightActions);
+
+  boxContainer.appendChild(rightBox);
+  wrapper.appendChild(boxContainer);
+
+  return wrapper;
 }
 
-// 폼 제출 처리
-function handleFormSubmit(cardEl, formId) {
-  // .form-input 클래스를 가진 모든 요소 (input, select)
-  // 그룹 내에 input과 unit select가 같이 있을 수 있음.
-  // data 수집 방식을 form-group 기준으로 변경
+// 폼 그룹 생성 헬퍼 함수
+function createFormGroup(field) {
+  const group = document.createElement("div");
+  group.className = "form-group";
+
+  // 라벨
+  const label = document.createElement("label");
+  label.className = "form-label";
+  label.textContent = field.label || field.key;
+  group.appendChild(label);
+
+  // 입력 필드 (select vs text/number)
+  if (field.type === "select" && Array.isArray(field.options)) {
+    const input = document.createElement("select");
+    input.className = "form-input";
+    input.name = field.key;
+
+    if (!field.value) {
+      const placeholder = document.createElement("option");
+      placeholder.text = "선택해주세요";
+      placeholder.value = "";
+      placeholder.disabled = true;
+      placeholder.selected = true;
+      input.appendChild(placeholder);
+    }
+
+    field.options.forEach(opt => {
+      const option = document.createElement("option");
+      option.value = opt;
+      option.textContent = opt + (field.unit ? ` ${field.unit}` : "");
+      if (opt === field.value) option.selected = true;
+      input.appendChild(option);
+    });
+    group.appendChild(input);
+  }
+  // 단위 옵션이 있는 경우 (예: Capacity)
+  else if (field.unit_options && Array.isArray(field.unit_options)) {
+    const inputWrapper = document.createElement("div");
+    inputWrapper.className = "form-input-group";
+
+    const input = document.createElement("input");
+    input.className = "form-input";
+    input.type = "number";
+    input.name = field.key;
+    input.value = field.value || "";
+    input.placeholder = field.label || "값 입력";
+
+    const unitSelect = document.createElement("select");
+    unitSelect.className = "form-input form-input-unit";
+    unitSelect.name = `${field.key}_unit`;
+
+    field.unit_options.forEach((opt, idx) => {
+      const option = document.createElement("option");
+      option.value = opt;
+      option.textContent = opt;
+      if (idx === 0) option.selected = true;
+      unitSelect.appendChild(option);
+    });
+
+    inputWrapper.appendChild(input);
+    inputWrapper.appendChild(unitSelect);
+    group.appendChild(inputWrapper);
+  }
+  else {
+    const input = document.createElement("input");
+    input.className = "form-input";
+    input.type = field.type || "text";
+    input.name = field.key;
+    input.value = field.value || "";
+    if (field.placeholder) {
+      input.placeholder = field.placeholder;
+    } else if (field.label) {
+      input.placeholder = field.label;
+    }
+    group.appendChild(input);
+  }
+
+  // 에러 메시지
+  const errorText = document.createElement("div");
+  errorText.className = "form-error-text";
+  errorText.textContent = "입력이 필요합니다";
+  group.appendChild(errorText);
+
+  return group;
+}
+
+// 폼 제출 처리 (formType: "core" 또는 "chip")
+function handleFormSubmit(cardEl, formId, formType) {
   const groups = cardEl.querySelectorAll(".form-group");
   const data = {};
   const entries = [];
   let isValid = true;
-  // 기본 입력 키를 정의한다.
   const coreKeys = ["temperature", "size", "capacity", "voltage"];
-  // 칩 기종 키를 정의한다.
   const chipKey = "chip_prod_id";
 
   groups.forEach(group => {
-    // 주요 입력 필드 찾기 (unit select 제외하고, name이 _unit으로 끝나지 않는 것)
     const input = Array.from(group.querySelectorAll(".form-input")).find(el => !el.name.endsWith("_unit"));
-    if (!input) return; // 라벨만 있는 경우 등 방지
+    if (!input) return;
 
     const errorText = group.querySelector(".form-error-text");
     const unitSelect = group.querySelector(`select[name="${input.name}_unit"]`);
@@ -465,37 +526,42 @@ function handleFormSubmit(cardEl, formId) {
     entries.push({ input, errorText, unitSelect, value: val, key: input.name });
   });
 
-  // 칩 기종 입력 여부를 확인한다.
-  const hasChip = entries.some((entry) => entry.key === chipKey && entry.value);
+  // formType에 따른 검증 로직
   entries.forEach((entry) => {
-    // 초기화
+    // 에러 상태 초기화
     entry.input.classList.remove("has-error");
     if (entry.errorText) entry.errorText.classList.remove("is-visible");
-    // 강제로 리플로우를 발생시켜 애니메이션 다시 실행 가능하게 함
     void entry.input.offsetWidth;
-    // 칩 기종이 없으면 기본 입력은 필수다.
-    const isRequired = !hasChip && coreKeys.includes(entry.key);
+
+    let isRequired = false;
+    if (formType === "core") {
+      // 왼쪽 박스: 4개 필드 모두 필수
+      isRequired = coreKeys.includes(entry.key);
+    } else if (formType === "chip") {
+      // 오른쪽 박스: chip_prod_id 필수
+      isRequired = entry.key === chipKey;
+    }
+
     if (isRequired && !entry.value) {
       isValid = false;
       entry.input.classList.add("has-error");
       if (entry.errorText) entry.errorText.classList.add("is-visible");
       return;
     }
-    if (!entry.value) {
-      return;
-    }
+
+    if (!entry.value) return;
+
     let finalValue = entry.value;
-    // 단위 변환 로직 check
+    // 단위 변환 로직
     if (entry.unitSelect) {
       const unit = entry.unitSelect.value;
       const numVal = parseFloat(entry.value);
       if (!isNaN(numVal)) {
         if (unit === "nF") {
-          finalValue = String(numVal * 1000); // 1nF = 1000pF
+          finalValue = String(numVal * 1000);
         } else if (unit === "uF") {
-          finalValue = String(numVal * 1000000); // 1uF = 1,000,000pF
+          finalValue = String(numVal * 1000000);
         }
-        // pF는 그대로
       }
     }
     data[entry.key] = finalValue;
@@ -503,15 +569,21 @@ function handleFormSubmit(cardEl, formId) {
 
   if (!isValid) return;
 
-  // UI 잠금
+  // 현재 박스 잠금
   cardEl.classList.add("is-submitted");
   const btn = cardEl.querySelector(".form-submit-btn");
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "Submitting...";
+    btn.textContent = "처리 중...";
   }
 
-  // 메시지 전송 (JSON 문자열로)
+  // 전체 wrapper 찾아서 다른 박스도 비활성화
+  const wrapper = cardEl.closest(".input-form-wrapper");
+  if (wrapper) {
+    wrapper.classList.add("is-submitted");
+  }
+
+  // 메시지 전송
   const payload = data;
   const messageText = JSON.stringify(payload, null, 2);
   sendMessage(messageText);
