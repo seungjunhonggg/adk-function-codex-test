@@ -965,18 +965,147 @@ body::before {
   }
 }
 
-/* 입력 폼 위젯 스타일 */
+/* 입력 폼 전체 래퍼 */
+.input-form-wrapper {
+  margin-top: 8px;
+  width: 100%;
+}
+
+.input-form-wrapper > .form-header {
+  margin-bottom: 16px;
+}
+
+.input-form-wrapper > .form-header .form-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+
+.input-form-wrapper > .form-header .form-description {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* 두 박스 컨테이너 */
+.form-box-container {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+/* 입력 폼 카드 (개별 박스) */
 .input-form-card {
-  background: transparent;
+  background: #fff;
   border-radius: 12px;
-  padding: 16px;
+  padding: 20px;
   border: 1px solid rgba(13, 108, 99, 0.15);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  margin-top: 4px;
-  /* User request: 50% width, align left */
-  width: 50%;
-  margin-right: auto;
+}
+
+.input-form-card--left {
+  flex: 1.2;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+
+.input-form-card--right {
+  flex: 0.8;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 박스 헤더 */
+.form-box-header {
+  margin-bottom: 8px;
+}
+
+.form-box-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--accent);
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.form-box-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* 2x2 그리드 레이아웃 */
+.form-grid-2x2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+/* OR 구분자 */
+.form-or-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  position: relative;
+}
+
+.form-or-divider::before {
+  content: "";
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 50%;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(13, 108, 99, 0.2) 20%,
+    rgba(13, 108, 99, 0.2) 80%,
+    transparent
+  );
+}
+
+.form-or-text {
+  background: var(--bg);
+  padding: 8px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid rgba(13, 108, 99, 0.1);
+  z-index: 1;
+}
+
+/* CHIP 기종 컨텐츠 영역 */
+.form-chip-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.form-chip-content .form-group {
+  margin-bottom: 0;
+}
+
+/* 오른쪽 박스 액션 버튼 하단 정렬 */
+.input-form-card--right .form-actions {
+  margin-top: auto;
+}
+
+/* 제출 후 전체 비활성화 */
+.input-form-wrapper.is-submitted {
+  opacity: 0.7;
+  pointer-events: none;
 }
 
 .form-header {
