@@ -4,7 +4,6 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from .agents import _build_explain_answer
 from . import db_production
 from .schemas import InputParams, UpdateDecision
 
@@ -238,6 +237,128 @@ def _build_command_hint(state: dict[str, Any]) -> str:
         f"- pending_action: {pending_action or 'none'}\n"
         f"- last_action: {last_action or 'none'}"
     )
+
+
+def _summarize_stage_status(stage_status: dict[str, Any]) -> dict[str, list[str]]:
+    # 단계 상태 요약을 만든다.
+    done: list[str] = []
+    dirty: list[str] = []
+    # 단계 순서대로 상태를 모은다.
+    for stage in STAGE_ORDER:
+        # 단계 상태를 꺼낸다.
+        status = stage_status.get(stage, {})
+        # 완료 여부를 확인한다.
+        if status.get("done"):
+            done.append(stage)
+        # dirty 여부를 확인한다.
+        if status.get("dirty"):
+            dirty.append(stage)
+    # 요약 결과를 반환한다.
+    return {"done": done, "dirty": dirty}
+
+
+def _pick_latest_stage_note(
+    stage_notes: dict[str, str], stage_status: dict[str, Any]
+) -> dict[str, str] | None:
+    # 최근 완료 단계 근거를 고른다.
+    if not stage_notes:
+        return None
+    # 단계 순서를 뒤에서부터 확인한다.
+    for stage in reversed(STAGE_ORDER):
+        # 완료 상태인지 확인한다.
+        status = stage_status.get(stage, {})
+        if not status.get("done"):
+            continue
+        # 해당 단계 근거가 있으면 반환한다.
+        if stage in stage_notes:
+            return {"stage": stage, "note": stage_notes[stage]}
+    # 근거가 없으면 None을 반환한다.
+    return None
+
+
+def _select_memory_tables(
+    state: dict[str, Any],
+    mode: str,
+    target_stage: str | None,
+) -> dict[str, Any]:
+    # 메모리용 표를 고른다.
+    tables = state.get("stage_outputs", {}).get("tables", {})
+    # 테이블 타입을 확인한다.
+    if not isinstance(tables, dict):
+        return {}
+    # 모드별 키를 준비한다.
+    if mode == "explain" and target_stage:
+        keys = _STAGE_TABLE_KEYS.get(target_stage, [])
+    elif mode == "simulation":
+        keys = []
+        for stage in ("1-1", "1-2", "1-3", "1-4", "1-5", "1-6", "1-7"):
+            keys.extend(_STAGE_TABLE_KEYS.get(stage, []))
+    else:
+        return {}
+    # 선택된 표를 모은다.
+    return {key: tables[key] for key in keys if key in tables}
+
+
+def _select_memory_charts(
+    state: dict[str, Any],
+    mode: str,
+    target_stage: str | None,
+) -> list[dict[str, Any]]:
+    # 메모리용 차트를 고른다.
+    charts = state.get("stage_outputs", {}).get("charts", [])
+    # 차트 타입을 확인한다.
+    if not isinstance(charts, list):
+        return []
+    # 모드별 차트 ID를 준비한다.
+    if mode == "explain" and target_stage:
+        chart_ids = set(_STAGE_CHART_IDS.get(target_stage, []))
+    elif mode == "simulation":
+        chart_ids = set(_STAGE_CHART_IDS.get("1-7", []))
+    else:
+        return []
+    # 필요한 차트만 필터링한다.
+    return [
+        chart for chart in charts if isinstance(chart, dict) and chart.get("chart_id") in chart_ids
+    ]
+
+
+def build_memory_context(
+    state: dict[str, Any],
+    mode: str,
+    target_stage: str | None = None,
+) -> str:
+    # 메모리 컨텍스트를 만든다.
+    stage_status = state.get("stage_status", {})
+    # 상태 스냅샷을 만든다.
+    snapshot = {
+        "mode": mode,
+        "input_params": state.get("input_params"),
+        "selections": state.get("selections"),
+        "configs": state.get("configs"),
+        "user_prefs": state.get("user_prefs"),
+        "pending_action": state.get("pending_action"),
+        "last_gap": state.get("last_gap"),
+        "last_explain_stage": state.get("last_explain_stage"),
+        "stage_status": _summarize_stage_status(stage_status),
+    }
+    # 최근 근거 요약을 추가한다.
+    latest_note = _pick_latest_stage_note(state.get("stage_notes", {}), stage_status)
+    if latest_note:
+        snapshot["latest_stage_note"] = latest_note
+    # 표/차트 데이터를 선택한다.
+    tables = _select_memory_tables(state, mode, target_stage)
+    charts = _select_memory_charts(state, mode, target_stage)
+    # 표/차트가 있으면 하드캡을 적용한다.
+    if tables or charts:
+        tables, charts = _apply_payload_budget(tables, charts)
+    # 메모리 페이로드를 만든다.
+    payload: dict[str, Any] = {"snapshot": snapshot}
+    if tables or charts:
+        payload["data"] = {"tables": tables, "charts": charts}
+    # JSON으로 직렬화한다.
+    memory_json = json.dumps(payload, ensure_ascii=False)
+    # 메모리 블록을 조립한다.
+    return f"[MEMORY]\n{memory_json}\n[/MEMORY]"
 
 
 def _build_progress_logs(
@@ -495,6 +616,8 @@ async def _build_explain_response(
         "charts": selected_charts,
     }
     # LLM으로 설명을 생성한다.
+    from .agents import _build_explain_answer
+
     answer = await _build_explain_answer(context)
     # 설명 블록을 구성한다.
     blocks = [{"type": "text", "section": "explain", "value": answer}]

@@ -13,7 +13,8 @@
     "temperature": "string|null",
     "voltage": "string|null",
     "size": "string|null",
-    "capacity": "string|null"
+    "capacity": "string|null",
+    "chip_prod_id": "string|null"
   },
   "selections": {
     "chip_type_ids": ["string"] | null,

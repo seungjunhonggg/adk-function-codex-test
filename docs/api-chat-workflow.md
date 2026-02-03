@@ -1,4 +1,4 @@
-# /api/chat 워크플로우 (v0)
+# /api/chat 워크플로우 (v1, Google ADK)
 
 ## 목적
 - 캐주얼 대화와 시뮬레이션 요청을 분기한다.
@@ -11,45 +11,56 @@
 - optional: overrides (중간 단계 변경 값)
 - optional: demo (데모 모드 여부)
 
-## 라우팅
-1. RouteAgent로 의도 분류 (OpenAI ADK structured output)
+## 라우팅 (RootAgent)
+1. RootAgent가 세션 상태를 로드하고 ADK session.state에 저장한다.
+2. RouteAgent(LlmAgent, output_schema)로 의도 분류
    - casual → 일반 대화 응답
    - simulation → CommandAgent 실행
-2. CommandAgent로 action 결정
-   - run → 시뮬레이션 시작/진행
-   - reset → 시뮬레이션 상태 초기화
-   - explain_stage → 특정 단계 근거 설명
-   - 상태 힌트(브리핑 완료 여부/보류 액션)를 참고해 run 우선
-3. explain_stage면 ExplainAgent로 근거 설명을 생성(필요한 표/차트만 포함)
-4. run이면 1-1~1-8 실행 (변경 요청도 run에서 처리)
-5. reset이면 세션 상태를 초기화하고 안내 블록만 반환
+   - select_candidates 액션 payload면 바로 simulation으로 진입
+3. CommandAgent(LlmAgent, output_schema)로 action 결정
+   - run / reset / explain_stage
+4. explain_stage면 ExplainAgent(LlmAgent)로 근거 설명 생성
+5. run이면 입력/변경 파싱 후 SequentialAgent 실행
+6. reset이면 세션 상태 초기화 후 안내 블록 반환
+
+## SequentialAgent 구성 (시뮬레이션 단계)
+- RootAgent 하위에 SequentialAgent를 배치하고, 각 단계별 StageAgent가 순차 실행된다.
+- StageAgent는 before_agent_callback으로 **dirty 단계가 아니면 스킵**한다.
+- StageAgent에서 gap이 발생하면 temp:halt 플래그를 세우고 이후 단계는 callback으로 스킵된다.
+
+### 단계 목록
+- 1-1 입력 수집
+- 1-2 칩기종 조회
+- 1-3 레퍼런스 LOT 선정
+- 1-4 최적화 API payload
+- 1-5 top-k 선정
+- 1-6 최근 6개월 유사 설계 조회
+- 1-7 불량률 집계 + 차트
+- 1-8 브리핑 서술 생성
 
 ## 입력 파싱 (LLM)
 - simulation + action이 run일 때 InputAgent로 1-1 입력을 추출한다.
 - simulation + action이 run일 때 UpdateAgent가 필요한 입력/변경 값을 추출한다.
-- output_type으로 구조화하여 필드가 없으면 null로 둔다.
-- 입력 필드는 temperature/voltage/size/capacity 4개만 사용한다.
+- ADK output_schema(Pydantic) 기반 구조화 출력 사용.
+- chip_prod_id가 있으면 나머지 4개 입력이 없어도 누락으로 보지 않는다.
+- chip_prod_id가 없으면 4개 입력을 모두 받아야 한다.
 - 누락 필드가 있으면 다음 질문으로 안내한다.
-- 누락이 있으면 브리핑 생성은 생략한다.
 
-## 변경 요청 처리 (run 내부)
+## 변경 요청 처리 (DAG dirty)
 - UpdateAgent로 변경 값을 추출한다.
 - 값이 없으면 pending_action으로 보류하고 질문만 반환한다.
-- 값이 있으면 상태를 갱신하고 시뮬레이션을 재실행한다.
-- 변경된 dirty 단계 중 가장 앞 단계부터 브리핑 범위를 제한한다(예: 1-4 변경 → 1-4~1-8).
-- briefing_hint를 전달해 첫 문장에 변경 반영 문구를 포함한다.
+- 값이 있으면 상태를 갱신하고 dirty_stages를 계산한다.
+- dirty_stages 중 가장 앞 단계부터 브리핑 범위를 제한한다.
 
 ## 데이터 공백 처리 (gap)
-- 각 단계에서 strict 조회 결과가 0건이면 fallback 조건으로 1회 재조회한다.
-- fallback 결과가 있으면 pending_action을 `select_candidates`로 설정하고 다음 단계로 진행하지 않는다.
+- 각 단계에서 strict 조회 결과가 0건이면 gap을 반환한다.
+- gap이 발생하면 temp:halt 플래그를 세우고 이후 단계는 callback으로 스킵한다.
 - GapAgent가 확인 질문을 생성한다.
-- 후보 선택이 필요한 경우 `table_select` 블록을 반환한다.
+- 후보 선택이 필요한 경우 table_select 블록을 반환한다.
 - 사용자가 선택을 제출하면 해당 단계부터 재실행한다.
-- gap이 `type: notice`이면 안내 메시지만 반환하고 pending_action은 설정하지 않는다.
-- pending_action이 `select_candidates`이고 JSON 선택이 없으면 SelectionAgent가 후보 ID 리스트를 보고 텍스트 선택을 추출한다.
-- SelectionAgent가 선택을 못하면 선택 UI를 다시 보낸다.
+- JSON 선택이 없으면 SelectionAgent가 텍스트 선택을 추출한다.
 
-## 요청/응답 스키마 (v0)
+## 요청/응답 스키마 (v1)
 ### 요청
 ```json
 {
@@ -94,91 +105,28 @@
 ```
 
 ## 스트리밍 응답 (SSE)
-- `/api/chat/stream`은 text/event-stream으로 진행 로그와 최종 응답을 보낸다.
-- progress 이벤트는 `{"logs": [{"text": "...", "status": "..."}]}` 형식이다.
-- final 이벤트는 `/api/chat`과 동일한 응답 스키마를 사용한다.
+- `/api/chat/stream`은 text/event-stream으로 progress + final 이벤트를 보낸다.
+- progress 이벤트는 StageAgent가 단계 시작 시 JSON으로 전송한다.
+- final 이벤트는 RootAgent가 최종 응답 페이로드를 전송한다.
 
-### 진행 로그 블록
-- blocks 첫 줄에 progress_log를 추가할 수 있다.
-- logs는 text와 status(in_progress/done)만 사용한다.
-- UI에서 status는 진행중/완료로 표시한다.
-
-## 시뮬레이션 단계
-- 1-1 입력 수집
-- 1-2 칩기종 조회
-- 1-3 레퍼런스 LOT 선정
-- 1-4 최적화 API 호출
-- 1-5 top-k 선정
-- 1-6 최근 6개월 유사 설계 조회
-- 1-7 불량률 집계(평균값) + 공정불량률 차트 생성
-- 1-8 브리핑 서술 생성
-
-상세 데이터 계약은 `docs/data-contracts.md`를 따른다.
+## 메모리/상태
+- 세션 상태는 기존 state 스키마(input_params, stage_outputs, stage_notes 등)를 유지한다.
+- ADK session.state에는 앱 상태(app:mlcc_state)와 런타임 상태(temp:*)가 분리되어 저장된다.
+- 프로덕션은 Postgres(data_portal 스키마)에 상태를 영속화한다.
+- 데모 모드는 인메모리 세션 스토어로 상태를 유지한다.
 
 ## 브리핑 생성 (LLM)
-- LLM은 서술만 작성하고, 표/차트 값은 결정적 처리.
-- 서술은 표/차트에 있는 값만 인용.
-- children 지표는 기본 숨김, 요청 시 확장.
-- structured output은 OpenAI ADK structured output을 사용한다.
-- 응답 직전에 report_column_labels 기반 한글 라벨 매핑을 적용한다.
-- stage_sequence(단계 순서/근거/표/차트 키)를 함께 전달해 단계별 순서로 블록을 만든다.
-- stage_notes는 근거 라인만 추려 stage_sequence.note로 전달한다.
-- 1-3 단계는 reference_lot_candidates_table만 사용하고 선택 행을 강조한다.
-- LLM이 table_ref/chart_ref를 누락하면 stage_sequence 기준으로 참조 블록을 보정한다.
-
-### LLM 출력 형식 예시
-```json
-{
-  "blocks": [
-    {"type": "text", "section": "summary", "value": "..." },
-    {"type": "table_ref", "table_key": "reference_lot_candidates_table"},
-    {"type": "table_ref", "table_key": "top_k_table"},
-    {"type": "chart_ref", "chart_id": "defect_rate_summary"},
-    {"type": "text", "section": "conclusion", "value": "..."}
-  ]
-}
-```
+- 1-8 단계에서 BriefingAgent가 단계별 텍스트를 생성한다.
+- 표/차트 참조(table_ref/chart_ref)는 코드에서 삽입한다.
+- briefing_hint는 dirty 시작 단계가 있을 때 첫 문장에 반영한다.
 
 ## 컨텍스트 예산
 - LLM 입력 4k 토큰 이내 유지.
 - raw 배열(top-k/불량률 상세)은 컨텍스트에 넣지 않는다.
 - 표/차트는 LLM 전용 요약 투영본만 주입하고 하드캡을 적용한다.
-- 원본 표/차트는 파일로 저장하고 raw_refs에 경로만 보관한다.
 
-## 메모리/상태
-- 세션 메모리: input_params, stage_outputs(요약본), stage_notes, last_explain_stage
-- dirty 업데이트 시 stage_outputs/stage_notes는 변경된 단계만 덮어쓰고 나머지는 유지한다.
-- reset 액션은 세션 상태를 초기화하고 브리핑 결과를 비운다.
-- 중간 변경 시 무효화:
-  - 1-1 변경 → 1-2~1-8 재계산
-  - 1-3 변경 → 1-4~1-8 재계산
-  - 1-5 변경(k 변경) → 1-6~1-8 재계산
-- 값 없는 변경 요청은 pending_action으로 보류하고 재질문한다.
-- 입력 파싱 결과는 기존 input_params와 병합한다(새 값만 덮어씀).
-- 프로덕션은 Postgres(data_portal 스키마)에 상태/대화를 영속화한다.
-- 데모 모드는 인메모리 세션 스토어로 상태를 유지한다.
-- 원본 표/차트는 `data/raw_outputs/<session_id>/*.json`에 저장한다.
+## 주의
+- ADK output_schema 사용 시 tools는 함께 사용하지 않는다.
+- StageAgent는 before_agent_callback으로 dirty/halt를 판단해 스킵한다.
 
 상태 스키마 상세는 `docs/state-schema.md`를 따른다.
-
-### DB 저장 위치 (production)
-- 세션 상태: `data_portal.agent_session_state`
-- 대화 히스토리: `data_portal.agent_sessions`, `data_portal.agent_messages`
-- 클라이언트 IP: `data_portal.agent_sessions.client_ip`
-
-## 후속 질문 처리
-- 사용자가 특정 단계 근거를 요청하면 explain_stage로 stage_notes + 증거를 LLM에 전달해 설명한다.
-- 필요 시 해당 단계 표/차트만 함께 전달한다.
-- children 지표 요청 시 report_defect_children 기반으로 확장 표 생성.
-
-## 에러 처리 (간단)
-- 필수 입력 누락: 즉시 안내 후 재질문.
-- API 실패: ref 기반 요약만 제공 + 재시도 안내.
-- 데이터 공백: fallback 결과가 있으면 확인 질문 + 선택 UI 반환.
-
-## Casual route (LLM)
-- route=casual uses CasualAgent to generate text blocks.
-- tables/charts are empty for casual replies.
-
-## Stage catalog mapping
-- CommandAgent/UpdateAgent use a stage catalog to map user phrases (e.g., REF LOT) to internal stage IDs.

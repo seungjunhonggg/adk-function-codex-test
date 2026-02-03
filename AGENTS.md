@@ -19,8 +19,8 @@
 - 사용자가 현재 코드에서 엣지케이스를 말하며 개선을 요청하면 딱 그 예시만 해결하려고 하지 말고, 그 예시가 왜 어떤 엣지케이스에서 비롯됐는지 파악하고, 그 근간을 해결할수 있는 해결책을 고민해야한다.
  - 코드를 수정하거나 추가 기능을 개발할 시 늘 사용자가 해당 과정에 대해서 변경요청을 할때에 잘 대응할 수 있을지 고려하여 메모리 구조를 짜야한다.
  - 코드는 늘 최대한 간결하고 컴팩트하게 작성한다. 불필요한 안전이나 검증절차는 최대한 지양한다.
- - 워크플로우 작성시 모델이 structured output format 을 만들어야 하는 상황이라면, openai 의 adk에 있는 structured output 기능을 이용한다.
- Reference: https://openai.github.io/openai-agents-python/
+ - 워크플로우 작성시 google-adk의 기능을 최우선으로 이용한다.
+ Reference: https://google.github.io/adk-docs/
 
 
 ## 2) Skill-first policy (Codex Skills)

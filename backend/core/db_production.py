@@ -455,6 +455,33 @@ def fetch_column_label_map() -> dict[str, str]:
     return label_map
 
 
+def find_chip_prod_id(
+    input_params: InputParams,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    # 칩기종 후보를 조회한다.
+    query = """
+    SELECT ~~~
+    FROM ~~~
+    WHERE ~~~
+    """
+    # 조회를 실행한다.
+    rows = db.execute_read(query, input_params.dict())
+    # 결과가 있으면 반환한다.
+    if rows:
+        return rows, None
+    # 결과가 없으면 gap을 만든다.
+    gap = {
+        "stage": "1-2",
+        "reason": "no_chip_type_match",
+        "fallback_summary": "조건에 맞는 칩기종이 없어 재확인이 필요합니다.",
+        "candidate_count": 0,
+        "table_key": "chip_type_candidates_table",
+        "id_field": "chip_type_id",
+        "selection_field": "chip_type_ids",
+        "allow_multi": True,
+    }
+    return [], gap
+
 def _query_column_label_map() -> list[dict[str, Any]]:
     # 실제 DB 조회 로직을 구현한다.
     # 예시 SQL:
@@ -567,42 +594,3 @@ def build_simulation_from_db(
         # TODO: 브리핑 근거 노트를 만든다.
         # stage_notes["1-8"] = "..."
     return tables, charts, stage_notes, gap
-
-
-def find_chip_prod_id(params: InputParams) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
-    # 기본 조건 조회 쿼리를 준비한다.
-    query = """
-    SELECT ~~~
-    FROM ~~~
-    WHERE ~~~
-    """
-    # 기본 조건 조회를 실행한다.
-    result = db.execute_read(query, params)
-    # 기본 조건 결과가 있으면 바로 반환한다.
-    if result:
-        return result, None, "입력 조건에 맞는 칩기종 후보를 찾았습니다."
-    # 대체 조건 쿼리를 준비한다.
-    fallback_query = """
-    SELECT ~~~
-    FROM ~~~
-    WHERE ~~~
-    """
-    # 대체 조건 요약을 준비한다.
-    fallback_summary = "조건 일부를 완화"
-    # 대체 조건 조회를 실행한다.
-    fallback_rows = db.execute_read(fallback_query, params)
-    # 대체 조건 결과가 있으면 gap을 만들어 반환한다.
-    if fallback_rows:
-        gap = {
-            "stage": "1-2",
-            "reason": "no_chip_type_match",
-            "fallback_summary": fallback_summary,
-            "candidate_count": len(fallback_rows),
-            "table_key": "chip_type_candidates_table",
-            "id_field": "chip_type_id",
-            "selection_field": "chip_type_ids",
-            "allow_multi": True,
-        }
-        return fallback_rows, gap
-    # 대체 조건도 없으면 빈 결과로 반환한다.
-    return [], None
