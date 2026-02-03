@@ -454,34 +454,138 @@ def fetch_column_label_map() -> dict[str, str]:
         label_map[column_key] = column_label
     return label_map
 
+def find_chip_prod_id(InputParams, dirty=None):
+    print(InputParams)
+    
+    # 파라미터 추출
+    temperature = InputParams.temperature
+    voltage = InputParams.voltage
+    size = InputParams.size
+    capacity = InputParams.capacity
+    chip_prod_id = InputParams.chip_prod_id
+    
+    target_keys = ["temperature", "voltage", "size", "capacity"]
+    params = InputParams.model_dump(include=target_keys)
+    print("****InputParams", params)
 
-def find_chip_prod_id(
-    input_params: InputParams,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    # 칩기종 후보를 조회한다.
-    query = """
-    SELECT ~~~
-    FROM ~~~
-    WHERE ~~~
-    """
-    # 조회를 실행한다.
-    rows = db.execute_read(query, input_params.dict())
-    # 결과가 있으면 반환한다.
-    if rows:
-        return rows, None
-    # 결과가 없으면 gap을 만든다.
-    gap = {
-        "stage": "1-2",
-        "reason": "no_chip_type_match",
-        "fallback_summary": "조건에 맞는 칩기종이 없어 재확인이 필요합니다.",
-        "candidate_count": 0,
-        "table_key": "chip_type_candidates_table",
-        "id_field": "chip_type_id",
-        "selection_field": "chip_type_ids",
-        "allow_multi": True,
-    }
-    return [], gap
+    # 1. 메인 쿼리 로직
+    if dirty is None:
+        if chip_prod_id:
+            params_chip = {'chip_prod_id': f'%{chip_prod_id}%'}
+            print("기종으로 한다", chip_prod_id)
+            
+            sql = """
+                SELECT DISTINCT ON (chip_prod_id) * FROM data_portal.mdh_contiguous_condition_view2 
+                WHERE chip_prod_id LIKE %(chip_prod_id)s 
+                ORDER BY chip_prod_id, design_input_date DESC;
+            """
+            results = db.execute_read(sql, params_chip)
+        else:
+            sql = """
+                SELECT DISTINCT ON (chip_prod_id) * FROM data_portal.mdh_contiguous_condition_view2 
+                WHERE temperature = %(temperature)s 
+                  AND voltage = %(voltage)s 
+                  AND size_detail = %(size)s::text 
+                  AND base_volume = %(capacity)s 
+                ORDER BY chip_prod_id, design_input_date DESC;
+            """
+            results = db.execute_read(sql, params)
+            
+    else:
+        # dirty 값이 있는 경우 (재검색 로직)
+        dirty_list = [dirty] if isinstance(dirty, str) else dirty
+        params_chip = {'chip_prod_id': [f'%{item}%' for item in dirty_list]}
+        
+        print(f"칩기종 변환 요청해서 {dirty}로 칩기종 재검색 드루감")
+        
+        sql = """
+            SELECT DISTINCT ON (chip_prod_id) * FROM data_portal.mdh_contiguous_condition_view2 
+            WHERE chip_prod_id LIKE ANY (%(chip_prod_id)s) 
+            ORDER BY chip_prod_id, design_input_date DESC;
+        """
+        results = db.execute_read(sql, params_chip)
+        print(f"칩기종 변환 요청 결과: {results}")
 
+    chip_prod_id_list = [row['chip_prod_id'] for row in results]
+
+    # 결과가 있으면 즉시 반환
+    if results:
+        return results, chip_prod_id_list, None
+
+    # 2. Fallback 로직 (결과가 없을 경우)
+    if not chip_prod_id_list:
+        if dirty is None:
+            if chip_prod_id:
+                # 기종명 기반 Fallback
+                chip_prod_id_fullname = chip_prod_id if chip_prod_id.startswith('CL') else 'CL' + chip_prod_id
+                voltage_code = chip_prod_id_fullname[9]
+                
+                reparams_voltage = searcher.get_neighbors(voltage_code)
+                search_values = [item['code'] for item in reparams_voltage]
+                
+                new_chip_prod_id = [
+                    chip_prod_id_fullname[:9] + char + chip_prod_id_fullname[10:] 
+                    for char in search_values
+                ]
+                params_chip = {'chip_prod_id': [f'%{item}%' for item in new_chip_prod_id]}
+                
+                print("기종으로 위아래 조건 찾아서 재검색 한다", new_chip_prod_id)
+                
+                sql = """
+                    SELECT DISTINCT ON (chip_prod_id) * FROM data_portal.mdh_contiguous_condition_view2 
+                    WHERE chip_prod_id LIKE ANY (%(chip_prod_id)s) 
+                    ORDER BY chip_prod_id, design_input_date DESC;
+                """
+                fallback_summary = f"해당 인자로 맞는 조건이 없어, 전압조건을 {search_values}으로 확대하여 재검색하였음."
+                fallback_results = db.execute_read(sql, params_chip)
+            
+            else:
+                # 파라미터 기반 Fallback
+                reparams_voltage = searcher.get_neighbors(voltage)
+                search_values = [item['val'] for item in reparams_voltage]
+                params['voltage'] = search_values
+                
+                sql = """
+                    SELECT DISTINCT ON (chip_prod_id) * FROM data_portal.mdh_contiguous_condition_view2 
+                    WHERE temperature = %(temperature)s 
+                      AND voltage = ANY(%(voltage)s) 
+                      AND size_detail = %(size)s::text 
+                      AND base_volume = %(capacity)s 
+                    ORDER BY chip_prod_id, design_input_date DESC;
+                """
+                fallback_summary = f"해당 인자로 맞는 조건이 없어, 전압조건을 {search_values}으로 확대하여 재검색하였음."
+                fallback_results = db.execute_read(sql, params)
+
+            chip_prod_id_list = [row['chip_prod_id'] for row in fallback_results]
+            print("chip_prod_id fallback 단계 ", search_values)
+            
+            if fallback_results:
+                gap = {
+                    "stage": "1-2",
+                    "reason": "no_chip_type_match",
+                    "fallback_summary": fallback_summary,
+                    "candidate_count": len(fallback_results),
+                    "table_key": "chip_type_candidates_table",
+                    "id_field": "chip_prod_id",
+                    "selection_field": "chip_prod_id",
+                    "allow_multi": True,
+                }
+                return fallback_results, chip_prod_id_list, gap
+
+        # 최종 결과 없음
+        fallback_summary = "해당 인자로 맞는 조건이 없어 전압조건을 확대하였으나 결과가 나오지 않았음."
+        gap = {
+            "stage": "1-2",
+            "reason": "no_chip_type_match",
+            "fallback_summary": fallback_summary,
+            "candidate_count": 0,
+            "table_key": "",
+            "id_field": "",
+            "selection_field": "",
+            "allow_multi": True,
+        }
+        return [], [], gap
+    
 def _query_column_label_map() -> list[dict[str, Any]]:
     # 실제 DB 조회 로직을 구현한다.
     # 예시 SQL:
@@ -587,10 +691,4 @@ def build_simulation_from_db(
         # charts.append({...})
         # stage_notes["1-7"] = "..."
 
-    # 1-8: 브리핑 근거 노트
-    if _should_run("1-8"):
-        # 1-8 진행 로그를 보낸다.
-        _emit_progress("1-8")
-        # TODO: 브리핑 근거 노트를 만든다.
-        # stage_notes["1-8"] = "..."
     return tables, charts, stage_notes, gap

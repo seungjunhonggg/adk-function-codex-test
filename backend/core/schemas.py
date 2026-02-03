@@ -27,7 +27,7 @@ class RouteDecision(BaseModel):
 # 커맨드 결과 스키마를 정의한다.
 class CommandDecision(BaseModel):
     # 커맨드 액션을 정의한다.
-    action: Literal["run", "update_input", "explain_stage", "reset"]
+    action: Literal["run", "reset"]
     target_stage: str | None = None
 
 
@@ -115,3 +115,8 @@ class ExplainOutput(BaseModel):
 
 class GapQuestionOutput(BaseModel):
     question: str
+
+
+# 시뮬레이션 응답 스키마를 정의한다.
+class SimulationReply(BaseModel):
+    answer: str

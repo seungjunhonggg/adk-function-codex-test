@@ -1,4 +1,4 @@
-# 상태 스키마 (확장안 v0)
+# 상태 스키마 (확장안 v1)
 
 ## 목적
 - 사용자가 어느 단계에서든 변경 요청을 해도 최소 재실행으로 처리한다.
@@ -37,8 +37,7 @@
     "1-4": {"done": false, "dirty": true, "updated_at": "ts"},
     "1-5": {"done": false, "dirty": true, "updated_at": "ts"},
     "1-6": {"done": false, "dirty": true, "updated_at": "ts"},
-    "1-7": {"done": false, "dirty": true, "updated_at": "ts"},
-    "1-8": {"done": false, "dirty": true, "updated_at": "ts"}
+    "1-7": {"done": false, "dirty": true, "updated_at": "ts"}
   },
   "stage_outputs": {
     "tables": {
@@ -60,8 +59,7 @@
     "1-4": "string",
     "1-5": "string",
     "1-6": "string",
-    "1-7": "string",
-    "1-8": "string"
+    "1-7": "string"
   },
   "raw_refs": {
     "top_k_raw_id": "string|null",
@@ -118,16 +116,15 @@
 - 새 입력값이 비어 있으면 기존 값을 유지한다.
 
 ## 무효화 규칙 (DAG)
-- 1-1 변경 → 1-2~1-8 dirty
-- 1-2 변경 → 1-3~1-8 dirty
-- 1-3 변경 → 1-4~1-8 dirty
-- 1-5(k 변경/필터 변경) → 1-6~1-8 dirty
+- 1-1 변경 → 1-2~1-7 dirty
+- 1-2 변경 → 1-3~1-7 dirty
+- 1-3 변경 → 1-4~1-7 dirty
+- 1-5(k 변경/필터 변경) → 1-6~1-7 dirty
 
 ## 저장 원칙
 - raw 결과는 raw_refs로만 저장하고, 요약만 stage_outputs에 저장한다.
 - 원본 표/차트는 `data/raw_outputs/<session_id>/*.json`에 저장한다.
-- 브리핑은 stage_outputs.briefing_blocks로 저장한다.
+- stage_outputs.briefing_blocks에는 **최종 응답 블록**을 저장한다.
 - 단계 근거 요약은 stage_notes에 저장한다.
-- 설명 후속 처리를 위해 last_explain_stage를 저장한다.
 - 프로덕션 상태는 `data_portal.agent_session_state`에 JSON으로 저장한다.
 - 대화 히스토리는 `data_portal.agent_sessions`, `data_portal.agent_messages`에 저장한다.

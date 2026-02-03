@@ -28,18 +28,15 @@ def _extract_client_ip(raw_request: Request) -> str | None:
     return None
 
 
-def _event_payload(event) -> dict | None:
-    # 이벤트 콘텐츠를 JSON으로 파싱한다.
+def _event_text(event) -> str | None:
+    # 이벤트 콘텐츠에서 텍스트만 추출한다.
     content = getattr(event, "content", None)
     if not content or not getattr(content, "parts", None):
         return None
     text = "".join(part.text or "" for part in content.parts)
     if not text:
         return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+    return text
 
 
 @router.post("/api/chat/stream")
@@ -67,28 +64,12 @@ async def api_chat_stream(
                 session_id=request.session_id,
                 new_message=content,
             ):
-                payload = _event_payload(event)
-                if not payload:
+                text = _event_text(event)
+                if not text:
                     continue
-                if payload.get("type") == "progress":
-                    yield _format_sse("progress", {"logs": payload.get("logs", [])})
-                elif payload.get("type") == "final":
-                    final_payload = payload.get("payload", {})
-                    yield _format_sse("final", final_payload)
+                yield _format_sse("delta", {"text": text})
         except Exception as exc:
             # 에러 응답을 만든다.
-            error_payload = {
-                "route": "simulation",
-                "blocks": [
-                    {
-                        "type": "text",
-                        "section": "summary",
-                        "value": f"내부 오류가 발생했습니다: {exc}",
-                    }
-                ],
-                "tables": {},
-                "charts": [],
-            }
-            yield _format_sse("final", error_payload)
+            yield _format_sse("delta", {"text": f"내부 오류가 발생했습니다: {exc}"})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

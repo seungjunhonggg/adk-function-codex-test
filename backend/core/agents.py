@@ -6,8 +6,6 @@ from google.adk.agents import BaseAgent, LlmAgent, SequentialAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.callbacks import CallbackContext
 from google.adk.events import Event, EventActions
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from . import db_production, demo, schemas, state
@@ -22,7 +20,6 @@ _HALT_KEY = "temp:halt"
 _RUN_TABLES_KEY = "temp:run_tables"
 _RUN_CHARTS_KEY = "temp:run_charts"
 _RUN_NOTES_KEY = "temp:run_notes"
-_RUN_BLOCKS_KEY = "temp:run_blocks"
 # gap 정보를 저장할 키를 정의한다.
 _GAP_KEY = "temp:gap"
 # 데모 출력물을 저장할 키를 정의한다.
@@ -67,11 +64,6 @@ STAGE_CATALOG = [
         "id": "1-7",
         "name": "불량률/차트",
         "keywords": ["불량률", "defect", "차트", "metric", "ppm", "percent"],
-    },
-    {
-        "id": "1-8",
-        "name": "브리핑",
-        "keywords": ["브리핑", "요약", "결론", "설명"],
     },
 ]
 
@@ -118,14 +110,11 @@ COMMAND_AGENT_INSTRUCTIONS = (
     "사용자 메시지를 보고 action을 결정해.\n"
     "- run: 시뮬레이션 시작/진행/결과 요청과 모든 변경 요청\n"
     "- reset: 시뮬레이션 상태 초기화 요청(처음부터 다시/리셋)\n"
-    "- explain_stage: 특정 단계 근거/이유 요청\n"
     "사용자 메시지에 [STATE_HINT]가 포함되면 참고해.\n"
     "- has_results=false면 run 우선\n"
     "- reset 요청이면 pending_action과 무관하게 reset\n"
     "- pending_action이 있어도 action은 run\n"
-    "단계가 명시되면 target_stage에 1-4 형식으로 넣어.\n"
-    "단계가 없으면 target_stage는 null.\n"
-    "action과 target_stage만 출력해.\n"
+    "action만 출력해.\n"
     "\n[예시]\n"
     "[STATE_HINT]\n"
     "- has_results: false\n"
@@ -134,7 +123,7 @@ COMMAND_AGENT_INSTRUCTIONS = (
     "- last_action: none\n"
     "[사용자 메시지]\n"
     '"온도 25, 전압 6, 용량 10uF로 시뮬레이션 해줘"\n'
-    "=> action: run, target_stage: null\n"
+    "=> action: run\n"
     "\n"
     "[STATE_HINT]\n"
     "- has_results: true\n"
@@ -143,16 +132,7 @@ COMMAND_AGENT_INSTRUCTIONS = (
     "- last_action: update_state\n"
     "[사용자 메시지]\n"
     '"레퍼런스 LOT 바꿔줘"\n'
-    "=> action: run, target_stage: null\n"
-    "\n"
-    "[STATE_HINT]\n"
-    "- has_results: true\n"
-    "- has_input_complete: true\n"
-    "- pending_action: none\n"
-    "- last_action: update_state\n"
-    "[사용자 메시지]\n"
-    '"1-6 단계 근거 설명해줘"\n'
-    "=> action: explain_stage, target_stage: 1-6\n"
+    "=> action: run\n"
 ) + COMMAND_STAGE_HINT
 
 # 입력 파싱 에이전트 지침을 정의한다.
@@ -187,20 +167,6 @@ UPDATE_AGENT_INSTRUCTIONS = (
     "missing_fields 포함해서 출력해."
 ) + UPDATE_STAGE_HINT
 
-# 설명 에이전트 지침을 정의한다.
-EXPLAIN_AGENT_INSTRUCTIONS = (
-    "다음 JSON을 보고 사용자의 질문에 답해.\n"
-    "- question: 사용자 질문\n"
-    "- stage: 단계\n"
-    "- stage_notes: 단계 근거 요약\n"
-    "- tables/charts: 필요한 증거 데이터\n"
-    "규칙:\n"
-    "- stage_notes와 tables/charts 내용만 사용해.\n"
-    "- 모르는 내용은 추측하지 말고 되물어.\n"
-    "- 3~6문장 한국어로 간결하게 답해.\n"
-    "answer만 출력해."
-)
-
 # 갭 질문 에이전트 지침을 정의한다.
 GAP_AGENT_INSTRUCTIONS = (
     "다음 JSON을 보고 사용자에게 확인 질문을 만들어.\n"
@@ -229,32 +195,19 @@ SELECTION_AGENT_INSTRUCTIONS = (
     "selected_ids만 출력해."
 )
 
-# 브리핑 에이전트 지침을 정의한다.
-BRIEFING_AGENT_INSTRUCTIONS = (
-    "아래 표/차트 데이터를 보고 각 단계별 브리핑 텍스트를 생성해.\n"
-    "- 출력 형식: texts 배열 (단계별 텍스트만)\n"
-    "- table_ref/chart_ref는 생성하지 않음 (코드에서 자동 삽입됨)\n"
-    "- text는 한국어로 친절한 문장으로 작성\n"
-    "- 문장마다 줄바꿈(\\n)으로 끝내고, 한 줄에 문장 1개만 작성\n"
-    "- 빈 줄 금지\n"
-    "- 표/차트 값을 인용하여 설명\n"
-    "- briefing_hint가 있으면 첫 텍스트(summary)에 반영\n"
-    "- stage_sequence 순서대로 작성\n"
-    "- stage_sequence.note(근거)를 활용하되, '근거'라는 단어는 직접 언급하지 않음\n"
-    "- 테이블에서 __로 시작하는 메타 필드는 무시\n"
-    "- children 지표는 언급하지 않음\n"
-    "\n[출력 템플릿 예시]\n"
-    "{\n"
-    "  \"texts\": [\n"
-    "    {\"section\": \"summary\", \"value\": \"전체 요약 문장1\\n전체 요약 문장2\"},\n"
-    "    {\"section\": \"1-2\", \"value\": \"칩기종 후보 설명\"},\n"
-    "    {\"section\": \"1-3\", \"value\": \"레퍼런스 LOT 선정 설명\"},\n"
-    "    {\"section\": \"1-5\", \"value\": \"top-k 후보 요약\"},\n"
-    "    {\"section\": \"1-6\", \"value\": \"최근 유사 설계 요약\"},\n"
-    "    {\"section\": \"1-7\", \"value\": \"불량률 요약\"},\n"
-    "    {\"section\": \"conclusion\", \"value\": \"최종 결론\"}\n"
-    "  ]\n"
-    "}\n"
+# 시뮬레이션 응답 에이전트 지침을 정의한다.
+SIMULATION_REPLY_INSTRUCTIONS = (
+    "다음 JSON을 참고해 사용자에게 짧게 응답해.\n"
+    "- message: 사용자 메시지\n"
+    "- dirty_stages: 변경된 단계 리스트\n"
+    "- stage_notes: 변경된 단계 요약\n"
+    "- tables/charts: 요약 데이터(필요시 참고)\n"
+    "규칙:\n"
+    "- 2~4문장으로 간결하게\n"
+    "- 장황한 브리핑 금지\n"
+    "- 변경 반영 또는 결과 포인트를 1~2개만 말해\n"
+    "- 필요한 경우에만 질문 1개\n"
+    "answer만 출력해."
 )
 
 # 캐주얼 에이전트 지침을 정의한다.
@@ -277,14 +230,6 @@ def _content_to_text(content: types.Content | None) -> str:
     if not content or not content.parts:
         return ""
     return "\n".join(part.text or "" for part in content.parts if isinstance(part, types.Part))
-
-
-def _safe_json_loads(text: str) -> dict[str, Any] | None:
-    # JSON 텍스트를 파싱한다.
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
 
 
 def _parse_json_model(text: str, model_cls: type[Any]) -> Any:
@@ -348,7 +293,6 @@ def _reset_run_state(ctx: InvocationContext) -> dict[str, Any]:
     ctx.session.state[_RUN_TABLES_KEY] = {}
     ctx.session.state[_RUN_CHARTS_KEY] = []
     ctx.session.state[_RUN_NOTES_KEY] = {}
-    ctx.session.state[_RUN_BLOCKS_KEY] = []
     return fresh
 
 
@@ -363,17 +307,9 @@ def _should_skip_stage(callback_state: dict[str, Any], stage_id: str) -> bool:
     return False
 
 
-def _build_progress_event(author: str, logs: list[dict[str, Any]]) -> Event:
-    # progress 이벤트를 만든다.
-    payload = {"type": "progress", "logs": logs}
-    content = _text_content(json.dumps(payload, ensure_ascii=False), role="model")
-    return Event(author=author, content=content, actions=EventActions())
-
-
-def _build_final_event(author: str, payload: dict[str, Any]) -> Event:
-    # final 이벤트를 만든다.
-    body = {"type": "final", "payload": payload}
-    content = _text_content(json.dumps(body, ensure_ascii=False), role="model")
+def _build_text_event(author: str, text: str) -> Event:
+    # 텍스트 이벤트를 만든다.
+    content = _text_content(text, role="model")
     return Event(author=author, content=content, actions=EventActions())
 
 
@@ -416,66 +352,6 @@ def _extract_pending_selection(
     return None
 
 
-def _build_table_select_block(
-    pending_action: dict[str, Any],
-    selected_ids: list[str] | None = None,
-) -> dict[str, Any]:
-    # 테이블 선택 블록을 만든다.
-    return {
-        "type": "table_select",
-        "table_key": pending_action.get("table_key"),
-        "id_field": pending_action.get("id_field", "chip_type_id"),
-        "selection_field": pending_action.get("selection_field", "chip_type_ids"),
-        "allow_multi": pending_action.get("allow_multi", True),
-        "action": pending_action.get("action", "select_candidates"),
-        "title": pending_action.get("title", "후보 선택"),
-        "description": pending_action.get("description", ""),
-        "submit_label": pending_action.get("submit_label", "해당 기종으로 진행"),
-        "selected_ids": selected_ids or [],
-    }
-
-
-def _build_pending_blocks(
-    question: str,
-    pending_action: dict[str, Any],
-    selected_ids: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    # 질문 텍스트 블록을 만든다.
-    question_block = {"type": "text", "section": "summary", "value": question}
-    # 선택 블록을 만든다.
-    select_block = _build_table_select_block(
-        pending_action,
-        selected_ids=selected_ids or [],
-    )
-    return [question_block, select_block]
-
-
-def _build_pending_repeat_response(
-    session_state: dict[str, Any],
-    pending_action: dict[str, Any],
-) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
-    # 기본 질문을 준비한다.
-    question = pending_action.get("question") or "후보를 선택해 진행할까요?"
-    # 기존 선택값을 꺼낸다.
-    selected_ids = session_state.get("selections", {}).get("chip_type_ids") or []
-    # 질문 블록을 만든다.
-    blocks = _build_pending_blocks(question, pending_action, selected_ids=selected_ids)
-    # 이전 테이블/차트를 불러온다.
-    tables, charts = state._load_raw_outputs(
-        session_state.get("raw_refs", {}).get("stage_outputs_path")
-    )
-    # 선택 강조 표시를 적용한다.
-    state._apply_table_highlights(tables, session_state.get("selections", {}))
-    # 히스토리를 기록한다.
-    session_state["history"].append(
-        {
-            "action": "pending_repeat",
-            "payload": {"action": pending_action.get("action")},
-            "at": state._utc_now(),
-        }
-    )
-    return blocks, tables, charts
-
 
 def _extract_candidate_ids(rows: list[dict[str, Any]] | None, id_field: str) -> list[str]:
     # 후보 ID 목록을 만든다.
@@ -490,6 +366,15 @@ def _extract_candidate_ids(rows: list[dict[str, Any]] | None, id_field: str) -> 
     return candidate_ids
 
 
+def _format_candidate_summary(candidate_ids: list[str], limit: int = 8) -> str:
+    # 후보 ID 요약 문자열을 만든다.
+    if not candidate_ids:
+        return ""
+    preview = ", ".join(candidate_ids[:limit])
+    suffix = " ..." if len(candidate_ids) > limit else ""
+    return f"가능한 후보: {preview}{suffix}"
+
+
 def _build_gap_context(gap: dict[str, Any]) -> dict[str, Any]:
     # gap 정보를 질문 생성용 컨텍스트로 정리한다.
     return {
@@ -499,85 +384,6 @@ def _build_gap_context(gap: dict[str, Any]) -> dict[str, Any]:
         "candidate_count": gap.get("candidate_count", 0),
     }
 
-
-def _build_gap_pending_payload(
-    gap: dict[str, Any],
-    question: str,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    # pending_action 페이로드를 만든다.
-    pending_action = {
-        "action": "select_candidates",
-        "target_stage": gap.get("stage"),
-        "table_key": gap.get("table_key"),
-        "id_field": gap.get("id_field", "chip_type_id"),
-        "selection_field": gap.get("selection_field", "chip_type_ids"),
-        "allow_multi": gap.get("allow_multi", True),
-        "question": question,
-        "submit_label": "해당 기종으로 진행",
-        "requested_at": state._utc_now(),
-    }
-    # 질문 + 선택 UI 블록을 만든다.
-    blocks = _build_pending_blocks(question, pending_action)
-    return pending_action, blocks
-
-
-def _build_input_form_blocks(merged_params: schemas.InputParams) -> list[dict[str, Any]]:
-    # 왼쪽 입력 필드 목록을 준비한다.
-    left_keys = ["temperature", "size", "capacity", "voltage"]
-    # 오른쪽 입력 필드 목록을 준비한다.
-    right_keys = ["chip_prod_id"]
-    # 폼 필드를 담을 리스트를 만든다.
-    fields: list[dict[str, Any]] = []
-    # 왼쪽 입력 항목을 구성한다.
-    for key in left_keys:
-        current_val = merged_params.dict().get(key)
-        field_def = {
-            "key": key,
-            "label": state.INPUT_LABEL_MAP.get(key, key),
-            "type": "text",
-            "value": current_val or "",
-            "column": "left",
-        }
-        if key == "temperature":
-            field_def["type"] = "select"
-            field_def["options"] = ["A", "B", "D"]
-            field_def["unit"] = "특성"
-        elif key == "voltage":
-            field_def["type"] = "number"
-            field_def["unit"] = "V"
-        elif key == "size":
-            field_def["type"] = "select"
-            field_def["options"] = ["1005", "1608", "2012", "3216"]
-        elif key == "capacity":
-            field_def["type"] = "number"
-            field_def["unit"] = "pF"
-            field_def["unit_options"] = ["pF", "nF", "uF"]
-        fields.append(field_def)
-    # 오른쪽 입력 항목을 구성한다.
-    for key in right_keys:
-        current_val = merged_params.dict().get(key)
-        fields.append(
-            {
-                "key": key,
-                "label": state.INPUT_LABEL_MAP.get(key, key),
-                "type": "text",
-                "value": current_val or "",
-                "placeholder": "예: CL32Y106KCBNB",
-                "column": "right",
-            }
-        )
-    # 입력 폼 블록을 반환한다.
-    return [
-        {
-            "type": "input_form",
-            "form_id": "mlcc_basic_params",
-            "title": "시뮬레이션 조건 입력",
-            "description": "4개 조건 또는 CHIP 기종 중 하나를 입력해주세요.",
-            "fields": fields,
-            "submit_label": "시뮬레이션 시작",
-            "submitted": False,
-        }
-    ]
 
 
 async def _run_llm_text(
@@ -634,18 +440,9 @@ class StageAgent(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncIterator[Event]:
         # 세션 상태를 준비한다.
         session_state = _get_app_state(ctx)
-        # 진행 로그를 만든다.
-        run_state = _get_run_state(ctx)
-        logs = state._build_progress_logs(
-            run_state.get("route"),
-            run_state.get("action"),
-            session_state.get("stage_status"),
-            current_stage=self.stage_id,
-            is_final=False,
-        )
-        # 진행 로그 이벤트를 전송한다.
-        if logs:
-            yield _build_progress_event(self.name, logs)
+        # 스트리밍 이벤트를 내보내지 않는 단계는 제너레이터 형태만 유지한다.
+        if False:
+            yield _build_text_event(self.name, "")
         # 단계 실행 함수를 호출한다.
         result = await self._run_fn(ctx, session_state)
         if not isinstance(result, dict):
@@ -654,13 +451,11 @@ class StageAgent(BaseAgent):
         tables = result.get("tables") or {}
         charts = result.get("charts") or []
         notes = result.get("stage_notes") or {}
-        blocks = result.get("blocks") or []
         gap = result.get("gap")
         # 단계 결과를 누적한다.
         run_tables = ctx.session.state.get(_RUN_TABLES_KEY, {})
         run_charts = ctx.session.state.get(_RUN_CHARTS_KEY, [])
         run_notes = ctx.session.state.get(_RUN_NOTES_KEY, {})
-        run_blocks = ctx.session.state.get(_RUN_BLOCKS_KEY, [])
         if isinstance(run_tables, dict):
             run_tables.update(tables)
             ctx.session.state[_RUN_TABLES_KEY] = run_tables
@@ -670,10 +465,6 @@ class StageAgent(BaseAgent):
         if isinstance(run_notes, dict):
             run_notes.update(notes)
             ctx.session.state[_RUN_NOTES_KEY] = run_notes
-        if blocks:
-            run_blocks = list(run_blocks) if isinstance(run_blocks, list) else []
-            run_blocks = blocks
-            ctx.session.state[_RUN_BLOCKS_KEY] = run_blocks
         # gap이 있으면 중단 플래그를 세운다.
         if gap:
             ctx.session.state[_GAP_KEY] = gap
@@ -710,12 +501,6 @@ class RootAgent(BaseAgent):
             instruction=UPDATE_AGENT_INSTRUCTIONS,
             output_schema=schemas.UpdateDecision,
         )
-        self.explain_agent = LlmAgent(
-            name="ExplainAgent",
-            model=MODEL_NAME,
-            instruction=EXPLAIN_AGENT_INSTRUCTIONS,
-            output_schema=schemas.ExplainOutput,
-        )
         self.gap_agent = LlmAgent(
             name="GapAgent",
             model=MODEL_NAME,
@@ -728,11 +513,11 @@ class RootAgent(BaseAgent):
             instruction=SELECTION_AGENT_INSTRUCTIONS,
             output_schema=schemas.SelectionDecision,
         )
-        self.briefing_agent = LlmAgent(
-            name="BriefingAgent",
+        self.reply_agent = LlmAgent(
+            name="SimulationReplyAgent",
             model=MODEL_NAME,
-            instruction=BRIEFING_AGENT_INSTRUCTIONS,
-            output_schema=schemas.StageBriefingOutput,
+            instruction=SIMULATION_REPLY_INSTRUCTIONS,
+            output_schema=schemas.SimulationReply,
         )
         self.casual_agent = LlmAgent(
             name="CasualAgent",
@@ -748,7 +533,6 @@ class RootAgent(BaseAgent):
         self.stage_1_5 = StageAgent("Stage-1-5", "1-5", self._run_stage_1_5)
         self.stage_1_6 = StageAgent("Stage-1-6", "1-6", self._run_stage_1_6)
         self.stage_1_7 = StageAgent("Stage-1-7", "1-7", self._run_stage_1_7)
-        self.stage_1_8 = StageAgent("Stage-1-8", "1-8", self._run_stage_1_8)
         # SequentialAgent를 준비한다.
         self.simulation_agent = SequentialAgent(
             name="SimulationSequential",
@@ -760,7 +544,6 @@ class RootAgent(BaseAgent):
                 self.stage_1_5,
                 self.stage_1_6,
                 self.stage_1_7,
-                self.stage_1_8,
             ],
         )
 
@@ -805,21 +588,14 @@ class RootAgent(BaseAgent):
                 "stage_notes": {"1-2": notes.get("1-2", "")},
                 "gap": None,
             }
-        # DB 시뮬레이션을 실행한다.
+        # DB 칩기종 후보를 직접 조회한다.
         input_params = schemas.InputParams(**session_state.get("input_params", {}))
-        tables, charts, stage_notes, gap = db_production.build_simulation_from_db(
-            input_params,
-            session_state.get("configs", {}),
-            session_state.get("selections", {}),
-            session_state.get("user_prefs", {}),
-            dirty_stages=["1-2"],
-        )
-        return {
-            "tables": tables,
-            "charts": charts,
-            "stage_notes": stage_notes,
-            "gap": gap,
-        }
+        chip_rows, _, chip_gap = db_production.find_chip_prod_id(input_params)
+        # 테이블/노트를 구성한다.
+        tables = {"chip_type_candidates_table": chip_rows} if chip_rows else {}
+        stage_notes = {"1-2": "칩기종 후보를 조회했습니다." if chip_rows else ""}
+        # 결과를 반환한다.
+        return {"tables": tables, "charts": [], "stage_notes": stage_notes, "gap": chip_gap}
 
     async def _run_stage_1_3(
         self, ctx: InvocationContext, session_state: dict[str, Any]
@@ -992,68 +768,6 @@ class RootAgent(BaseAgent):
             "gap": gap,
         }
 
-    async def _run_stage_1_8(
-        self, ctx: InvocationContext, session_state: dict[str, Any]
-    ) -> dict[str, Any]:
-        # 이미 멈췄으면 아무 것도 하지 않는다.
-        if ctx.session.state.get(_HALT_KEY):
-            return {"tables": {}, "charts": [], "stage_notes": {}, "gap": None}
-        # 브리핑용 테이블/차트를 준비한다.
-        tables = ctx.session.state.get(_RUN_TABLES_KEY, {})
-        charts = ctx.session.state.get(_RUN_CHARTS_KEY, [])
-        # LLM 요약본을 만든다.
-        llm_tables, llm_charts = state._build_llm_payload(
-            tables, charts, session_state.get("configs", {})
-        )
-        # 브리핑 힌트와 시퀀스를 만든다.
-        stage_notes = ctx.session.state.get(_RUN_NOTES_KEY, {})
-        dirty_stages = ctx.session.state.get("temp:dirty_stages") or []
-        briefing_start = state._pick_briefing_start_stage(dirty_stages)
-        briefing_hint = state._build_briefing_hint(briefing_start)
-        briefing_sequence = state._build_briefing_sequence(stage_notes, briefing_start)
-        briefing_tables, briefing_charts, _ = state._filter_briefing_outputs(
-            llm_tables, llm_charts, briefing_start
-        )
-        payload_obj: dict[str, Any] = {
-            "tables": briefing_tables,
-            "charts": briefing_charts,
-            "stage_sequence": briefing_sequence,
-        }
-        if briefing_hint:
-            payload_obj["briefing_hint"] = briefing_hint
-        payload = json.dumps(payload_obj, ensure_ascii=False)
-        # 브리핑 텍스트를 생성한다.
-        output_text = await _run_llm_text(self.briefing_agent, ctx, message_text=payload)
-        output = _parse_json_model(output_text, schemas.StageBriefingOutput)
-        # 텍스트를 section별로 매핑한다.
-        text_map: dict[str, str] = {}
-        for text_block in output.texts:
-            text_map[text_block.section] = text_block.value
-        # 차트 ID 집합을 만든다.
-        chart_id_set = {
-            chart.get("chart_id")
-            for chart in (briefing_charts or [])
-            if isinstance(chart, dict) and chart.get("chart_id")
-        }
-        # 최종 블록을 조립한다.
-        blocks: list[dict[str, Any]] = []
-        if "summary" in text_map:
-            blocks.append({"type": "text", "section": "summary", "value": text_map["summary"]})
-        if briefing_sequence:
-            for stage_info in briefing_sequence:
-                stage_id = stage_info.get("stage", "")
-                if stage_id in text_map:
-                    blocks.append({"type": "text", "section": stage_id, "value": text_map[stage_id]})
-                for table_key in stage_info.get("table_keys", []):
-                    if table_key in (briefing_tables or {}):
-                        blocks.append({"type": "table_ref", "table_key": table_key})
-                for chart_id in stage_info.get("chart_ids", []):
-                    if chart_id in chart_id_set:
-                        blocks.append({"type": "chart_ref", "chart_id": chart_id})
-        if "conclusion" in text_map:
-            blocks.append({"type": "text", "section": "conclusion", "value": text_map["conclusion"]})
-        return {"tables": {}, "charts": [], "stage_notes": {}, "gap": None, "blocks": blocks}
-
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncIterator[Event]:
         # 세션 ID를 가져온다.
         session_id = _get_session_id(ctx)
@@ -1084,15 +798,15 @@ class RootAgent(BaseAgent):
             memory_context = state.build_memory_context(session_state, "casual")
             instruction = _merge_instructions(CASUAL_AGENT_INSTRUCTIONS, memory_context)
             casual_text = await _run_llm_text(self.casual_agent, ctx, instruction_override=instruction)
-            casual_output = _parse_json_model(casual_text, schemas.CasualOutput)
-            blocks = [
-                {"type": "text", "section": "casual", "value": casual_output.answer}
-            ]
-            payload = {"route": "casual", "blocks": blocks, "tables": {}, "charts": []}
+            try:
+                casual_output = _parse_json_model(casual_text, schemas.CasualOutput)
+                answer = casual_output.answer
+            except Exception:
+                answer = casual_text.strip() or "필요한 내용을 더 알려줘."
             # 세션 상태를 저장한다.
             state._save_session_state(session_state, use_db=self.use_db)
-            # final 이벤트를 전송한다.
-            yield _build_final_event(self.name, payload)
+            # 텍스트 이벤트를 전송한다.
+            yield _build_text_event(self.name, answer)
             return
         # 시뮬레이션 루트를 처리한다.
         run_state = _get_run_state(ctx)
@@ -1125,56 +839,27 @@ class RootAgent(BaseAgent):
             run_state["action"] = "reset"
             session_state = state._reset_session_state(session_id, use_db=self.use_db)
             _set_app_state(ctx, session_state)
-            blocks = [
-                {
-                    "type": "text",
-                    "section": "summary",
-                    "value": "시뮬레이션 상태를 초기화했어. 새로 시작해줘.",
-                }
-            ]
-            payload = {"route": "simulation", "blocks": blocks, "tables": {}, "charts": []}
+            reset_message = "시뮬레이션 상태를 초기화했어. 새로 시작해줘."
             state._save_session_state(session_state, use_db=self.use_db)
-            yield _build_final_event(self.name, payload)
-            return
-        # explain_stage 요청을 처리한다.
-        if command.action == "explain_stage":
-            run_state["action"] = "explain_stage"
-            # 최근 설명 단계를 보완한다.
-            target_stage = command.target_stage or session_state.get("last_explain_stage")
-            blocks, tables, charts = await state._build_explain_response(
-                session_state, target_stage, user_message
-            )
-            if target_stage:
-                session_state["last_explain_stage"] = target_stage
-            # 히스토리를 기록한다.
-            session_state["history"].append(
-                {
-                    "action": "explain_stage",
-                    "payload": {"target_stage": target_stage},
-                    "at": state._utc_now(),
-                }
-            )
-            # 최종 응답을 만든다.
-            payload = _build_final_payload(
-                "simulation",
-                "explain_stage",
-                session_state,
-                blocks,
-                tables,
-                charts,
-            )
-            state._save_session_state(session_state, use_db=self.use_db)
-            yield _build_final_event(self.name, payload)
+            yield _build_text_event(self.name, reset_message)
             return
         # pending 선택을 처리한다.
         if pending_action and pending_action.get("action") == "select_candidates" and not pending_selection:
-            tables, _ = state._load_raw_outputs(
-                session_state.get("raw_refs", {}).get("stage_outputs_path")
-            )
-            table_key = pending_action.get("table_key")
-            id_field = pending_action.get("id_field", "chip_type_id")
-            candidate_rows = tables.get(table_key) if table_key else []
-            candidate_ids = _extract_candidate_ids(candidate_rows, id_field)
+            # 후보 목록을 준비한다.
+            candidate_ids = pending_action.get("candidate_ids")
+            if not isinstance(candidate_ids, list):
+                candidate_ids = []
+            if not candidate_ids:
+                tables, _ = state._load_raw_outputs(
+                    session_state.get("raw_refs", {}).get("stage_outputs_path")
+                )
+                table_key = pending_action.get("table_key")
+                id_field = pending_action.get("id_field", "chip_type_id")
+                candidate_rows = tables.get(table_key) if table_key else []
+                candidate_ids = _extract_candidate_ids(candidate_rows, id_field)
+            if candidate_ids:
+                pending_action["candidate_ids"] = candidate_ids
+            # 선택 추출을 시도한다.
             selection_payload = {
                 "message": user_message,
                 "candidate_ids": candidate_ids,
@@ -1187,19 +872,13 @@ class RootAgent(BaseAgent):
             selection_output = _parse_json_model(selection_text, schemas.SelectionDecision)
             pending_selection = selection_output.selected_ids
             if not pending_selection:
-                blocks, tables, charts = _build_pending_repeat_response(
-                    session_state, pending_action
-                )
-                payload = _build_final_payload(
-                    "simulation",
-                    "run",
-                    session_state,
-                    blocks,
-                    tables,
-                    charts,
-                )
+                # 선택이 없으면 재질문한다.
+                retry_message = "후보를 다시 알려줘."
+                candidate_summary = _format_candidate_summary(candidate_ids)
+                if candidate_summary:
+                    retry_message = f"{retry_message} {candidate_summary}"
                 state._save_session_state(session_state, use_db=self.use_db)
-                yield _build_final_event(self.name, payload)
+                yield _build_text_event(self.name, retry_message)
                 return
         # 입력/변경을 파싱한다.
         if pending_selection:
@@ -1215,7 +894,8 @@ class RootAgent(BaseAgent):
             update = _parse_json_model(update_text, schemas.UpdateDecision)
         # 누락 업데이트를 계산한다.
         missing_update = update.missing_fields or []
-        had_results = bool(session_state.get("stage_status", {}).get("1-8", {}).get("done"))
+        final_stage = state._final_stage_id()
+        had_results = bool(session_state.get("stage_status", {}).get(final_stage, {}).get("done"))
         if not had_results:
             missing_update = []
         # 입력/업데이트를 병합하고 dirty 단계를 계산한다.
@@ -1240,23 +920,9 @@ class RootAgent(BaseAgent):
                     "at": state._utc_now(),
                 }
             )
-            blocks = [
-                {
-                    "type": "text",
-                    "section": "summary",
-                    "value": state._format_update_missing(missing_update),
-                }
-            ]
-            payload = _build_final_payload(
-                "simulation",
-                "run",
-                session_state,
-                blocks,
-                {},
-                [],
-            )
+            pending_message = state._format_update_missing(missing_update)
             state._save_session_state(session_state, use_db=self.use_db)
-            yield _build_final_event(self.name, payload)
+            yield _build_text_event(self.name, pending_message)
             return
         # 필수 입력 누락을 확인한다.
         missing_inputs = state._get_missing_fields(merged_params)
@@ -1267,24 +933,9 @@ class RootAgent(BaseAgent):
                 "missing_fields": missing_inputs,
                 "requested_at": state._utc_now(),
             }
-            blocks = [
-                {
-                    "type": "text",
-                    "section": "summary",
-                    "value": state._format_missing_summary(missing_inputs),
-                }
-            ]
-            blocks += _build_input_form_blocks(merged_params)
-            payload = _build_final_payload(
-                "simulation",
-                "run",
-                session_state,
-                blocks,
-                {},
-                [],
-            )
+            missing_message = state._format_missing_summary(missing_inputs)
             state._save_session_state(session_state, use_db=self.use_db)
-            yield _build_final_event(self.name, payload)
+            yield _build_text_event(self.name, missing_message)
             return
         # dirty 단계가 없으면 전체 실행한다.
         if not dirty_stages:
@@ -1324,29 +975,70 @@ class RootAgent(BaseAgent):
                 ctx,
                 message_text=json.dumps(gap_context, ensure_ascii=False),
             )
-            gap_output = _parse_json_model(gap_text, schemas.GapQuestionOutput)
-            pending_action, blocks = _build_gap_pending_payload(gap, gap_output.question)
+            try:
+                gap_output = _parse_json_model(gap_text, schemas.GapQuestionOutput)
+                gap_message = gap_output.question
+            except Exception:
+                gap_message = gap.get("fallback_summary") or "추가 확인이 필요해. 후보를 알려줘."
+            # 후보 선택용 pending_action을 만든다.
+            pending_action = {
+                "action": "select_candidates",
+                "target_stage": gap.get("stage"),
+                "table_key": gap.get("table_key"),
+                "id_field": gap.get("id_field", "chip_type_id"),
+                "selection_field": gap.get("selection_field"),
+                "allow_multi": gap.get("allow_multi", True),
+                "requested_at": state._utc_now(),
+            }
+            # 후보 ID를 추출한다.
+            tables = ctx.session.state.get(_RUN_TABLES_KEY, {})
+            table_key = pending_action.get("table_key")
+            id_field = pending_action.get("id_field", "chip_type_id")
+            candidate_rows = tables.get(table_key) if table_key else []
+            candidate_ids = _extract_candidate_ids(candidate_rows, id_field)
+            if candidate_ids:
+                pending_action["candidate_ids"] = candidate_ids
+            candidate_summary = _format_candidate_summary(candidate_ids)
+            if candidate_summary:
+                gap_message = f"{gap_message} {candidate_summary}"
             session_state["pending_action"] = pending_action
             session_state["last_gap"] = gap
-            tables = ctx.session.state.get(_RUN_TABLES_KEY, {})
-            charts = ctx.session.state.get(_RUN_CHARTS_KEY, [])
-            state._apply_table_highlights(tables, session_state.get("selections", {}))
-            payload = _build_final_payload(
-                "simulation",
-                "run",
-                session_state,
-                blocks,
-                tables,
-                charts,
-            )
             state._save_session_state(session_state, use_db=self.use_db)
-            yield _build_final_event(self.name, payload)
+            yield _build_text_event(self.name, gap_message)
             return
         # 결과를 병합한다.
         tables = ctx.session.state.get(_RUN_TABLES_KEY, {})
         charts = ctx.session.state.get(_RUN_CHARTS_KEY, [])
         stage_notes = ctx.session.state.get(_RUN_NOTES_KEY, {})
-        blocks = ctx.session.state.get(_RUN_BLOCKS_KEY, [])
+        # 응답용 요약 데이터를 만든다.
+        llm_tables, llm_charts = state._build_llm_payload(
+            tables, charts, session_state.get("configs", {})
+        )
+        # 변경된 단계 노트를 추린다.
+        dirty_notes = {
+            stage_id: stage_notes.get(stage_id)
+            for stage_id in (dirty_stages or [])
+            if stage_notes.get(stage_id)
+        }
+        # 응답 생성용 페이로드를 만든다.
+        reply_payload = {
+            "message": user_message,
+            "dirty_stages": dirty_stages,
+            "stage_notes": dirty_notes,
+            "tables": llm_tables,
+            "charts": llm_charts,
+        }
+        # LLM으로 짧은 응답을 생성한다.
+        reply_text = await _run_llm_text(
+            self.reply_agent,
+            ctx,
+            message_text=json.dumps(reply_payload, ensure_ascii=False),
+        )
+        try:
+            reply_output = _parse_json_model(reply_text, schemas.SimulationReply)
+            reply_value = reply_output.answer
+        except Exception:
+            reply_value = "요청을 반영했어. 추가로 바꾸고 싶은 부분이 있으면 알려줘."
         # 후처리를 수행한다.
         tables, charts = _post_process_run_tables(
             session_state,
@@ -1362,7 +1054,7 @@ class RootAgent(BaseAgent):
             merged_params,
             tables,
             charts,
-            blocks,
+            [],
             stage_notes,
             [],
             demo=not self.use_db,
@@ -1370,74 +1062,10 @@ class RootAgent(BaseAgent):
             pending_action=None,
         )
         state._mark_clean(session_state, dirty_stages)
-        payload = _build_final_payload(
-            "simulation",
-            "run",
-            session_state,
-            blocks,
-            tables,
-            charts,
-        )
         state._save_session_state(session_state, use_db=self.use_db)
-        yield _build_final_event(self.name, payload)
+        yield _build_text_event(self.name, reply_value)
 
 
-async def _build_explain_answer(context: dict[str, Any]) -> str:
-    # 설명 에이전트를 사용해 답변을 생성한다.
-    agent = LlmAgent(
-        name="ExplainAgent",
-        model=MODEL_NAME,
-        instruction=EXPLAIN_AGENT_INSTRUCTIONS,
-        output_schema=schemas.ExplainOutput,
-    )
-    payload = json.dumps(context, ensure_ascii=False)
-    # 임시 세션 서비스를 만든다.
-    session_service = InMemorySessionService()
-    # 러너를 만든다.
-    runner = Runner(agent=agent, app_name="mlcc_explain", session_service=session_service)
-    # 세션을 생성한다.
-    try:
-        await session_service.create_session(
-            app_name="mlcc_explain",
-            user_id="explain",
-            session_id="explain",
-        )
-    except Exception:
-        # 세션이 이미 있으면 그대로 진행한다.
-        pass
-    # 입력 콘텐츠를 준비한다.
-    content = _text_content(payload)
-    # LLM 응답을 수집한다.
-    final_text = ""
-    async for event in runner.run_async(
-        user_id="explain",
-        session_id="explain",
-        new_message=content,
-    ):
-        text = _content_to_text(event.content)
-        if text:
-            final_text = text
-    output = _parse_json_model(final_text, schemas.ExplainOutput)
-    return output.answer
-
-
-def _build_final_payload(
-    route: str,
-    action: str | None,
-    session_state: dict[str, Any],
-    blocks: list[dict[str, Any]],
-    tables: dict[str, Any],
-    charts: list[dict[str, Any]],
-) -> dict[str, Any]:
-    # 진행 로그를 만든다.
-    final_logs = state._build_progress_logs(
-        route,
-        action,
-        session_state.get("stage_status"),
-    )
-    if final_logs:
-        blocks = [{"type": "progress_log", "logs": final_logs}] + blocks
-    return {"route": route, "blocks": blocks, "tables": tables, "charts": charts}
 
 
 def _post_process_run_tables(
@@ -1463,4 +1091,4 @@ def _post_process_run_tables(
     return tables, charts
 
 
-__all__ = ["RootAgent", "_build_explain_answer"]
+__all__ = ["RootAgent"]

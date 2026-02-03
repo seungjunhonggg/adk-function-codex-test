@@ -34,15 +34,22 @@ PENDING_ACTION_RULES = {
 }
 
 # 단계 순서를 정의한다.
-STAGE_ORDER = ["1-1", "1-2", "1-3", "1-4", "1-5", "1-6", "1-7", "1-8"]
+STAGE_ORDER = ["1-1", "1-2", "1-3", "1-4", "1-5", "1-6", "1-7"]
+
+
+def _final_stage_id() -> str:
+    # 마지막 단계를 반환한다.
+    if STAGE_ORDER:
+        return STAGE_ORDER[-1]
+    return "1-7"
 
 # dirty 규칙을 정의한다.
 DIRTY_STAGE_RULES = {
-    "input_params": ["1-2", "1-3", "1-4", "1-5", "1-6", "1-7", "1-8"],
-    "chip_type_ids": ["1-2", "1-3", "1-4", "1-5", "1-6", "1-7", "1-8"],
-    "reference_lot_id": ["1-4", "1-5", "1-6", "1-7", "1-8"],
-    "top_k": ["1-5", "1-6", "1-7", "1-8"],
-    "chart_type": ["1-7", "1-8"],
+    "input_params": ["1-2", "1-3", "1-4", "1-5", "1-6", "1-7"],
+    "chip_type_ids": ["1-2", "1-3", "1-4", "1-5", "1-6", "1-7"],
+    "reference_lot_id": ["1-4", "1-5", "1-6", "1-7"],
+    "top_k": ["1-5", "1-6", "1-7"],
+    "chart_type": ["1-7"],
 }
 
 # 단계별 표 키를 정의한다.
@@ -65,7 +72,6 @@ _STAGE_CHART_IDS = {
 _PROGRESS_ROUTE_TEXT = {
     "casual": "답변 생성하는 중",
     "update_input": "변경 요청 반영하는 중",
-    "explain_stage": "단계 근거 설명하는 중",
 }
 
 _PROGRESS_STAGE_TEXT = {
@@ -76,7 +82,6 @@ _PROGRESS_STAGE_TEXT = {
     "1-5": "top-k 후보 생성하는 중",
     "1-6": "최근 유사 설계 조회하는 중",
     "1-7": "불량률 지표 집계하는 중",
-    "1-8": "브리핑 작성하는 중",
 }
 
 # LLM 입력 요약 한도를 정의한다.
@@ -217,8 +222,9 @@ def _save_session_state(session_state: dict[str, Any], use_db: bool = False) -> 
 def _build_command_hint(state: dict[str, Any]) -> str:
     # 커맨드 에이전트 힌트를 만든다.
     stage_status = state.get("stage_status", {})
-    # 브리핑 완료 여부를 확인한다.
-    has_results = bool(stage_status.get("1-8", {}).get("done"))
+    # 마지막 단계 완료 여부를 확인한다.
+    final_stage = _final_stage_id()
+    has_results = bool(stage_status.get(final_stage, {}).get("done"))
     # 입력값 완성 여부를 확인한다.
     input_params = InputParams(**state.get("input_params", {}))
     missing = _get_missing_fields(input_params)
@@ -373,8 +379,6 @@ def _build_progress_logs(
     status = "done" if is_final else "in_progress"
     if route == "casual":
         return [{"text": _PROGRESS_ROUTE_TEXT["casual"], "status": status}]
-    if action == "explain_stage":
-        return [{"text": _PROGRESS_ROUTE_TEXT["explain_stage"], "status": status}]
     if route != "simulation":
         return []
     status_map = stage_status or {}
@@ -607,18 +611,9 @@ async def _build_explain_response(
     selected_tables, selected_charts = _apply_payload_budget(
         selected_tables, selected_charts
     )
-    # 설명용 컨텍스트를 만든다.
-    context = {
-        "question": question,
-        "stage": target_stage,
-        "stage_notes": note,
-        "tables": selected_tables,
-        "charts": selected_charts,
-    }
-    # LLM으로 설명을 생성한다.
-    from .agents import _build_explain_answer
-
-    answer = await _build_explain_answer(context)
+    # 간단한 설명 문구를 만든다.
+    summary_line = note.splitlines()[0] if note else ""
+    answer = f"{target_stage} 단계 요약입니다. {summary_line}".strip()
     # 설명 블록을 구성한다.
     blocks = [{"type": "text", "section": "explain", "value": answer}]
     for key in table_keys:
