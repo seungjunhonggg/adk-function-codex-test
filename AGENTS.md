@@ -20,7 +20,7 @@
  - 코드를 수정하거나 추가 기능을 개발할 시 늘 사용자가 해당 과정에 대해서 변경요청을 할때에 잘 대응할 수 있을지 고려하여 메모리 구조를 짜야한다.
  - 코드는 늘 최대한 간결하고 컴팩트하게 작성한다. 불필요한 안전이나 검증절차는 최대한 지양한다.
  - 워크플로우 작성시 google-adk의 기능을 최우선으로 이용한다.
- Reference: https://google.github.io/adk-docs/
+ Reference: https://google.github.io/adk-docs/, https://github.com/google/adk-python -> 최신버전의 라이브러리와 맞추기 위해서는 github을 참고한다.
 
 
 ## 2) Skill-first policy (Codex Skills)

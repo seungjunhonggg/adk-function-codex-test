@@ -8,6 +8,8 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from google.adk.tools import ToolContext
+from pydantic import Field
 
 # .env 파일 로드
 load_dotenv()
@@ -436,6 +438,39 @@ class PostgresSession:
 _COLUMN_LABEL_TABLE = "column_label_map"
 _COLUMN_KEY_FIELD = "column_key"
 _COLUMN_LABEL_FIELD = "korean_label"
+_SIM_STEP_STAGE_MAP = {
+    2: "1-2",
+    3: "1-3",
+    4: "1-4",
+    5: "1-5",
+    6: "1-6",
+}
+
+
+def _ensure_sim_step(state: dict, default_step: int) -> None:
+    # sim_step 기본값을 보장한다.
+    if "sim_step" not in state:
+        state["sim_step"] = default_step
+
+
+def _gate_sim_step(state: dict, required_step: int) -> bool:
+    # sim_step 게이트를 확인한다.
+    _ensure_sim_step(state, required_step)
+    return state.get("sim_step") == required_step
+
+
+def _invalidate_from_step(state: dict, start_step: int) -> None:
+    # 시작 단계 이후 결과를 무효화한다.
+    stage_outputs = state.get("stage_outputs", {})
+    stage_status = state.get("stage_status", {})
+    for step in range(start_step, 7):
+        stage_key = _SIM_STEP_STAGE_MAP.get(step)
+        if not stage_key:
+            continue
+        stage_outputs.pop(stage_key, None)
+        stage_status[stage_key] = "dirty"
+    state["stage_outputs"] = stage_outputs
+    state["stage_status"] = stage_status
 
 
 def fetch_column_label_map() -> dict[str, str]:
@@ -454,19 +489,61 @@ def fetch_column_label_map() -> dict[str, str]:
         label_map[column_key] = column_label
     return label_map
 
-def find_chip_prod_id(InputParams, dirty=None):
-    print(InputParams)
-    
-    # 파라미터 추출
-    temperature = InputParams.temperature
-    voltage = InputParams.voltage
-    size = InputParams.size
-    capacity = InputParams.capacity
-    chip_prod_id = InputParams.chip_prod_id
-    
+def find_chip_prod_id(tool_context: ToolContext | None, input_params=None, dirty=None):
+    """
+    1-2 단계 툴.
+    사용 시점: sim_step=2일 때.
+    입력: input_params(온도/전압/크기/용량 또는 chip_prod_id)
+    출력: chip_prod_id_list 요약 + gap
+    예시: {"chip_prod_id":"CL32Y106"} → {"chip_prod_id_list":[...], "gap":null}
+    """
+    # 1-2 단계: tool_context와 input_params를 정리한다.
+    if isinstance(tool_context, InputParams) or isinstance(tool_context, dict):
+        input_params = tool_context
+        tool_context = None
+    # 1-2 단계: 입력 파라미터를 InputParams로 통일한다.
+    if isinstance(input_params, dict):
+        input_params = InputParams(**input_params)
+    if input_params is None:
+        input_params = InputParams()
+
+    # 1-2 단계: 파라미터를 추출한다.
+    temperature = input_params.temperature
+    voltage = input_params.voltage
+    size = input_params.size
+    capacity = input_params.capacity
+    chip_prod_id = input_params.chip_prod_id
+    # 1-2 단계: 쿼리 파라미터를 만든다.
     target_keys = ["temperature", "voltage", "size", "capacity"]
-    params = InputParams.model_dump(include=target_keys)
-    print("****InputParams", params)
+    params = input_params.model_dump(include=target_keys)
+
+    # 1-2 단계: sim_step 게이트를 확인한다.
+    if tool_context is not None:
+        state = tool_context.state
+        if "stage_outputs" not in state:
+            state["stage_outputs"] = {}
+        if "stage_status" not in state:
+            state["stage_status"] = {}
+        # 1-2 단계: 입력이 바뀌면 이후 결과를 무효화한다.
+        prev_params = state.get("input_params")
+        next_params = input_params.model_dump()
+        if prev_params is None:
+            state["sim_step"] = 2
+        if prev_params and prev_params != next_params:
+            _invalidate_from_step(state, 2)
+            state["sim_step"] = 2
+        # 1-2 단계: sim_step 게이트를 확인한다.
+        if not _gate_sim_step(state, 2):
+            state["pending_action"] = {
+                "action": "wait_step",
+                "target_step": 2,
+                "current_step": state.get("sim_step"),
+            }
+            return {
+                "skipped": True,
+                "reason": "step_gate",
+                "expected_step": state.get("sim_step"),
+            }
 
     # 1. 메인 쿼리 로직
     if dirty is None:
@@ -506,11 +583,31 @@ def find_chip_prod_id(InputParams, dirty=None):
         results = db.execute_read(sql, params_chip)
         print(f"칩기종 변환 요청 결과: {results}")
 
-    chip_prod_id_list = [row['chip_prod_id'] for row in results]
+    chip_prod_id_list = [row["chip_prod_id"] for row in results]
 
-    # 결과가 있으면 즉시 반환
+    # 1-2 단계: 상태를 준비한다.
+    if tool_context is not None:
+        state = tool_context.state
+        # 1-2 단계: 입력 파라미터를 상태에 저장한다.
+        state["input_params"] = input_params.model_dump()
+        # 1-2 단계: 결과를 상태에 저장한다.
+        state["stage_outputs"]["1-2"] = {
+            "chip_prod_id_list": chip_prod_id_list,
+            "candidate_count": len(chip_prod_id_list),
+        }
+        state["stage_status"]["1-2"] = "done"
+        state["sim_step"] = 3
+
+    # 1-2 단계: 결과가 있으면 요약을 반환한다.
     if results:
-        return results, chip_prod_id_list, None
+        if tool_context is None:
+            return results, chip_prod_id_list, None
+        return {
+            "chip_prod_id_list": chip_prod_id_list[:20],
+            "candidate_count": len(chip_prod_id_list),
+            "truncated": len(chip_prod_id_list) > 20,
+            "gap": None,
+        }
 
     # 2. Fallback 로직 (결과가 없을 경우)
     if not chip_prod_id_list:
@@ -570,7 +667,26 @@ def find_chip_prod_id(InputParams, dirty=None):
                     "selection_field": "chip_prod_id",
                     "allow_multi": True,
                 }
-                return fallback_results, chip_prod_id_list, gap
+                if tool_context is not None:
+                    state = tool_context.state
+                    if "stage_outputs" not in state:
+                        state["stage_outputs"] = {}
+                    if "stage_status" not in state:
+                        state["stage_status"] = {}
+                    state["stage_outputs"]["1-2"] = {
+                        "chip_prod_id_list": chip_prod_id_list,
+                        "candidate_count": len(chip_prod_id_list),
+                    }
+                    state["stage_status"]["1-2"] = "done"
+                    state["last_gap"] = gap
+                if tool_context is None:
+                    return fallback_results, chip_prod_id_list, gap
+                return {
+                    "chip_prod_id_list": chip_prod_id_list[:20],
+                    "candidate_count": len(chip_prod_id_list),
+                    "truncated": len(chip_prod_id_list) > 20,
+                    "gap": gap,
+                }
 
         # 최종 결과 없음
         fallback_summary = "해당 인자로 맞는 조건이 없어 전압조건을 확대하였으나 결과가 나오지 않았음."
@@ -584,7 +700,26 @@ def find_chip_prod_id(InputParams, dirty=None):
             "selection_field": "",
             "allow_multi": True,
         }
-        return [], [], gap
+        if tool_context is not None:
+            state = tool_context.state
+            if "stage_outputs" not in state:
+                state["stage_outputs"] = {}
+            if "stage_status" not in state:
+                state["stage_status"] = {}
+            state["stage_outputs"]["1-2"] = {
+                "chip_prod_id_list": [],
+                "candidate_count": 0,
+            }
+            state["stage_status"]["1-2"] = "done"
+            state["last_gap"] = gap
+        if tool_context is None:
+            return [], [], gap
+        return {
+            "chip_prod_id_list": [],
+            "candidate_count": 0,
+            "truncated": False,
+            "gap": gap,
+        }
     
 def _query_column_label_map() -> list[dict[str, Any]]:
     # 실제 DB 조회 로직을 구현한다.
@@ -594,101 +729,176 @@ def _query_column_label_map() -> list[dict[str, Any]]:
     # WHERE column_key IS NOT NULL;
     return []
 
+from typing import Annotated, Optional
 
-def build_simulation_from_db(
-    input_params: InputParams,
-    configs: dict[str, Any],
-    selections: dict[str, Any],
-    user_prefs: dict[str, Any],
-    dirty_stages: list[str] | None = None,
-    progress_cb: Callable[[str], None] | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str], dict[str, Any] | None]:
-    # 테이블 컨테이너를 준비한다.
-    tables: dict[str, Any] = {}
-    # 차트 컨테이너를 준비한다.
-    charts: list[dict[str, Any]] = []
-    # 단계 노트 컨테이너를 준비한다.
-    stage_notes: dict[str, str] = {}
-    # dirty 스테이지 집합을 준비한다.
-    dirty_set = set(dirty_stages or [])
-    # 데이터 공백 정보를 준비한다.
-    gap: dict[str, Any] | None = None
+def find_ref_lot_candidate(
+    tool_context: ToolContext | None,
+    chip_prod_id_list: Annotated[Optional[list], Field(description="MLCC Chip production id list")] = None,
+):
+    """
+    1-3 단계 툴.
+    사용 시점: sim_step=3일 때.
+    입력: chip_prod_id_list
+    출력: ref_lot_id 요약 + gap
+    예시: {"chip_prod_id_list":[...]} → {"ref_lot_id":"LOT-1", "gap":null}
 
-    def _should_run(stage: str) -> bool:
-        # dirty 정보가 없으면 전체 실행한다.
-        if not dirty_set:
-            return True
-        # dirty에 포함된 단계만 실행한다.
-        return stage in dirty_set
+    :param chip_prod_id_list: find_chip_prod_id를 사용해서 나온 MLCC 칩 기종 LIST.
+    :return: 
+    """
+    # 1-3 단계: 상태를 준비한다.
+    state = tool_context.state if tool_context is not None else None
+    if state is not None and "stage_outputs" not in state:
+        state["stage_outputs"] = {}
+    if state is not None and "stage_status" not in state:
+        state["stage_status"] = {}
+    # 1-3 단계: 입력이 없으면 상태에서 꺼낸다.
+    if not chip_prod_id_list and state is not None:
+        chip_prod_id_list = state.get("stage_outputs", {}).get("1-2", {}).get("chip_prod_id_list", [])
+    # 1-3 단계: 칩기종이 바뀌면 이후 결과를 무효화한다.
+    if state is not None and chip_prod_id_list:
+        prev_list = state.get("stage_outputs", {}).get("1-2", {}).get("chip_prod_id_list")
+        if prev_list and prev_list != chip_prod_id_list:
+            _invalidate_from_step(state, 3)
+            state["sim_step"] = 3
+    # 1-3 단계: sim_step 게이트를 확인한다.
+    if state is not None and not _gate_sim_step(state, 3):
+        state["pending_action"] = {
+            "action": "wait_step",
+            "target_step": 3,
+            "current_step": state.get("sim_step"),
+        }
+        return {
+            "skipped": True,
+            "reason": "step_gate",
+            "expected_step": state.get("sim_step"),
+        }
+    if not chip_prod_id_list:
+        if state is not None:
+            state["stage_outputs"]["1-3"] = {"ref_lot_id": None, "candidate_count": 0}
+            state["stage_status"]["1-3"] = "done"
+            state["last_gap"] = {
+                "stage": "1-3",
+                "reason": "no_chip_type_candidate",
+                "fallback_summary": "칩기종 후보가 없어 레퍼런스 LOT를 찾지 못했음.",
+                "candidate_count": 0,
+            }
+            return {"ref_lot_id": None, "candidate_count": 0, "gap": state["last_gap"]}
+        return [], {}, None
 
-    def _emit_progress(stage: str) -> None:
-        # 프론트 로깅 콜백이 있으면 단계 진행을 알린다.
-        if not progress_cb:
-            return
-        # 콜백은 SSE에서 stage별 progress 이벤트를 보내도록 구현한다.
-        progress_cb(stage)
+    # 컬럼 정의
+    lot_common_column = ["chip_prod_id", "lot_id", "cur_site_div"]
+    lot_defect_column = [
+        "design_input_date", "cutting_defect", "measure_defect", "bdv_avg", 
+        "x_tr_short_defect_rate", "x_fr_ispass", "contact_defect", "pass_halt", 
+        "pass_8585", "pass_burn_in", "x_df_ispass", "x_odb_pass_yn"
+    ]
+    
+    target_columns = lot_common_column + lot_defect_column
+    columns_clause = ", ".join(target_columns)
 
-    # 1-1: input_params_table
-    if _should_run("1-1"):
-        # 1-1 진행 로그를 보낸다.
-        _emit_progress("1-1")
-        # TODO: 입력값을 테이블로 정규화한다.
-        # tables["input_params_table"] = [...]
-        # stage_notes["1-1"] = "..."
+    # SQL 쿼리 구성
+    sql = f"""
+        SELECT {columns_clause}
+        FROM data_portal.mdh_base_view_total_4
+        WHERE 
+            chip_prod_id = ANY (%s)
+            AND SUBSTRING(screen_durable_spec_name, 6, 1) NOT IN ('F', 'L', 'G', 'K', 'E')
+            AND SUBSTRING(screen_durable_spec_name, 11, 3) NOT IN ('3DJ', 'VLC', 'RHM', 'EXT', 'MPM', 'SHI')
+            AND grinding_l_avg IS NOT NULL
+            AND grinding_t_avg IS NOT NULL
+            AND electrode_c_avg IS NOT NULL
+            AND cast_dsgn_thk IS NOT NULL
+            AND ldn_avr_value IS NOT NULL
+            AND screen_chip_size_leng IS NOT NULL
+            AND screen_mrgn_leng IS NOT NULL
+            AND screen_chip_size_widh IS NOT NULL
+            AND screen_mrgn_widh IS NOT NULL
+            AND cover_sheet_thk IS NOT NULL
+            AND top_cover_layer_num IS NOT NULL
+            AND bot_cover_layer_num IS NOT NULL
+            AND active_layer IS NOT NULL
+            AND ni_paste_metal_xrf IS NOT NULL
+            AND ni_paste_powder_xrf IS NOT NULL
+            AND cutting_defect IN ('S 등급', 'A 등급', 'B 등급')
+            AND x_fr_ispass IS DISTINCT FROM 'NG'
+            AND (contact_defect = 0 OR contact_defect IS NULL)
+            AND measure_defect IN ('S 등급', 'A 등급', 'B 등급')
+            AND pass_halt IS DISTINCT FROM 'NG'
+            AND pass_8585 IS DISTINCT FROM 'NG'
+            AND pass_burn_in IS DISTINCT FROM 'NG'
+            AND x_df_ispass IS DISTINCT FROM 'NG'
+            AND x_odb_pass_yn IS DISTINCT FROM 'NG'
+        ORDER BY 
+            array_position(ARRAY['S 등급', 'A 등급', 'B 등급'], cutting_defect),
+            array_position(ARRAY['S 등급', 'A 등급', 'B 등급'], measure_defect);
+    """
 
-    # 1-2: chip_type_candidates_table
-    if _should_run("1-2"):
-        # 1-2 진행 로그를 보낸다.
-        _emit_progress("1-2")
-        # 칩기종 후보 조회를 수행한다.
-        chip_rows, chip_gap = find_chip_prod_id(input_params)
-        # 조회 결과를 테이블에 넣는다.
-        if chip_rows:
-            tables["chip_type_candidates_table"] = chip_rows
-        # gap이 있으면 여기서 멈춘다.
-        if chip_gap:
-            gap = chip_gap
-            return tables, charts, stage_notes, gap
+    results = db.execute_read(sql, (chip_prod_id_list,))
 
-    # 1-3: reference_lot_candidates_table, reference_lot_table
-    if _should_run("1-3"):
-        # 1-3 진행 로그를 보낸다.
-        _emit_progress("1-3")
-        # TODO: 레퍼런스 LOT 후보와 선택 테이블을 만든다.
-        # tables["reference_lot_candidates_table"] = [...]
-        # tables["reference_lot_table"] = [...]
-        # stage_notes["1-3"] = "..."
+    if not results:
+        print("이전 쿼리 결과가 없어 상세 조회를 진행할 수 없습니다.")
+        if state is not None:
+            state["stage_outputs"]["1-3"] = {"ref_lot_id": None, "candidate_count": 0}
+            state["stage_status"]["1-3"] = "done"
+            state["last_gap"] = {
+                "stage": "1-3",
+                "reason": "no_ref_lot_candidate",
+                "fallback_summary": "레퍼런스 LOT 후보가 없어 다음 단계를 진행할 수 없음.",
+                "candidate_count": 0,
+            }
+            return {"ref_lot_id": None, "candidate_count": 0, "gap": state["last_gap"]}
+        return [], {}, None
 
-    # 1-4: payload 구성 근거(표는 reference_lot_table 사용)
-    if _should_run("1-4"):
-        # 1-4 진행 로그를 보낸다.
-        _emit_progress("1-4")
-        # TODO: stage_notes만 필요하면 여기서 작성한다.
-        # stage_notes["1-4"] = "..."
+    ref_lot_candidates_results = [
+        {key: row[key] for key in target_columns} for row in results
+    ]
 
-    # 1-5: top_k_table
-    if _should_run("1-5"):
-        # 1-5 진행 로그를 보낸다.
-        _emit_progress("1-5")
-        # TODO: top-k 결과 테이블을 만든다.
-        # tables["top_k_table"] = [...]
-        # stage_notes["1-5"] = "..."
+    ref_lot_info = ref_lot_candidates_results[0]
+    ref_lot_id = ref_lot_info["lot_id"]
 
-    # 1-6: recent_similar_table
-    if _should_run("1-6"):
-        # 1-6 진행 로그를 보낸다.
-        _emit_progress("1-6")
-        # TODO: 최근 유사 설계 테이블을 만든다.
-        # tables["recent_similar_table"] = [...]
-        # stage_notes["1-6"] = "..."
+    # 1-3 단계: 상태에 요약을 저장한다.
+    if state is not None:
+        state["stage_outputs"]["1-3"] = {
+            "ref_lot_id": ref_lot_id,
+            "candidate_count": len(ref_lot_candidates_results),
+            "ref_lot_info": ref_lot_info,
+        }
+        state["stage_status"]["1-3"] = "done"
+        state["sim_step"] = 4
+        # 1-3 단계: 요약만 반환한다.
+        return {
+            "ref_lot_id": ref_lot_id,
+            "candidate_count": len(ref_lot_candidates_results),
+            "gap": None,
+        }
+    return ref_lot_candidates_results, ref_lot_info, ref_lot_id
 
-    # 1-7: defect_rate_table, defect_rate_summary
-    if _should_run("1-7"):
-        # 1-7 진행 로그를 보낸다.
-        _emit_progress("1-7")
-        # TODO: 불량률 테이블과 차트를 만든다.
-        # tables["defect_rate_table"] = [...]
-        # charts.append({...})
-        # stage_notes["1-7"] = "..."
 
-    return tables, charts, stage_notes, gap
+def get_first_lot_detail(results, dirty=None, table_name="mdh_base_view_total_4"):
+    # 컬럼 정의
+    lot_common_column = ["chip_prod_id", "lot_id", "cur_site_div"]
+    lot_design_column = ["electrode_c_avg", "app_type", "active_powder_base", "ldn_cv_value", "cast_dsgn_thk"]
+    
+    target_columns = lot_common_column + lot_design_column
+    
+    # target_lot_id 결정
+    if dirty is not None:
+        target_lot_id = dirty
+    else:
+        try:
+            target_lot_id = results[0]['lot_id']
+        except (KeyError, IndexError):
+            print("결과 데이터가 비어있거나 'lot_id' 컬럼이 없습니다.")
+            return None
+
+    print(f"첫 번째 LOT ID: {target_lot_id} 에 대한 전체 정보를 조회합니다.")
+
+    # 상세 정보 조회
+    sql_detail = f"SELECT * FROM data_portal.{table_name} WHERE lot_id = %s"
+    detail_result = db.execute_read(sql_detail, (target_lot_id,))
+
+    ref_lot_design_info = [
+        {key: row[key] for key in target_columns} for row in detail_result
+    ]
+
+    return detail_result, ref_lot_design_info
