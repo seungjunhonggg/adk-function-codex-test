@@ -446,6 +446,43 @@ _SIM_STEP_STAGE_MAP = {
     6: "1-6",
 }
 
+
+class _SimpleVoltageSearcher:
+    # Fallback 단계: 인접 전압 코드를 반환한다.
+    def get_neighbors(self, value: str | None) -> list[dict[str, str]]:
+        # 값이 없으면 빈 결과를 반환한다.
+        if not value:
+            return []
+        # 최소 동작: 동일 값을 이웃으로 반환한다.
+        return [{"code": value, "val": value}]
+
+
+# Fallback 단계: searcher 누락 시에도 NameError가 나지 않게 기본 인스턴스를 둔다.
+searcher = _SimpleVoltageSearcher()
+
+
+def _gate_sim_step(state: dict[str, Any], requested_step: int) -> bool:
+    # 단계 게이트: state에 sim_step이 없으면 요청 단계로 초기화한다.
+    current_step = state.get("sim_step")
+    if current_step is None:
+        state["sim_step"] = requested_step
+        return True
+    # 단계 게이트: 현재 단계와 요청 단계가 같을 때만 실행을 허용한다.
+    return int(current_step) == int(requested_step)
+
+
+def _invalidate_from_step(state: dict[str, Any], step: int) -> None:
+    # 단계 무효화: stage_outputs / stage_status 구조를 보장한다.
+    stage_outputs = state.setdefault("stage_outputs", {})
+    stage_status = state.setdefault("stage_status", {})
+    # 단계 무효화: 지정 단계 이후 결과를 모두 삭제한다.
+    for sim_step, stage_name in _SIM_STEP_STAGE_MAP.items():
+        if sim_step >= step:
+            stage_outputs.pop(stage_name, None)
+            stage_status.pop(stage_name, None)
+    # 단계 무효화: 진행 단계를 지정 단계로 되돌린다.
+    state["sim_step"] = step
+
 def fetch_column_label_map() -> dict[str, str]:
     # column_label_map 테이블에서 라벨 매핑을 조회한다.
     rows = _query_column_label_map()
@@ -513,6 +550,8 @@ def find_chip_prod_id(InputParams, dirty=None):
         results = db.execute_read(sql, params_chip)
         print(f"칩기종 변환 요청 결과: {results}")
 
+    # 1-2 단계: 조회 결과가 None이면 빈 리스트로 정리한다.
+    results = results or []
     chip_prod_id_list = [row['chip_prod_id'] for row in results]
 
     # 결과가 있으면 즉시 반환
@@ -563,6 +602,8 @@ def find_chip_prod_id(InputParams, dirty=None):
                 fallback_summary = f"해당 인자로 맞는 조건이 없어, 전압조건을 {search_values}으로 확대하여 재검색하였음."
                 fallback_results = db.execute_read(sql, params)
 
+            # 1-2 단계: fallback 결과가 None이면 빈 리스트로 정리한다.
+            fallback_results = fallback_results or []
             chip_prod_id_list = [row['chip_prod_id'] for row in fallback_results]
             print("chip_prod_id fallback 단계 ", search_values)
             
