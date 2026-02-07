@@ -193,6 +193,76 @@ function renderUserMessage(message) {
   return wrapper;
 }
 
+// ui_action 폼 필드를 화면용 필드로 정리한다.
+function normalizeUiFormFields(fields) {
+  if (!Array.isArray(fields)) {
+    return [];
+  }
+  return fields.map((field) => {
+    const next = { ...field };
+    if (!next.column) {
+      next.column = next.key === "chip_prod_id" ? "right" : "left";
+    }
+    return next;
+  });
+}
+
+// 신규 envelope를 기존 렌더 블록으로 변환한다.
+function buildAssistantBlocks(message) {
+  if (Array.isArray(message.blocks) && message.blocks.length > 0) {
+    return message.blocks;
+  }
+
+  const blocks = [];
+  const assistant =
+    message.assistant && typeof message.assistant === "object"
+      ? message.assistant
+      : {};
+  const assistantText =
+    typeof assistant.text === "string" ? assistant.text.trim() : "";
+  const uiAction =
+    message.ui_action && typeof message.ui_action === "object"
+      ? message.ui_action
+      : null;
+
+  if (uiAction && uiAction.type === "open_form") {
+    blocks.push({
+      type: "input_form",
+      form_id: uiAction.form_id || "form",
+      title: uiAction.title || "입력값을 보완해 주세요.",
+      submit_action: uiAction.submit_action || "apply_user_patch",
+      submit_label: "값 저장 후 재실행",
+      fields: normalizeUiFormFields(uiAction.fields),
+    });
+  }
+
+  if (uiAction && uiAction.type === "confirm_stage") {
+    blocks.push({
+      type: "confirm_action",
+      title: uiAction.title || "다음 단계 진행 확인",
+      message: uiAction.message || "",
+      actions: Array.isArray(uiAction.actions) ? uiAction.actions : [],
+    });
+  }
+
+  if (assistantText) {
+    blocks.push({
+      type: "text",
+      section: "summary",
+      value: assistantText,
+    });
+  }
+
+  if (blocks.length === 0) {
+    blocks.push({
+      type: "text",
+      section: "summary",
+      value: "응답 내용이 없습니다.",
+    });
+  }
+  return blocks;
+}
+
 // 어시스턴트 메시지 DOM을 만든다.
 function renderAssistantMessage(message) {
   const wrapper = document.createElement("div");
@@ -211,9 +281,11 @@ function renderAssistantMessage(message) {
   meta.appendChild(metaText);
   card.appendChild(meta);
 
-  const blocks = message.blocks || [];
+  const blocks = buildAssistantBlocks(message);
+  const tables = message.tables || {};
+  const charts = message.charts || [];
   blocks.forEach((block) => {
-    card.appendChild(renderBlock(block, message.tables, message.charts));
+    card.appendChild(renderBlock(block, tables, charts));
   });
 
   wrapper.appendChild(card);
@@ -281,6 +353,9 @@ function renderBlock(block, tables, charts) {
   if (block.type === "input_form") {
     return renderInputForm(block);
   }
+  if (block.type === "confirm_action") {
+    return renderConfirmAction(block);
+  }
   if (block.type === "progress_log") {
     return renderProgressLog(block.logs || []);
   }
@@ -315,6 +390,12 @@ function renderInputForm(block) {
   const fields = Array.isArray(block.fields) ? block.fields : [];
   const leftFields = fields.filter(f => f.column !== "right");
   const rightFields = fields.filter(f => f.column === "right");
+  const hasLeft = leftFields.length > 0;
+  const hasRight = rightFields.length > 0;
+  desc.textContent =
+    hasLeft && hasRight
+      ? "아래 두 가지 방법 중 하나를 선택해주세요."
+      : "아래 항목을 입력해주세요.";
 
   // ============ 왼쪽 박스 (조건 직접 입력) ============
   const leftBox = document.createElement("div");
@@ -355,12 +436,14 @@ function renderInputForm(block) {
     leftSubmitBtn.textContent = "Submitted";
   }
   leftSubmitBtn.addEventListener("click", () => {
-    handleFormSubmit(leftBox, block.form_id, "core");
+    handleFormSubmit(leftBox, block.form_id, "core", block.submit_action);
   });
   leftActions.appendChild(leftSubmitBtn);
   leftBox.appendChild(leftActions);
 
-  boxContainer.appendChild(leftBox);
+  if (hasLeft) {
+    boxContainer.appendChild(leftBox);
+  }
 
   // ============ OR 구분자 ============
   const orDivider = document.createElement("div");
@@ -369,7 +452,9 @@ function renderInputForm(block) {
   orText.className = "form-or-text";
   orText.textContent = "또는";
   orDivider.appendChild(orText);
-  boxContainer.appendChild(orDivider);
+  if (hasLeft && hasRight) {
+    boxContainer.appendChild(orDivider);
+  }
 
   // ============ 오른쪽 박스 (CHIP 기종 검색) ============
   const rightBox = document.createElement("div");
@@ -410,12 +495,14 @@ function renderInputForm(block) {
     rightSubmitBtn.textContent = "Submitted";
   }
   rightSubmitBtn.addEventListener("click", () => {
-    handleFormSubmit(rightBox, block.form_id, "chip");
+    handleFormSubmit(rightBox, block.form_id, "chip", block.submit_action);
   });
   rightActions.appendChild(rightSubmitBtn);
   rightBox.appendChild(rightActions);
 
-  boxContainer.appendChild(rightBox);
+  if (hasRight) {
+    boxContainer.appendChild(rightBox);
+  }
   wrapper.appendChild(boxContainer);
 
   return wrapper;
@@ -508,13 +595,11 @@ function createFormGroup(field) {
 }
 
 // 폼 제출 처리 (formType: "core" 또는 "chip")
-function handleFormSubmit(cardEl, formId, formType) {
+function handleFormSubmit(cardEl, formId, formType, submitAction) {
   const groups = cardEl.querySelectorAll(".form-group");
   const data = {};
   const entries = [];
   let isValid = true;
-  const coreKeys = ["temperature", "size", "capacity", "voltage"];
-  const chipKey = "chip_prod_id";
 
   groups.forEach(group => {
     const input = Array.from(group.querySelectorAll(".form-input")).find(el => !el.name.endsWith("_unit"));
@@ -525,6 +610,9 @@ function handleFormSubmit(cardEl, formId, formType) {
     const val = input.value.trim();
     entries.push({ input, errorText, unitSelect, value: val, key: input.name });
   });
+  if (entries.length === 0) {
+    return;
+  }
 
   // formType에 따른 검증 로직
   entries.forEach((entry) => {
@@ -535,11 +623,11 @@ function handleFormSubmit(cardEl, formId, formType) {
 
     let isRequired = false;
     if (formType === "core") {
-      // 왼쪽 박스: 4개 필드 모두 필수
-      isRequired = coreKeys.includes(entry.key);
+      // 왼쪽 박스는 표시된 필드를 모두 필수로 본다.
+      isRequired = true;
     } else if (formType === "chip") {
-      // 오른쪽 박스: chip_prod_id 필수
-      isRequired = entry.key === chipKey;
+      // 오른쪽 박스도 표시된 필드를 모두 필수로 본다.
+      isRequired = true;
     }
 
     if (isRequired && !entry.value) {
@@ -584,9 +672,64 @@ function handleFormSubmit(cardEl, formId, formType) {
   }
 
   // 메시지 전송
-  const payload = data;
+  const payload = {
+    action: submitAction || "apply_user_patch",
+    patch: data,
+  };
   const messageText = JSON.stringify(payload, null, 2);
   sendMessage(messageText);
+}
+
+// 단계 확인 액션 블록을 만든다.
+function renderConfirmAction(block) {
+  const card = document.createElement("div");
+  card.className = "block";
+
+  if (block.title) {
+    const label = document.createElement("div");
+    label.className = "block__label";
+    label.textContent = block.title;
+    card.appendChild(label);
+  }
+
+  const text = document.createElement("div");
+  text.className = "block__text";
+  text.textContent = block.message || "다음 단계로 진행할지 선택해주세요.";
+  card.appendChild(text);
+
+  const actions = document.createElement("div");
+  actions.className = "table-select-actions";
+  const actionList =
+    Array.isArray(block.actions) && block.actions.length > 0
+      ? block.actions
+      : [
+          { id: "approve", label: "진행" },
+          { id: "reject", label: "수정" },
+        ];
+
+  actionList.forEach((action) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "table-select-submit";
+    button.textContent = action.label || action.id || "확인";
+    button.addEventListener("click", () => {
+      const actionId = String(action.id || "").toLowerCase();
+      let nextMessage = action.label || "진행";
+      if (actionId === "approve") {
+        nextMessage = "진행";
+      } else if (actionId === "reject") {
+        nextMessage = "수정";
+      }
+      Array.from(actions.querySelectorAll("button")).forEach((node) => {
+        node.disabled = true;
+      });
+      card.classList.add("is-submitted");
+      sendMessage(nextMessage);
+    });
+    actions.appendChild(button);
+  });
+  card.appendChild(actions);
+  return card;
 }
 
 // 텍스트 블록을 만든다.
@@ -1338,9 +1481,9 @@ async function sendMessage(text) {
           addMessage({
             role: "assistant",
             route: data.route,
-            blocks: data.blocks || [],
-            tables: data.tables || {},
-            charts: data.charts || [],
+            assistant: data.assistant || { text: "" },
+            ui_action: data.ui_action || null,
+            workflow: data.workflow || {},
           });
         }
       });
@@ -1361,15 +1504,11 @@ async function sendMessage(text) {
     addMessage({
       role: "assistant",
       route: "error",
-      blocks: [
-        {
-          type: "text",
-          section: "error",
-          value: "처리 중 문제가 발생했어요. 잠시 후 다시 시도해주세요.",
-        },
-      ],
-      tables: {},
-      charts: [],
+      assistant: {
+        text: "처리 중 문제가 발생했어요. 잠시 후 다시 시도해주세요.",
+      },
+      ui_action: null,
+      workflow: {},
     });
   } finally {
     // 활성 요청일 때만 타이핑 표시를 내린다.

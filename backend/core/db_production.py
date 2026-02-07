@@ -489,7 +489,7 @@ def fetch_column_label_map() -> dict[str, str]:
         label_map[column_key] = column_label
     return label_map
 
-def find_chip_prod_id(tool_context: ToolContext | None, input_params=None, dirty=None):
+def find_chip_prod_id(tool_context: ToolContext):
     """
     1-2 단계 툴.
     사용 시점: sim_step=2일 때.
@@ -516,34 +516,6 @@ def find_chip_prod_id(tool_context: ToolContext | None, input_params=None, dirty
     # 1-2 단계: 쿼리 파라미터를 만든다.
     target_keys = ["temperature", "voltage", "size", "capacity"]
     params = input_params.model_dump(include=target_keys)
-
-    # 1-2 단계: sim_step 게이트를 확인한다.
-    if tool_context is not None:
-        state = tool_context.state
-        if "stage_outputs" not in state:
-            state["stage_outputs"] = {}
-        if "stage_status" not in state:
-            state["stage_status"] = {}
-        # 1-2 단계: 입력이 바뀌면 이후 결과를 무효화한다.
-        prev_params = state.get("input_params")
-        next_params = input_params.model_dump()
-        if prev_params is None:
-            state["sim_step"] = 2
-        if prev_params and prev_params != next_params:
-            _invalidate_from_step(state, 2)
-            state["sim_step"] = 2
-        # 1-2 단계: sim_step 게이트를 확인한다.
-        if not _gate_sim_step(state, 2):
-            state["pending_action"] = {
-                "action": "wait_step",
-                "target_step": 2,
-                "current_step": state.get("sim_step"),
-            }
-            return {
-                "skipped": True,
-                "reason": "step_gate",
-                "expected_step": state.get("sim_step"),
-            }
 
     # 1. 메인 쿼리 로직
     if dirty is None:
@@ -736,14 +708,6 @@ def find_ref_lot_candidate(
     chip_prod_id_list: Annotated[Optional[list], Field(description="MLCC Chip production id list")] = None,
 ):
     """
-    1-3 단계 툴.
-    사용 시점: sim_step=3일 때.
-    입력: chip_prod_id_list
-    출력: ref_lot_id 요약 + gap
-    예시: {"chip_prod_id_list":[...]} → {"ref_lot_id":"LOT-1", "gap":null}
-
-    :param chip_prod_id_list: find_chip_prod_id를 사용해서 나온 MLCC 칩 기종 LIST.
-    :return: 
     """
     # 1-3 단계: 상태를 준비한다.
     state = tool_context.state if tool_context is not None else None
@@ -773,16 +737,7 @@ def find_ref_lot_candidate(
             "expected_step": state.get("sim_step"),
         }
     if not chip_prod_id_list:
-        if state is not None:
-            state["stage_outputs"]["1-3"] = {"ref_lot_id": None, "candidate_count": 0}
-            state["stage_status"]["1-3"] = "done"
-            state["last_gap"] = {
-                "stage": "1-3",
-                "reason": "no_chip_type_candidate",
-                "fallback_summary": "칩기종 후보가 없어 레퍼런스 LOT를 찾지 못했음.",
-                "candidate_count": 0,
-            }
-            return {"ref_lot_id": None, "candidate_count": 0, "gap": state["last_gap"]}
+        #TODO 이때 대체 조
         return [], {}, None
 
     # 컬럼 정의
@@ -856,21 +811,6 @@ def find_ref_lot_candidate(
     ref_lot_info = ref_lot_candidates_results[0]
     ref_lot_id = ref_lot_info["lot_id"]
 
-    # 1-3 단계: 상태에 요약을 저장한다.
-    if state is not None:
-        state["stage_outputs"]["1-3"] = {
-            "ref_lot_id": ref_lot_id,
-            "candidate_count": len(ref_lot_candidates_results),
-            "ref_lot_info": ref_lot_info,
-        }
-        state["stage_status"]["1-3"] = "done"
-        state["sim_step"] = 4
-        # 1-3 단계: 요약만 반환한다.
-        return {
-            "ref_lot_id": ref_lot_id,
-            "candidate_count": len(ref_lot_candidates_results),
-            "gap": None,
-        }
     return ref_lot_candidates_results, ref_lot_info, ref_lot_id
 
 

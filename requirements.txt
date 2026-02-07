@@ -1,7 +1,10 @@
 fastapi
 uvicorn[standard]
 openai-agents
+google-adk
+google-genai
 httpx
 pydantic
 psycopg[binary]
 pymysql
+python-dotenv
