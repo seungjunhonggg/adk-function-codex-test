@@ -446,33 +446,6 @@ _SIM_STEP_STAGE_MAP = {
     6: "1-6",
 }
 
-
-def _ensure_sim_step(state: dict, default_step: int) -> None:
-    # sim_step 기본값을 보장한다.
-    if "sim_step" not in state:
-        state["sim_step"] = default_step
-
-
-def _gate_sim_step(state: dict, required_step: int) -> bool:
-    # sim_step 게이트를 확인한다.
-    _ensure_sim_step(state, required_step)
-    return state.get("sim_step") == required_step
-
-
-def _invalidate_from_step(state: dict, start_step: int) -> None:
-    # 시작 단계 이후 결과를 무효화한다.
-    stage_outputs = state.get("stage_outputs", {})
-    stage_status = state.get("stage_status", {})
-    for step in range(start_step, 7):
-        stage_key = _SIM_STEP_STAGE_MAP.get(step)
-        if not stage_key:
-            continue
-        stage_outputs.pop(stage_key, None)
-        stage_status[stage_key] = "dirty"
-    state["stage_outputs"] = stage_outputs
-    state["stage_status"] = stage_status
-
-
 def fetch_column_label_map() -> dict[str, str]:
     # column_label_map 테이블에서 라벨 매핑을 조회한다.
     rows = _query_column_label_map()
@@ -488,34 +461,19 @@ def fetch_column_label_map() -> dict[str, str]:
         # 매핑 결과에 추가한다.
         label_map[column_key] = column_label
     return label_map
-
-def find_chip_prod_id(tool_context: ToolContext):
-    """
-    1-2 단계 툴.
-    사용 시점: sim_step=2일 때.
-    입력: input_params(온도/전압/크기/용량 또는 chip_prod_id)
-    출력: chip_prod_id_list 요약 + gap
-    예시: {"chip_prod_id":"CL32Y106"} → {"chip_prod_id_list":[...], "gap":null}
-    """
-    # 1-2 단계: tool_context와 input_params를 정리한다.
-    if isinstance(tool_context, InputParams) or isinstance(tool_context, dict):
-        input_params = tool_context
-        tool_context = None
-    # 1-2 단계: 입력 파라미터를 InputParams로 통일한다.
-    if isinstance(input_params, dict):
-        input_params = InputParams(**input_params)
-    if input_params is None:
-        input_params = InputParams()
-
-    # 1-2 단계: 파라미터를 추출한다.
-    temperature = input_params.temperature
-    voltage = input_params.voltage
-    size = input_params.size
-    capacity = input_params.capacity
-    chip_prod_id = input_params.chip_prod_id
-    # 1-2 단계: 쿼리 파라미터를 만든다.
+def find_chip_prod_id(InputParams, dirty=None):
+    print(InputParams)
+    
+    # 파라미터 추출
+    temperature = InputParams.temperature
+    voltage = InputParams.voltage
+    size = InputParams.size
+    capacity = InputParams.capacity
+    chip_prod_id = InputParams.chip_prod_id
+    
     target_keys = ["temperature", "voltage", "size", "capacity"]
-    params = input_params.model_dump(include=target_keys)
+    params = InputParams.model_dump(include=target_keys)
+    print("****InputParams", params)
 
     # 1. 메인 쿼리 로직
     if dirty is None:
@@ -555,31 +513,11 @@ def find_chip_prod_id(tool_context: ToolContext):
         results = db.execute_read(sql, params_chip)
         print(f"칩기종 변환 요청 결과: {results}")
 
-    chip_prod_id_list = [row["chip_prod_id"] for row in results]
+    chip_prod_id_list = [row['chip_prod_id'] for row in results]
 
-    # 1-2 단계: 상태를 준비한다.
-    if tool_context is not None:
-        state = tool_context.state
-        # 1-2 단계: 입력 파라미터를 상태에 저장한다.
-        state["input_params"] = input_params.model_dump()
-        # 1-2 단계: 결과를 상태에 저장한다.
-        state["stage_outputs"]["1-2"] = {
-            "chip_prod_id_list": chip_prod_id_list,
-            "candidate_count": len(chip_prod_id_list),
-        }
-        state["stage_status"]["1-2"] = "done"
-        state["sim_step"] = 3
-
-    # 1-2 단계: 결과가 있으면 요약을 반환한다.
+    # 결과가 있으면 즉시 반환
     if results:
-        if tool_context is None:
-            return results, chip_prod_id_list, None
-        return {
-            "chip_prod_id_list": chip_prod_id_list[:20],
-            "candidate_count": len(chip_prod_id_list),
-            "truncated": len(chip_prod_id_list) > 20,
-            "gap": None,
-        }
+        return results, chip_prod_id_list, None
 
     # 2. Fallback 로직 (결과가 없을 경우)
     if not chip_prod_id_list:
@@ -639,26 +577,7 @@ def find_chip_prod_id(tool_context: ToolContext):
                     "selection_field": "chip_prod_id",
                     "allow_multi": True,
                 }
-                if tool_context is not None:
-                    state = tool_context.state
-                    if "stage_outputs" not in state:
-                        state["stage_outputs"] = {}
-                    if "stage_status" not in state:
-                        state["stage_status"] = {}
-                    state["stage_outputs"]["1-2"] = {
-                        "chip_prod_id_list": chip_prod_id_list,
-                        "candidate_count": len(chip_prod_id_list),
-                    }
-                    state["stage_status"]["1-2"] = "done"
-                    state["last_gap"] = gap
-                if tool_context is None:
-                    return fallback_results, chip_prod_id_list, gap
-                return {
-                    "chip_prod_id_list": chip_prod_id_list[:20],
-                    "candidate_count": len(chip_prod_id_list),
-                    "truncated": len(chip_prod_id_list) > 20,
-                    "gap": gap,
-                }
+                return fallback_results, chip_prod_id_list, gap
 
         # 최종 결과 없음
         fallback_summary = "해당 인자로 맞는 조건이 없어 전압조건을 확대하였으나 결과가 나오지 않았음."
@@ -672,26 +591,7 @@ def find_chip_prod_id(tool_context: ToolContext):
             "selection_field": "",
             "allow_multi": True,
         }
-        if tool_context is not None:
-            state = tool_context.state
-            if "stage_outputs" not in state:
-                state["stage_outputs"] = {}
-            if "stage_status" not in state:
-                state["stage_status"] = {}
-            state["stage_outputs"]["1-2"] = {
-                "chip_prod_id_list": [],
-                "candidate_count": 0,
-            }
-            state["stage_status"]["1-2"] = "done"
-            state["last_gap"] = gap
-        if tool_context is None:
-            return [], [], gap
-        return {
-            "chip_prod_id_list": [],
-            "candidate_count": 0,
-            "truncated": False,
-            "gap": gap,
-        }
+        return [], [], gap
     
 def _query_column_label_map() -> list[dict[str, Any]]:
     # 실제 DB 조회 로직을 구현한다.
