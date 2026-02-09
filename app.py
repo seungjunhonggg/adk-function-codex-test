@@ -1,22 +1,236 @@
+import asyncio
+import copy
+import json
+import logging
+import time
 import uuid
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from google.adk.events import Event
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions import Session
+from google.adk.sessions.base_session_service import (
+    BaseSessionService,
+    GetSessionConfig,
+    ListSessionsResponse,
+)
 from google.genai import types
 
 from backend.core.agents import root_agent
+from backend.core.db_production import (
+    PostgresSession,
+    fetch_session_state,
+    upsert_session_state,
+    upsert_session_ip,
+    _ensure_agent_tables,
+    _get_agent_connection,
+    AGENT_SESSIONS_TABLE,
+    AGENT_MESSAGES_TABLE,
+)
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "mlcc_simulation"
 USER_ID = "default_user"
 
+
+# ---------------------------------------------------------------------------
+# PostgresSessionService: ADK BaseSessionService backed by PostgresSession
+# ---------------------------------------------------------------------------
+class PostgresSessionService(BaseSessionService):
+    """Google ADK SessionService implementation using PostgreSQL.
+
+    Uses the existing PostgresSession (message storage) and
+    fetch_session_state / upsert_session_state (state persistence)
+    from db_production.py.
+    """
+
+    def __init__(self) -> None:
+        # In-memory cache keyed by (app_name, user_id, session_id).
+        # Keeps the authoritative Session objects for the running process
+        # so the Runner can mutate them during a turn.
+        self._cache: dict[tuple[str, str, str], Session] = {}
+
+    # -- helpers -------------------------------------------------------------
+
+    def _key(self, app_name: str, user_id: str, session_id: str):
+        return (app_name, user_id, session_id)
+
+    def _pg_session(self, session_id: str) -> PostgresSession:
+        return PostgresSession(session_id=session_id)
+
+    async def _persist_state(self, session: Session) -> None:
+        """Write session state to Postgres in a background thread."""
+        await asyncio.to_thread(
+            upsert_session_state, session.id, session.state
+        )
+
+    async def _load_state(self, session_id: str) -> dict[str, Any]:
+        """Read session state from Postgres."""
+        state = await asyncio.to_thread(fetch_session_state, session_id)
+        return state or {}
+
+    async def _persist_event(self, session_id: str, event: Event) -> None:
+        """Serialize an Event and append it to the Postgres message store."""
+        pg = self._pg_session(session_id)
+        data = event.model_dump(mode="json", exclude_none=True)
+        await pg.add_items([data])
+
+    async def _load_events(
+        self, session_id: str, limit: int | None = None
+    ) -> list[Event]:
+        """Load Events from Postgres message store."""
+        pg = self._pg_session(session_id)
+        rows = await pg.get_items(limit=limit)
+        events: list[Event] = []
+        for row in rows:
+            try:
+                events.append(Event.model_validate(row))
+            except Exception:
+                continue
+        return events
+
+    # -- BaseSessionService overrides ----------------------------------------
+
+    async def create_session(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        state: Optional[dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ) -> Session:
+        session_id = (
+            session_id.strip()
+            if session_id and session_id.strip()
+            else str(uuid.uuid4())
+        )
+
+        key = self._key(app_name, user_id, session_id)
+        if key in self._cache:
+            return copy.deepcopy(self._cache[key])
+
+        session = Session(
+            app_name=app_name,
+            user_id=user_id,
+            id=session_id,
+            state=state or {},
+            last_update_time=time.time(),
+        )
+        self._cache[key] = session
+
+        # Persist initial state
+        if state:
+            await self._persist_state(session)
+
+        # Ensure Postgres session row exists
+        pg = self._pg_session(session_id)
+        await pg.add_items([])  # triggers INSERT … ON CONFLICT DO NOTHING
+
+        return copy.deepcopy(session)
+
+    async def get_session(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        config: Optional[GetSessionConfig] = None,
+    ) -> Optional[Session]:
+        key = self._key(app_name, user_id, session_id)
+
+        if key in self._cache:
+            session = copy.deepcopy(self._cache[key])
+        else:
+            # Try to restore from DB
+            state = await self._load_state(session_id)
+            events = await self._load_events(session_id)
+            if not state and not events:
+                return None
+
+            session = Session(
+                app_name=app_name,
+                user_id=user_id,
+                id=session_id,
+                state=state,
+                events=events,
+                last_update_time=time.time(),
+            )
+            self._cache[key] = session
+            session = copy.deepcopy(session)
+
+        # Apply config filters on the copy
+        if config:
+            if config.num_recent_events:
+                session.events = session.events[-config.num_recent_events:]
+            if config.after_timestamp:
+                session.events = [
+                    e for e in session.events if e.timestamp >= config.after_timestamp
+                ]
+
+        return session
+
+    async def list_sessions(
+        self, *, app_name: str, user_id: Optional[str] = None
+    ) -> ListSessionsResponse:
+        sessions = []
+        for (a, u, _), s in self._cache.items():
+            if a != app_name:
+                continue
+            if user_id is not None and u != user_id:
+                continue
+            copied = copy.deepcopy(s)
+            copied.events = []
+            sessions.append(copied)
+        return ListSessionsResponse(sessions=sessions)
+
+    async def delete_session(
+        self, *, app_name: str, user_id: str, session_id: str
+    ) -> None:
+        key = self._key(app_name, user_id, session_id)
+        self._cache.pop(key, None)
+        pg = self._pg_session(session_id)
+        await pg.clear_session()
+
+    async def append_event(self, session: Session, event: Event) -> Event:
+        if event.partial:
+            return event
+
+        key = self._key(session.app_name, session.user_id, session.id)
+
+        # Update in-memory session via parent class logic
+        await super().append_event(session=session, event=event)
+        session.last_update_time = event.timestamp
+
+        # Update storage session
+        storage = self._cache.get(key)
+        if storage is not None:
+            storage.events.append(event)
+            storage.last_update_time = event.timestamp
+
+            # Apply state delta
+            if event.actions and event.actions.state_delta:
+                storage.state.update(event.actions.state_delta)
+
+        # Persist event and state to Postgres
+        await self._persist_event(session.id, event)
+        if storage is not None:
+            await self._persist_state(storage)
+
+        return event
+
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
 app = FastAPI(title="MLCC Simulation Agent API")
 
 app.add_middleware(
@@ -26,7 +240,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-session_service = InMemorySessionService()
+session_service = PostgresSessionService()
 runner = Runner(
     agent=root_agent,
     app_name=APP_NAME,
@@ -45,7 +259,7 @@ class ChatResponse(BaseModel):
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     session_id = req.session_id or str(uuid.uuid4())
 
     # Ensure session exists
@@ -60,6 +274,10 @@ async def chat(req: ChatRequest):
             user_id=USER_ID,
             session_id=session_id,
         )
+
+    # Save client IP
+    client_ip = request.client.host if request.client else None
+    await asyncio.to_thread(upsert_session_ip, session_id, client_ip)
 
     user_content = types.Content(
         role="user",
