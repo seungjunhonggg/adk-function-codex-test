@@ -1,5 +1,6 @@
 // 기본 상수와 로컬 저장소 키를 정의한다.
 const API_URL = "/chat";
+const API_STREAM_URL = "/chat/stream";
 const STORAGE_KEYS = {
   sessionId: "mlcc_demo_session_id",
   messages: "mlcc_demo_messages",
@@ -701,43 +702,133 @@ function renderChartCard(chartId, charts) {
   return card;
 }
 
-// 사용자 입력을 서버로 전송한다.
+// 현재 활성 스트림 컨트롤러를 저장한다.
+let activeStreamController = null;
+
+// 타이핑 로그를 갱신한다.
+function updateTypingLogs(logs) {
+  if (!state.typingEl) return;
+  const card = state.typingEl.querySelector(".assistant-card");
+  if (!card) return;
+  const nextLog = renderProgressLog(logs || []);
+  const currentLog = card.querySelector(".progress-log");
+  if (currentLog) {
+    card.replaceChild(nextLog, currentLog);
+  } else {
+    card.appendChild(nextLog);
+  }
+  scrollToBottom();
+}
+
+// SSE 청크를 파싱한다.
+function parseSseChunk(chunk) {
+  let eventName = "message";
+  const dataLines = [];
+  chunk.split("\n").forEach((line) => {
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+      return;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  });
+  return { event: eventName, data: dataLines.join("\n") };
+}
+
+// 사용자 입력을 서버로 전송한다 (SSE 스트리밍).
 async function sendMessage(text) {
   setTyping(true);
+
+  // 이전 스트림이 있으면 중단한다.
+  if (activeStreamController) {
+    activeStreamController.abort();
+  }
+  activeStreamController = new AbortController();
+
   try {
     const payload = {
       session_id: state.sessionId,
       message: text,
     };
 
-    const response = await fetch(API_URL, {
+    const response = await fetch(API_STREAM_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: activeStreamController.signal,
     });
 
-    if (!response.ok) {
+    if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);
     }
 
-    const data = await response.json();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let hasFinal = false;
 
-    // 서버 응답에서 session_id를 동기화한다.
-    if (data.session_id) {
-      state.sessionId = data.session_id;
-      updateSessionUi();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() || "";
+
+      chunks.forEach((chunk) => {
+        const trimmed = chunk.trim();
+        if (!trimmed) return;
+        const parsed = parseSseChunk(trimmed);
+        if (!parsed) return;
+
+        if (parsed.event === "progress") {
+          const progressData = JSON.parse(parsed.data || "{}");
+          updateTypingLogs(progressData.logs || []);
+          return;
+        }
+
+        if (parsed.event === "trigger") {
+          const triggerData = JSON.parse(parsed.data || "{}");
+          // 트리거를 input_form 블록으로 렌더링한다.
+          setTyping(false);
+          addMessage({
+            role: "assistant",
+            route: "mlcc_agent",
+            blocks: [triggerData],
+            tables: {},
+            charts: [],
+          });
+          setTyping(true);
+          return;
+        }
+
+        if (parsed.event === "final") {
+          hasFinal = true;
+          const data = JSON.parse(parsed.data || "{}");
+          if (data.session_id) {
+            state.sessionId = data.session_id;
+            updateSessionUi();
+          }
+          const responseText = data.response || "";
+          if (responseText) {
+            addMessage({
+              role: "assistant",
+              route: "mlcc_agent",
+              blocks: [{ type: "text", section: "응답", value: responseText }],
+              tables: {},
+              charts: [],
+            });
+          }
+        }
+      });
     }
 
-    // plain text 응답을 블록 형태로 변환한다.
-    const responseText = data.response || "";
-    addMessage({
-      role: "assistant",
-      route: "mlcc_agent",
-      blocks: [{ type: "text", section: "응답", value: responseText }],
-      tables: {},
-      charts: [],
-    });
+    if (!hasFinal) {
+      throw new Error("final event missing");
+    }
   } catch (error) {
+    if (error && error.name === "AbortError") return;
     addMessage({
       role: "assistant",
       route: "error",
@@ -753,6 +844,7 @@ async function sendMessage(text) {
     });
   } finally {
     setTyping(false);
+    activeStreamController = null;
   }
 }
 

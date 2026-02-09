@@ -108,6 +108,70 @@ def _compute_allowed_tools(state: dict[str, Any]) -> list[str]:
     return ["brief_current_state"]
 
 
+SIM_INPUT_FORM = {
+    "type": "input_form",
+    "form_id": "sim_input",
+    "title": "MLCC 시뮬레이션 입력",
+    "submit_label": "시뮬레이션 시작",
+    "fields": [
+        {
+            "key": "temperature",
+            "label": "Temperature",
+            "type": "select",
+            "options": ["X5R", "X7R", "X7S", "X6S", "X8R", "X8L"],
+            "column": "left",
+        },
+        {
+            "key": "size",
+            "label": "Size",
+            "type": "select",
+            "options": [
+                "0402", "0603", "0805", "1005",
+                "1608", "2012", "3216", "3225",
+            ],
+            "column": "left",
+        },
+        {
+            "key": "capacity",
+            "label": "Capacity",
+            "type": "number",
+            "unit_options": ["pF", "nF", "uF"],
+            "column": "left",
+        },
+        {
+            "key": "voltage",
+            "label": "Voltage",
+            "type": "select",
+            "options": ["6.3V", "10V", "16V", "25V", "50V", "100V"],
+            "column": "left",
+        },
+        {
+            "key": "chip_prod_id",
+            "label": "CHIP 기종 코드",
+            "type": "text",
+            "placeholder": "예: CL32Y106KBHNNNE",
+            "column": "right",
+        },
+    ],
+}
+
+
+def after_tool_callback(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    tool_response: dict,
+) -> dict | None:
+    """Tool 결과를 검사해서 프론트엔드 트리거 메타를 추가한다."""
+    if not isinstance(tool_response, dict):
+        return None
+    reason = tool_response.get("reason")
+    # 입력이 부족하면 input_form 트리거를 응답에 추가한다.
+    if reason == "insufficient_input":
+        return {**tool_response, "_frontend_trigger": SIM_INPUT_FORM}
+    return None
+
+
 def _parse_user_decision(text: str) -> str:
     # 결정 파싱: 텍스트를 소문자로 정규화한다.
     normalized = text.strip().lower()
@@ -461,6 +525,7 @@ root_agent = LlmAgent(
     description="MLCC 시뮬레이션 단계를 순차 진행하고 사용자 컨펌을 처리한다.",
     instruction=ROOT_AGENT_INSTRUCTION,
     before_tool_callback=before_tool_callback,
+    after_tool_callback=after_tool_callback,
     tools=[
         set_sim_input,
         run_stage_2_find_chip,

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -310,6 +310,84 @@ async def chat(req: ChatRequest, request: Request):
                     final_response += part.text
 
     return ChatResponse(session_id=session_id, response=final_response)
+
+
+def _sse(event: str, data: str) -> str:
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest, request: Request):
+    session_id = req.session_id or str(uuid.uuid4())
+
+    session = await session_service.get_session(
+        app_name=APP_NAME,
+        user_id=USER_ID,
+        session_id=session_id,
+    )
+    if session is None:
+        session = await session_service.create_session(
+            app_name=APP_NAME,
+            user_id=USER_ID,
+            session_id=session_id,
+        )
+
+    client_ip = request.client.host if request.client else None
+    await asyncio.to_thread(upsert_session_ip, session_id, client_ip)
+
+    user_content = types.Content(
+        role="user",
+        parts=[types.Part.from_text(text=req.message)],
+    )
+
+    async def event_generator():
+        final_text = ""
+        logs: list[dict] = []
+
+        async for event in runner.run_async(
+            user_id=USER_ID,
+            session_id=session_id,
+            new_message=user_content,
+        ):
+            if not event.content or not event.content.parts:
+                continue
+
+            for part in event.content.parts:
+                # Tool 호출 시작 → progress
+                if part.function_call:
+                    tool_name = part.function_call.name
+                    logs.append({"text": f"{tool_name} 실행 중", "status": "in_progress"})
+                    yield _sse("progress", json.dumps({"logs": logs}))
+
+                # Tool 응답 → progress 완료 + 트리거 감지
+                if part.function_response:
+                    tool_name = part.function_response.name
+                    resp = part.function_response.response or {}
+                    # 진행 로그 업데이트
+                    for log in logs:
+                        if log["status"] == "in_progress":
+                            log["status"] = "done"
+                    yield _sse("progress", json.dumps({"logs": logs}))
+
+                    # _frontend_trigger가 있으면 프론트에 전송
+                    if isinstance(resp, dict) and "_frontend_trigger" in resp:
+                        trigger = resp["_frontend_trigger"]
+                        yield _sse("trigger", json.dumps(trigger))
+
+                # 텍스트 응답 누적
+                if part.text:
+                    final_text += part.text
+
+        yield _sse(
+            "final",
+            json.dumps({"session_id": session_id, "response": final_text}),
+        )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/health")
