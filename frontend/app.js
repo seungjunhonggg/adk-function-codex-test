@@ -500,9 +500,135 @@ function renderTextCard(block) {
   }
   const text = document.createElement("div");
   text.className = "block__text";
-  text.textContent = block.value || "";
+  text.appendChild(renderMarkdownLite(block.value || ""));
   card.appendChild(text);
   return card;
+}
+
+// 마크다운 라이트 렌더러: 줄바꿈, 테이블, 볼드, 리스트를 처리한다.
+function renderMarkdownLite(raw) {
+  const container = document.createElement("div");
+  container.className = "md-rendered";
+  const lines = raw.split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    // 마크다운 테이블 감지: | 로 시작하는 연속 행
+    if (lines[i].trim().startsWith("|")) {
+      const tableLines = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      if (tableLines.length >= 2) {
+        container.appendChild(buildMdTable(tableLines));
+      } else {
+        container.appendChild(mdParagraph(tableLines.join("\n")));
+      }
+      continue;
+    }
+
+    // 빈 줄은 건너뛴다.
+    if (lines[i].trim() === "") {
+      i++;
+      continue;
+    }
+
+    // 일반 텍스트: 다음 빈 줄이나 테이블 시작까지 모은다.
+    const paraLines = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() !== "" &&
+      !lines[i].trim().startsWith("|")
+    ) {
+      paraLines.push(lines[i]);
+      i++;
+    }
+    container.appendChild(mdParagraph(paraLines.join("\n")));
+  }
+
+  return container;
+}
+
+// 일반 텍스트를 <p>로 만든다. 인라인 마크다운(볼드)과 줄바꿈을 처리한다.
+function mdParagraph(text) {
+  const p = document.createElement("p");
+  p.className = "md-para";
+  // 줄바꿈을 <br>로, **bold**를 <strong>으로 변환한다.
+  const html = escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
+  p.innerHTML = html;
+  return p;
+}
+
+// 마크다운 테이블 행들을 <table>로 만든다.
+function buildMdTable(tableLines) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "block table-card md-table-wrapper";
+  const table = document.createElement("table");
+  table.className = "md-table";
+
+  const rows = tableLines.map((line) =>
+    line
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim())
+  );
+
+  // 구분선 행(---) 위치를 찾는다.
+  let separatorIdx = -1;
+  for (let r = 0; r < rows.length; r++) {
+    if (rows[r].every((cell) => /^[-:\s]+$/.test(cell))) {
+      separatorIdx = r;
+      break;
+    }
+  }
+
+  // 헤더가 있으면 thead를 만든다.
+  let bodyStart = 0;
+  if (separatorIdx >= 0) {
+    const thead = document.createElement("thead");
+    for (let r = 0; r < separatorIdx; r++) {
+      const tr = document.createElement("tr");
+      rows[r].forEach((cell) => {
+        const th = document.createElement("th");
+        th.innerHTML = inlineMd(cell);
+        tr.appendChild(th);
+      });
+      thead.appendChild(tr);
+    }
+    table.appendChild(thead);
+    bodyStart = separatorIdx + 1;
+  }
+
+  // tbody를 만든다.
+  const tbody = document.createElement("tbody");
+  for (let r = bodyStart; r < rows.length; r++) {
+    const tr = document.createElement("tr");
+    rows[r].forEach((cell) => {
+      const td = document.createElement("td");
+      td.innerHTML = inlineMd(cell);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrapper.appendChild(table);
+  return wrapper;
+}
+
+// 인라인 마크다운(볼드)을 변환한다.
+function inlineMd(text) {
+  return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+// HTML 특수문자를 이스케이프한다.
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
 }
 
 // 테이블 블록을 만든다.
