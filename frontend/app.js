@@ -218,6 +218,9 @@ function renderBlock(block, tables, charts) {
   if (block.type === "input_form") {
     return renderInputForm(block);
   }
+  if (block.type === "a2ui_surface") {
+    return renderA2UISurface(block);
+  }
   if (block.type === "progress_log") {
     return renderProgressLog(block.logs || []);
   }
@@ -487,6 +490,128 @@ function handleFormSubmit(cardEl, formId, formType) {
 
   const messageText = JSON.stringify(data, null, 2);
   sendMessage(messageText);
+}
+
+// ── A2UI 핸들러 ──────────────────────────────────────────
+
+// A2UI SSE 메시지를 처리한다.
+let _pendingA2UISurfaceId = null;
+
+function handleA2UIMessage(msg) {
+  var rootEl = A2UIRenderer.handleMessage(msg);
+
+  // createSurface 메시지일 때만 rootEl이 반환된다.
+  if (rootEl && msg.createSurface) {
+    _pendingA2UISurfaceId = msg.createSurface.surfaceId;
+    var surface = A2UIRenderer.surfaces[_pendingA2UISurfaceId];
+    if (surface) {
+      surface.onAction = handleA2UIAction;
+    }
+    return; // 아직 메시지 블록에 추가하지 않음 — updateComponents 대기
+  }
+
+  // updateComponents 도착 시 메시지 블록으로 렌더링
+  if (msg.updateComponents && _pendingA2UISurfaceId) {
+    setTyping(false);
+    addMessage({
+      role: "assistant",
+      route: "mlcc_agent",
+      blocks: [{ type: "a2ui_surface", surfaceId: _pendingA2UISurfaceId }],
+      tables: {},
+      charts: [],
+    });
+    setTyping(true);
+  }
+}
+
+// A2UI surface 블록을 렌더링한다.
+function renderA2UISurface(block) {
+  var surface = A2UIRenderer.surfaces[block.surfaceId];
+  if (surface && surface.rootEl) {
+    // wrapper로 감싸서 기존 input-form-wrapper 스타일 적용
+    var wrapper = document.createElement("div");
+    wrapper.className = "input-form-wrapper";
+
+    // 헤더
+    var header = document.createElement("div");
+    header.className = "form-header";
+    var title = document.createElement("div");
+    title.className = "form-title";
+    title.textContent = "MLCC 시뮬레이션 입력";
+    header.appendChild(title);
+    var desc = document.createElement("div");
+    desc.className = "form-description";
+    desc.textContent = "아래 두 가지 방법 중 하나를 선택해주세요.";
+    header.appendChild(desc);
+    wrapper.appendChild(header);
+
+    wrapper.appendChild(surface.rootEl);
+    return wrapper;
+  }
+  // 페이지 리로드 후 surface가 없을 때 폴백
+  var fallback = document.createElement("div");
+  fallback.className = "input-form-wrapper is-submitted";
+  fallback.style.opacity = "0.7";
+  var fallbackText = document.createElement("div");
+  fallbackText.className = "form-description";
+  fallbackText.textContent = "시뮬레이션 입력 폼 (제출 완료)";
+  fallback.appendChild(fallbackText);
+  return fallback;
+}
+
+// A2UI action 이벤트를 처리한다 (폼 제출).
+function handleA2UIAction(actionPayload) {
+  var actionName = actionPayload.action.name;
+  var dataModel = (actionPayload.action.context && actionPayload.action.context.dataModel) || {};
+  var surfaceId = actionPayload.action.surfaceId;
+
+  // 필수 필드 검증
+  var requiredPaths = [];
+  if (actionName === "submit_core") {
+    requiredPaths = ["/temperature", "/size", "/capacity", "/voltage"];
+  } else if (actionName === "submit_chip") {
+    requiredPaths = ["/chip_prod_id"];
+  }
+
+  if (!A2UIRenderer.validateRequired(surfaceId, requiredPaths)) {
+    return;
+  }
+
+  // 용량 단위 변환 (nF→pF, uF→pF)
+  var capacity = dataModel.capacity || "";
+  var unit = dataModel.capacity_unit || "pF";
+  if (capacity) {
+    var numVal = parseFloat(capacity);
+    if (!isNaN(numVal)) {
+      if (unit === "nF") capacity = String(numVal * 1000);
+      else if (unit === "uF") capacity = String(numVal * 1000000);
+    }
+  }
+
+  // 메시지 데이터 구성
+  var msgData;
+  if (actionName === "submit_core") {
+    msgData = {
+      temperature: dataModel.temperature,
+      size: dataModel.size,
+      capacity: capacity,
+      voltage: dataModel.voltage,
+    };
+  } else if (actionName === "submit_chip") {
+    msgData = { chip_prod_id: dataModel.chip_prod_id };
+  } else {
+    return;
+  }
+
+  // surface 비활성화
+  A2UIRenderer.markSubmitted(surfaceId);
+  var wrapperEl = A2UIRenderer.surfaces[surfaceId] &&
+    A2UIRenderer.surfaces[surfaceId].rootEl &&
+    A2UIRenderer.surfaces[surfaceId].rootEl.closest(".input-form-wrapper");
+  if (wrapperEl) wrapperEl.classList.add("is-submitted");
+
+  // 기존 chat 흐름으로 전송
+  sendMessage(JSON.stringify(msgData, null, 2));
 }
 
 // 텍스트 블록을 만든다.
@@ -788,18 +913,9 @@ async function sendMessage(text) {
           return;
         }
 
-        if (parsed.event === "trigger") {
-          const triggerData = JSON.parse(parsed.data || "{}");
-          // 트리거를 input_form 블록으로 렌더링한다.
-          setTyping(false);
-          addMessage({
-            role: "assistant",
-            route: "mlcc_agent",
-            blocks: [triggerData],
-            tables: {},
-            charts: [],
-          });
-          setTyping(true);
+        if (parsed.event === "a2ui") {
+          const a2uiMsg = JSON.parse(parsed.data || "{}");
+          handleA2UIMessage(a2uiMsg);
           return;
         }
 

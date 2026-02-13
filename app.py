@@ -369,10 +369,10 @@ async def chat_stream(req: ChatRequest, request: Request):
                             log["status"] = "done"
                     yield _sse("progress", json.dumps({"logs": logs}))
 
-                    # _frontend_trigger가 있으면 프론트에 전송
-                    if isinstance(resp, dict) and "_frontend_trigger" in resp:
-                        trigger = resp["_frontend_trigger"]
-                        yield _sse("trigger", json.dumps(trigger))
+                    # A2UI 메시지가 있으면 프론트에 순차 전송
+                    if isinstance(resp, dict) and "_a2ui_messages" in resp:
+                        for a2ui_msg in resp["_a2ui_messages"]:
+                            yield _sse("a2ui", json.dumps(a2ui_msg))
 
                 # 텍스트 응답 누적
                 if part.text:

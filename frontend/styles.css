@@ -1280,6 +1280,17 @@ body::before {
   pointer-events: none;
 }
 
+/* A2UI 렌더러 레이아웃 */
+.a2ui-surface {
+  width: 100%;
+}
+
+.a2ui-text {
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+
 /* 마크다운 렌더링 스타일 */
 .md-rendered {
   display: grid;

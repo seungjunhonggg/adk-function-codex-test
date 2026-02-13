@@ -5,6 +5,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
+from .a2ui import build_sim_input_a2ui_messages
 from .db_production import find_chip_prod_id, find_ref_lot_candidate
 from .schemas import InputParams
 
@@ -108,67 +109,19 @@ def _compute_allowed_tools(state: dict[str, Any]) -> list[str]:
     return ["brief_current_state"]
 
 
-SIM_INPUT_FORM = {
-    "type": "input_form",
-    "form_id": "sim_input",
-    "title": "MLCC 시뮬레이션 입력",
-    "submit_label": "시뮬레이션 시작",
-    "fields": [
-        {
-            "key": "temperature",
-            "label": "Temperature",
-            "type": "select",
-            "options": ["X5R", "X7R", "X7S", "X6S", "X8R", "X8L"],
-            "column": "left",
-        },
-        {
-            "key": "size",
-            "label": "Size",
-            "type": "select",
-            "options": [
-                "0402", "0603", "0805", "1005",
-                "1608", "2012", "3216", "3225",
-            ],
-            "column": "left",
-        },
-        {
-            "key": "capacity",
-            "label": "Capacity",
-            "type": "number",
-            "unit_options": ["pF", "nF", "uF"],
-            "column": "left",
-        },
-        {
-            "key": "voltage",
-            "label": "Voltage",
-            "type": "select",
-            "options": ["6.3V", "10V", "16V", "25V", "50V", "100V"],
-            "column": "left",
-        },
-        {
-            "key": "chip_prod_id",
-            "label": "CHIP 기종 코드",
-            "type": "text",
-            "placeholder": "예: CL32Y106KBHNNNE",
-            "column": "right",
-        },
-    ],
-}
-
-
 def after_tool_callback(
     tool: BaseTool,
     args: dict[str, Any],
     tool_context: ToolContext,
     tool_response: dict,
 ) -> dict | None:
-    """Tool 결과를 검사해서 프론트엔드 트리거 메타를 추가한다."""
+    """Tool 결과를 검사해서 A2UI 메시지를 추가한다."""
     if not isinstance(tool_response, dict):
         return None
     reason = tool_response.get("reason")
-    # 입력이 부족하면 input_form 트리거를 응답에 추가한다.
+    # 입력이 부족하면 A2UI sim_input 폼 메시지를 응답에 추가한다.
     if reason == "insufficient_input":
-        return {**tool_response, "_frontend_trigger": SIM_INPUT_FORM}
+        return {**tool_response, "_a2ui_messages": build_sim_input_a2ui_messages()}
     return None
 
 
