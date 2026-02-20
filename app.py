@@ -342,6 +342,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     async def event_generator():
         final_text = ""
+        final_charts: dict = {}
         logs: list[dict] = []
 
         async for event in runner.run_async(
@@ -374,14 +375,29 @@ async def chat_stream(req: ChatRequest, request: Request):
                         for a2ui_msg in resp["_a2ui_messages"]:
                             yield _sse("a2ui", json.dumps(a2ui_msg))
 
+                    # 차트 데이터가 있으면 즉시 프론트에 전송
+                    if isinstance(resp, dict) and "_chart_messages" in resp:
+                        for chart_msg in resp["_chart_messages"]:
+                            chart_id = chart_msg.get("chart_id")
+                            if chart_id:
+                                yield _sse("chart", json.dumps(chart_msg))
+
+                    # final 응답에 포함할 차트 데이터 수집
+                    if isinstance(resp, dict) and "_charts" in resp:
+                        final_charts.update(resp["_charts"])
+
                 # 텍스트 응답 누적
                 if part.text:
                     final_text += part.text
 
-        yield _sse(
-            "final",
-            json.dumps({"session_id": session_id, "response": final_text}),
-        )
+        final_payload = {
+            "session_id": session_id,
+            "response": final_text,
+        }
+        if final_charts:
+            final_payload["charts"] = final_charts
+
+        yield _sse("final", json.dumps(final_payload))
 
     return StreamingResponse(
         event_generator(),

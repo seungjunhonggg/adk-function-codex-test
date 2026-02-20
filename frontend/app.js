@@ -812,18 +812,54 @@ function renderTableCard(tableKey, tables) {
   return card;
 }
 
-// 차트 블록 (placeholder)
+// 차트 블록을 ECharts로 렌더링한다.
 function renderChartCard(chartId, charts) {
   const card = document.createElement("div");
   card.className = "block chart-card";
-  const label = document.createElement("div");
-  label.className = "block__label";
-  label.textContent = chartId || "chart";
-  card.appendChild(label);
-  const empty = document.createElement("div");
-  empty.className = "block__text";
-  empty.textContent = "Chart rendering placeholder.";
-  card.appendChild(empty);
+
+  // 차트 데이터 조회
+  const chartData = charts && chartId ? charts[chartId] : null;
+
+  if (!chartData) {
+    const label = document.createElement("div");
+    label.className = "block__label";
+    label.textContent = chartId || "chart";
+    card.appendChild(label);
+    const empty = document.createElement("div");
+    empty.className = "block__text";
+    empty.textContent = "차트 데이터가 없습니다.";
+    card.appendChild(empty);
+    return card;
+  }
+
+  // 차트 제목 표시
+  const header = document.createElement("div");
+  header.className = "chart-header";
+  if (chartData.title && chartData.title.text) {
+    const title = document.createElement("div");
+    title.className = "chart-title";
+    title.textContent = chartData.title.text;
+    header.appendChild(title);
+    if (chartData.title.subtext) {
+      const subtitle = document.createElement("div");
+      subtitle.className = "chart-subtitle";
+      subtitle.textContent = chartData.title.subtext;
+      header.appendChild(subtitle);
+    }
+  }
+  card.appendChild(header);
+
+  // ECharts 렌더링 컨테이너
+  const chartContainer = document.createElement("div");
+  chartContainer.className = "chart-frame";
+  card.appendChild(chartContainer);
+
+  // 타이틀은 카드 헤더에서 표시하므로 ECharts 내부 타이틀은 제거
+  const optionForEcharts = Object.assign({}, chartData);
+  optionForEcharts.title = { show: false };
+
+  EChartRenderer.render(chartContainer, optionForEcharts, chartId);
+
   return card;
 }
 
@@ -919,6 +955,32 @@ async function sendMessage(text) {
           return;
         }
 
+        if (parsed.event === "chart") {
+          // 차트 전용 SSE 이벤트: { chart_id, option, title? }
+          const chartMsg = JSON.parse(parsed.data || "{}");
+          if (chartMsg.chart_id && chartMsg.option) {
+            setTyping(false);
+            const chartData = {};
+            // 제목이 별도로 있으면 option에 머지
+            if (chartMsg.title) {
+              chartMsg.option.title = Object.assign(
+                chartMsg.option.title || {},
+                { text: chartMsg.title, subtext: chartMsg.subtitle || "" }
+              );
+            }
+            chartData[chartMsg.chart_id] = chartMsg.option;
+            addMessage({
+              role: "assistant",
+              route: "mlcc_agent",
+              blocks: [{ type: "chart_ref", chart_id: chartMsg.chart_id }],
+              tables: {},
+              charts: chartData,
+            });
+            setTyping(true);
+          }
+          return;
+        }
+
         if (parsed.event === "final") {
           hasFinal = true;
           const data = JSON.parse(parsed.data || "{}");
@@ -927,13 +989,24 @@ async function sendMessage(text) {
             updateSessionUi();
           }
           const responseText = data.response || "";
-          if (responseText) {
+          const responseCharts = data.charts || {};
+
+          // 차트가 포함된 응답 처리
+          if (responseText || Object.keys(responseCharts).length > 0) {
+            const blocks = [];
+            if (responseText) {
+              blocks.push({ type: "text", section: "응답", value: responseText });
+            }
+            // 차트 블록 추가
+            Object.keys(responseCharts).forEach(function (cid) {
+              blocks.push({ type: "chart_ref", chart_id: cid });
+            });
             addMessage({
               role: "assistant",
               route: "mlcc_agent",
-              blocks: [{ type: "text", section: "응답", value: responseText }],
+              blocks: blocks,
               tables: {},
-              charts: [],
+              charts: responseCharts,
             });
           }
         }
