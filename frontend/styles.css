@@ -522,14 +522,7 @@ body::before {
   pointer-events: none;
 }
 
-/* 차트 카드 */
-.chart-card {
-  display: grid;
-  gap: 10px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(13, 108, 99, 0.12);
-  box-shadow: 0 10px 30px rgba(20, 20, 20, 0.08);
-}
+/* 차트 카드 베이스 (ECharts 전용 스타일은 하단에 정의) */
 
 .chart-title {
   font-family: var(--font-display);
@@ -1263,15 +1256,123 @@ body::before {
   }
 }
 
-/* 차트 카드 스타일 단순화 및 크기 조절 */
+/* 차트 카드 스타일 (ECharts) */
 .chart-card {
-  width: 150%;
+  width: 100%;
+  max-width: 720px;
   background: #fff;
-  border: 1px solid #eee;
-  border-radius: 12px;
+  border: 1px solid rgba(13, 108, 99, 0.12);
+  border-radius: 14px;
   padding: 16px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
   margin-top: 10px;
+  transition: box-shadow 0.3s ease, transform 0.3s ease;
+  position: relative;
+}
+
+.chart-card:hover {
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.1);
+}
+
+/* 차트 카드 헤더 */
+.chart-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+/* 차트 카드 툴바 */
+.chart-card__toolbar {
+  display: flex;
+  gap: 4px;
+}
+
+.chart-card__btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.2s ease;
+}
+
+.chart-card__btn:hover {
+  background: rgba(13, 108, 99, 0.08);
+  border-color: rgba(13, 108, 99, 0.25);
+  color: var(--accent);
+}
+
+/* 차트 컨테이너 */
+.chart-card__container {
+  width: 100%;
+  height: 360px;
+  min-height: 240px;
+  border-radius: 8px;
+  background: #fcfbf8;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+/* 차트 빈 상태 */
+.chart-card__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 160px;
+  color: #9aa0a6;
+  font-size: 13px;
+}
+
+/* 풀스크린 모드 */
+.chart-card.is-fullscreen {
+  position: fixed;
+  top: 40px;
+  left: 40px;
+  right: 40px;
+  bottom: 40px;
+  width: auto;
+  max-width: none;
+  z-index: 9999;
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+  padding: 20px;
+  animation: chart-expand 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.chart-card.is-fullscreen .chart-card__container {
+  height: calc(100% - 44px);
+}
+
+/* 풀스크린 오버레이 */
+.chart-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 9998;
+  backdrop-filter: blur(4px);
+  animation: overlay-in 0.25s ease both;
+}
+
+@keyframes chart-expand {
+  from {
+    opacity: 0.8;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* 폼 제출 후 상태 스타일 */

@@ -687,18 +687,209 @@ function renderTableCard(tableKey, tables) {
   return card;
 }
 
-// 차트 블록 (placeholder)
+// 활성 ECharts 인스턴스를 추적한다.
+const activeChartInstances = [];
+
+// 브라우저 리사이즈 시 모든 차트를 재조정한다.
+window.addEventListener("resize", () => {
+  activeChartInstances.forEach((instance) => {
+    if (instance && !instance.isDisposed()) {
+      instance.resize();
+    }
+  });
+});
+
+// ECharts 옵션에 인터랙티브 기본값을 적용한다.
+function applyInteractiveDefaults(option) {
+  const merged = JSON.parse(JSON.stringify(option));
+
+  // 툴팁 기본 설정
+  if (!merged.tooltip) {
+    merged.tooltip = {};
+  }
+  if (merged.tooltip.show === undefined) {
+    merged.tooltip.show = true;
+  }
+  if (!merged.tooltip.trigger) {
+    merged.tooltip.trigger = "axis";
+  }
+  if (!merged.tooltip.backgroundColor) {
+    merged.tooltip.backgroundColor = "rgba(255,255,255,0.96)";
+  }
+  if (!merged.tooltip.borderColor) {
+    merged.tooltip.borderColor = "rgba(0,0,0,0.12)";
+  }
+  if (!merged.tooltip.textStyle) {
+    merged.tooltip.textStyle = { color: "#1d1f1e", fontSize: 12 };
+  }
+  if (merged.tooltip.axisPointer === undefined) {
+    merged.tooltip.axisPointer = { type: "cross", crossStyle: { color: "#999" } };
+  }
+
+  // 범례 기본 설정
+  if (merged.legend && merged.legend.show === undefined) {
+    merged.legend.show = true;
+  }
+
+  // 툴박스 기본 설정 (저장, 데이터 보기, 줌)
+  if (!merged.toolbox) {
+    merged.toolbox = {
+      show: true,
+      orient: "horizontal",
+      right: 12,
+      top: 8,
+      feature: {
+        saveAsImage: { title: "저장", pixelRatio: 2 },
+        dataZoom: { title: { zoom: "영역 확대", back: "확대 초기화" } },
+        restore: { title: "초기화" },
+      },
+      iconStyle: {
+        borderColor: "#6f6b64",
+      },
+      emphasis: {
+        iconStyle: {
+          borderColor: "#0d6c63",
+        },
+      },
+    };
+  }
+
+  // dataZoom 기본 설정 (xAxis가 있으면)
+  if (!merged.dataZoom && merged.xAxis) {
+    merged.dataZoom = [
+      {
+        type: "inside",
+        start: 0,
+        end: 100,
+        zoomOnMouseWheel: true,
+        moveOnMouseMove: true,
+      },
+      {
+        type: "slider",
+        show: true,
+        height: 20,
+        bottom: 8,
+        borderColor: "transparent",
+        backgroundColor: "rgba(0,0,0,0.04)",
+        fillerColor: "rgba(13,108,99,0.15)",
+        handleStyle: { color: "#0d6c63" },
+        textStyle: { fontSize: 10, color: "#6f6b64" },
+      },
+    ];
+  }
+
+  // 애니메이션 기본 설정
+  if (merged.animation === undefined) {
+    merged.animation = true;
+  }
+  if (!merged.animationDuration) {
+    merged.animationDuration = 800;
+  }
+  if (!merged.animationEasing) {
+    merged.animationEasing = "cubicOut";
+  }
+
+  // 그리드 기본 설정
+  if (!merged.grid && merged.xAxis) {
+    merged.grid = {
+      left: 60,
+      right: 40,
+      top: 60,
+      bottom: merged.dataZoom ? 50 : 30,
+      containLabel: true,
+    };
+  }
+
+  return merged;
+}
+
+// 차트 블록을 ECharts로 렌더링한다.
 function renderChartCard(chartId, charts) {
   const card = document.createElement("div");
   card.className = "block chart-card";
+
+  // 차트 데이터 조회
+  const chartData = charts && chartId ? charts[chartId] : null;
+
+  // 헤더 영역 (라벨 + 풀스크린 버튼)
+  const header = document.createElement("div");
+  header.className = "chart-card__header";
+
   const label = document.createElement("div");
   label.className = "block__label";
-  label.textContent = chartId || "chart";
-  card.appendChild(label);
-  const empty = document.createElement("div");
-  empty.className = "block__text";
-  empty.textContent = "Chart rendering placeholder.";
-  card.appendChild(empty);
+  label.textContent = chartData && chartData.title && chartData.title.text
+    ? chartData.title.text
+    : chartId || "chart";
+  header.appendChild(label);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "chart-card__toolbar";
+
+  const fullscreenBtn = document.createElement("button");
+  fullscreenBtn.className = "chart-card__btn";
+  fullscreenBtn.title = "전체 화면";
+  fullscreenBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>';
+  toolbar.appendChild(fullscreenBtn);
+
+  header.appendChild(toolbar);
+  card.appendChild(header);
+
+  // 데이터가 없으면 빈 상태 표시
+  if (!chartData) {
+    const empty = document.createElement("div");
+    empty.className = "chart-card__empty";
+    empty.innerHTML = '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" stroke-width="1.5"><path d="M3 3v18h18"/><path d="M7 16l4-6 4 4 6-8"/></svg><span>차트 데이터 없음</span>';
+    card.appendChild(empty);
+    return card;
+  }
+
+  // 차트 컨테이너
+  const chartContainer = document.createElement("div");
+  chartContainer.className = "chart-card__container";
+  card.appendChild(chartContainer);
+
+  // ECharts 인스턴스를 초기화하고 옵션을 적용한다.
+  requestAnimationFrame(() => {
+    if (!chartContainer.isConnected) return;
+    const instance = echarts.init(chartContainer, null, { renderer: "canvas" });
+    activeChartInstances.push(instance);
+
+    const mergedOption = applyInteractiveDefaults(chartData);
+    instance.setOption(mergedOption);
+
+    // 컨테이너 리사이즈 감시
+    const resizeObserver = new ResizeObserver(() => {
+      if (!instance.isDisposed()) instance.resize();
+    });
+    resizeObserver.observe(chartContainer);
+
+    // 풀스크린 토글
+    fullscreenBtn.addEventListener("click", () => {
+      const isFullscreen = card.classList.toggle("is-fullscreen");
+      fullscreenBtn.title = isFullscreen ? "원래 크기" : "전체 화면";
+      fullscreenBtn.innerHTML = isFullscreen
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6v6m10-10h-6V4m0 6l7-7M3 21l7-7"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>';
+      // 풀스크린 오버레이
+      if (isFullscreen) {
+        const overlay = document.createElement("div");
+        overlay.className = "chart-fullscreen-overlay";
+        overlay.addEventListener("click", () => {
+          card.classList.remove("is-fullscreen");
+          fullscreenBtn.title = "전체 화면";
+          fullscreenBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>';
+          overlay.remove();
+          setTimeout(() => instance.resize(), 50);
+        });
+        document.body.appendChild(overlay);
+      } else {
+        const overlay = document.querySelector(".chart-fullscreen-overlay");
+        if (overlay) overlay.remove();
+      }
+      setTimeout(() => instance.resize(), 50);
+    });
+  });
+
   return card;
 }
 
@@ -803,6 +994,22 @@ async function sendMessage(text) {
           return;
         }
 
+        if (parsed.event === "chart_data") {
+          const chartPayload = JSON.parse(parsed.data || "{}");
+          const chartId = chartPayload.chart_id || "chart_" + Date.now();
+          const chartOption = chartPayload.option || chartPayload;
+          setTyping(false);
+          addMessage({
+            role: "assistant",
+            route: "mlcc_agent",
+            blocks: [{ type: "chart_ref", chart_id: chartId }],
+            tables: {},
+            charts: { [chartId]: chartOption },
+          });
+          setTyping(true);
+          return;
+        }
+
         if (parsed.event === "final") {
           hasFinal = true;
           const data = JSON.parse(parsed.data || "{}");
@@ -811,13 +1018,26 @@ async function sendMessage(text) {
             updateSessionUi();
           }
           const responseText = data.response || "";
+          const responseCharts = data.charts || null;
+          const responseBlocks = [];
           if (responseText) {
+            responseBlocks.push({ type: "text", section: "응답", value: responseText });
+          }
+          // final 이벤트에 차트 데이터가 포함되어 있으면 차트 블록을 추가한다.
+          const chartsObj = {};
+          if (responseCharts && typeof responseCharts === "object") {
+            Object.keys(responseCharts).forEach((key) => {
+              responseBlocks.push({ type: "chart_ref", chart_id: key });
+              chartsObj[key] = responseCharts[key];
+            });
+          }
+          if (responseBlocks.length > 0) {
             addMessage({
               role: "assistant",
               route: "mlcc_agent",
-              blocks: [{ type: "text", section: "응답", value: responseText }],
+              blocks: responseBlocks,
               tables: {},
-              charts: [],
+              charts: chartsObj,
             });
           }
         }

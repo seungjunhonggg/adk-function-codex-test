@@ -374,6 +374,11 @@ async def chat_stream(req: ChatRequest, request: Request):
                         trigger = resp["_frontend_trigger"]
                         yield _sse("trigger", json.dumps(trigger))
 
+                    # _frontend_chart가 있으면 차트 데이터를 프론트에 전송
+                    if isinstance(resp, dict) and "_frontend_chart" in resp:
+                        chart_payload = resp["_frontend_chart"]
+                        yield _sse("chart_data", json.dumps(chart_payload))
+
                 # 텍스트 응답 누적
                 if part.text:
                     final_text += part.text
