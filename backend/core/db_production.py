@@ -270,6 +270,79 @@ def upsert_session_ip(session_id: str, client_ip: str | None) -> None:
     connection.commit()
 
 
+def fetch_all_sessions() -> list[dict[str, Any]]:
+    """세션 목록을 최근 업데이트 순으로 조회한다. 각 세션의 첫 사용자 메시지를 미리보기로 포함한다."""
+    _ensure_agent_tables()
+    connection = _get_agent_connection()
+    with connection.cursor() as cursor:
+        # 세션 목록과 첫 번째 사용자 메시지를 한 번에 조회한다.
+        cursor.execute(
+            f"""
+            SELECT
+                s.session_id,
+                s.created_at,
+                s.updated_at,
+                (
+                    SELECT m.message_data
+                    FROM {AGENT_MESSAGES_TABLE} m
+                    WHERE m.session_id = s.session_id
+                    ORDER BY m.id ASC
+                    LIMIT 1
+                ) AS first_message
+            FROM {AGENT_SESSIONS_TABLE} s
+            ORDER BY s.updated_at DESC
+            """
+        )
+        rows = cursor.fetchall()
+    # 결과를 딕셔너리 리스트로 변환한다.
+    sessions: list[dict[str, Any]] = []
+    for row in rows:
+        session_id, created_at, updated_at, first_message = row
+        # 첫 메시지에서 사용자 텍스트를 추출한다.
+        preview = ""
+        if first_message:
+            try:
+                msg = json.loads(first_message) if isinstance(first_message, str) else first_message
+                # ADK Event 형식에서 사용자 텍스트를 추출한다.
+                parts = msg.get("content", {}).get("parts", [])
+                for part in parts:
+                    if isinstance(part, dict) and part.get("text"):
+                        preview = part["text"][:80]
+                        break
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        sessions.append({
+            "session_id": session_id,
+            "created_at": str(created_at) if created_at else None,
+            "updated_at": str(updated_at) if updated_at else None,
+            "preview": preview,
+        })
+    return sessions
+
+
+def delete_session_by_id(session_id: str) -> None:
+    """세션과 관련 데이터를 모두 삭제한다. (CASCADE로 메시지도 삭제된다.)"""
+    _ensure_agent_tables()
+    connection = _get_agent_connection()
+    with connection.cursor() as cursor:
+        # 상태 테이블에서도 삭제한다.
+        cursor.execute(
+            f"DELETE FROM {AGENT_STATE_TABLE} WHERE session_id = %s",
+            (session_id,),
+        )
+        # 메시지 테이블에서 삭제한다 (CASCADE로도 처리되지만 명시적으로).
+        cursor.execute(
+            f"DELETE FROM {AGENT_MESSAGES_TABLE} WHERE session_id = %s",
+            (session_id,),
+        )
+        # 세션 테이블에서 삭제한다.
+        cursor.execute(
+            f"DELETE FROM {AGENT_SESSIONS_TABLE} WHERE session_id = %s",
+            (session_id,),
+        )
+    connection.commit()
+
+
 class PostgresSession:
     def __init__(
         self,

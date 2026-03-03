@@ -16,6 +16,7 @@ const sessionIdEl = document.getElementById("sessionId");
 const clearButtonEl = document.getElementById("clearButton");
 const newChatButtonEl = document.getElementById("newChatButton");
 const insightsToggleEl = document.getElementById("insightsToggle");
+const sessionListEl = document.getElementById("sessionList");
 const appEl = document.querySelector(".app");
 const insightsEl = document.querySelector(".insights");
 // 조합 입력 진행 여부를 저장한다.
@@ -827,6 +828,8 @@ async function sendMessage(text) {
     if (!hasFinal) {
       throw new Error("final event missing");
     }
+    // 메시지 전송 완료 후 세션 목록을 갱신한다.
+    fetchAndRenderSessions();
   } catch (error) {
     if (error && error.name === "AbortError") return;
     addMessage({
@@ -928,6 +931,8 @@ function resetConversation() {
   saveState();
   updateSessionUi();
   renderMessages();
+  // 새 세션을 목록 최상단에 반영한다.
+  fetchAndRenderSessions();
 }
 
 if (clearButtonEl) {
@@ -937,9 +942,149 @@ if (newChatButtonEl) {
   newChatButtonEl.addEventListener("click", () => resetConversation());
 }
 
+// ---------------------------------------------------------------------------
+// 세션 히스토리 관련 함수들
+// ---------------------------------------------------------------------------
+
+// 서버에서 세션 목록을 조회한다.
+async function fetchAndRenderSessions() {
+  try {
+    const res = await fetch("/sessions");
+    if (!res.ok) return;
+    const data = await res.json();
+    renderSessionList(data.sessions || []);
+  } catch (e) {
+    // 세션 목록 로딩 실패 시 조용히 무시한다.
+  }
+}
+
+// 세션 목록을 좌측 패널에 렌더링한다.
+function renderSessionList(sessions) {
+  if (!sessionListEl) return;
+  sessionListEl.innerHTML = "";
+
+  // 현재 활성 세션을 최상단에 위치시킨다.
+  const sorted = sortSessionsWithActiveFirst(sessions, state.sessionId);
+
+  sorted.forEach((session) => {
+    const li = document.createElement("li");
+    const isActive = session.session_id === state.sessionId;
+    li.className = "nav__item session-item" + (isActive ? " is-active" : "");
+    li.dataset.sessionId = session.session_id;
+
+    // 세션 텍스트 영역 (클릭하면 세션 전환)
+    const textEl = document.createElement("span");
+    textEl.className = "session-item__text";
+    // 미리보기 텍스트가 없으면 세션 ID 일부를 표시한다.
+    const previewText = session.preview || session.session_id.slice(0, 20) + "...";
+    textEl.textContent = previewText;
+    textEl.title = previewText;
+    textEl.addEventListener("click", () => {
+      switchToSession(session.session_id);
+    });
+
+    // 삭제 버튼 (휴지통 아이콘)
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "session-item__delete";
+    deleteBtn.type = "button";
+    deleteBtn.title = "세션 삭제";
+    deleteBtn.textContent = "\u00D7";
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteSessionById(session.session_id);
+    });
+
+    li.appendChild(textEl);
+    li.appendChild(deleteBtn);
+    sessionListEl.appendChild(li);
+  });
+}
+
+// 활성 세션을 최상단으로 정렬한다. 나머지는 updated_at 내림차순 유지.
+function sortSessionsWithActiveFirst(sessions, activeSessionId) {
+  const active = sessions.filter((s) => s.session_id === activeSessionId);
+  const rest = sessions.filter((s) => s.session_id !== activeSessionId);
+  return [...active, ...rest];
+}
+
+// 이전 세션으로 전환한다.
+async function switchToSession(sessionId) {
+  if (sessionId === state.sessionId) return;
+
+  setTyping(false);
+  state.sessionId = sessionId;
+
+  // 로컬 스토리지의 메시지를 초기화하고 서버에서 해당 세션의 메시지를 불러온다.
+  state.messages = [];
+  saveState();
+  updateSessionUi();
+  renderMessages();
+
+  // 서버에서 세션 메시지를 불러와 렌더링한다.
+  try {
+    const res = await fetch(`/sessions/${sessionId}/messages`);
+    if (res.ok) {
+      const data = await res.json();
+      const msgs = data.messages || [];
+      // ADK Event 형식의 메시지를 프론트엔드 형식으로 변환한다.
+      msgs.forEach((event) => {
+        const content = event.content;
+        if (!content || !content.parts) return;
+        const role = content.role === "user" ? "user" : "assistant";
+        content.parts.forEach((part) => {
+          if (part.text) {
+            if (role === "user") {
+              state.messages.push({ role: "user", text: part.text });
+            } else {
+              state.messages.push({
+                role: "assistant",
+                route: "mlcc_agent",
+                blocks: [{ type: "text", section: "응답", value: part.text }],
+                tables: {},
+                charts: [],
+              });
+            }
+          }
+        });
+      });
+      saveState();
+      renderMessages();
+    }
+  } catch (e) {
+    // 메시지 불러오기 실패 시 빈 대화를 유지한다.
+  }
+
+  // 세션 목록을 다시 렌더링하여 활성 세션을 최상단에 표시한다.
+  fetchAndRenderSessions();
+}
+
+// 세션을 삭제한다.
+async function deleteSessionById(sessionId) {
+  try {
+    const res = await fetch(`/sessions/${sessionId}`, { method: "DELETE" });
+    if (!res.ok) return;
+  } catch (e) {
+    return;
+  }
+
+  // 삭제한 세션이 현재 활성 세션이면 새 세션을 만든다.
+  if (sessionId === state.sessionId) {
+    state.sessionId = createSessionId();
+    state.messages = [];
+    saveState();
+    updateSessionUi();
+    renderMessages();
+  }
+
+  // 세션 목록을 갱신한다.
+  fetchAndRenderSessions();
+}
+
 // 초기 로딩을 수행한다.
 loadState();
 updateSessionUi();
 renderMessages();
 resizeInput();
 setInsightsHidden(state.insightsHidden);
+// 세션 히스토리 목록을 불러온다.
+fetchAndRenderSessions();

@@ -123,6 +123,66 @@ body::before {
   font-weight: 600;
 }
 
+/* 세션 히스토리 목록 */
+.nav__list {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.session-item:hover {
+  background: rgba(13, 108, 99, 0.06);
+}
+
+.session-item.is-active {
+  background: rgba(13, 108, 99, 0.12);
+  font-weight: 700;
+}
+
+.session-item__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.session-item__delete {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #aab;
+  background: rgba(255, 255, 255, 0.6);
+  color: #555;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.session-item__delete:hover {
+  color: #e53935;
+  border-color: #e53935;
+  background: rgba(229, 57, 53, 0.1);
+}
+
 /* 중앙 채팅 영역 */
 .chat {
   display: flex;

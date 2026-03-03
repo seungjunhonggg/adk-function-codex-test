@@ -19,10 +19,14 @@
     <!-- 전체 앱 레이아웃 -->
     <div class="app is-insights-hidden">
       <!-- 좌측 네비게이션 -->
-            <aside class="nav">
+      <aside class="nav">
         <button class="nav__action" id="newChatButton" type="button">
-          New chat
+          + New chat
         </button>
+        <div class="nav__section-title">대화 기록</div>
+        <ul class="nav__list" id="sessionList">
+          <!-- 세션 목록이 JS로 렌더링된다 -->
+        </ul>
       </aside>
 
       <!-- 중앙 채팅 영역 -->
