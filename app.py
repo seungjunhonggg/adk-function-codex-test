@@ -34,6 +34,8 @@ from backend.core.db_production import (
     fetch_session_state,
     upsert_session_state,
     upsert_session_ip,
+    fetch_all_sessions,
+    delete_session_by_id,
     _ensure_agent_tables,
     _get_agent_connection,
     AGENT_SESSIONS_TABLE,
@@ -388,6 +390,32 @@ async def chat_stream(req: ChatRequest, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/sessions")
+async def list_sessions():
+    """저장된 세션 목록을 최근 업데이트 순으로 반환한다."""
+    sessions = await asyncio.to_thread(fetch_all_sessions)
+    return {"sessions": sessions}
+
+
+@app.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """세션의 저장된 메시지(이벤트)를 반환한다."""
+    pg = PostgresSession(session_id=session_id)
+    messages = await pg.get_items()
+    return {"messages": messages}
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """세션과 관련 메시지를 모두 삭제한다."""
+    # 인메모리 캐시에서도 제거한다.
+    key = (APP_NAME, USER_ID, session_id)
+    session_service._cache.pop(key, None)
+    # DB에서 삭제한다.
+    await asyncio.to_thread(delete_session_by_id, session_id)
+    return {"status": "deleted", "session_id": session_id}
 
 
 @app.get("/health")
