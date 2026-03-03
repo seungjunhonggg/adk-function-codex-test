@@ -169,12 +169,7 @@ body::before {
   border-radius: 6px;
   display: grid;
   place-items: center;
-  opacity: 0;
-  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
-}
-
-.session-item:hover .session-item__delete {
-  opacity: 1;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .session-item__delete:hover {
