@@ -321,20 +321,6 @@ def _sse(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
-# ---------------------------------------------------------------------------
-# 테스트 엔드포인트: table_data SSE 파이프라인 검증용
-# GET /test/table → table_data SSE + final 이벤트를 전송한다.
-# ---------------------------------------------------------------------------
-@app.get("/test/table")
-async def test_table():
-    async def gen():
-        payload = json.dumps({"url": "/artifacts/test_sample.json"})
-        yield _sse("table_data", payload)
-        yield _sse("final", json.dumps({"session_id": "test", "response": ""}))
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request):
     session_id = req.session_id or str(uuid.uuid4())

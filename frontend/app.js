@@ -707,6 +707,13 @@ function renderTableCard(tableKey, tables) {
 // pandas JSON을 { columns: string[], rows: object[] } 정규 형태로 변환한다.
 // orient="columns"(기본), "records", "index", "split" 형식을 자동 감지한다.
 function normalizePandasJson(data) {
+  // 이중 JSON 인코딩 대응: 문자열이면 한 번 더 파싱한다.
+  if (typeof data === "string") {
+    try { data = JSON.parse(data); } catch (_) {
+      return { columns: [], rows: [] };
+    }
+  }
+
   // 1) 배열이면 orient="records": [{col:val, ...}, ...]
   if (Array.isArray(data)) {
     const colSet = new Set();
@@ -736,7 +743,6 @@ function normalizePandasJson(data) {
 
   const firstVal = data[keys[0]];
   if (firstVal !== null && typeof firstVal === "object" && !Array.isArray(firstVal)) {
-    // orient="columns" 확정
     const columns = keys;
     const rowIndices = Object.keys(firstVal);
     rowIndices.sort((a, b) => Number(a) - Number(b));
@@ -750,9 +756,7 @@ function normalizePandasJson(data) {
     return { columns, rows };
   }
 
-  // 4) orient="index": { "0": {"col1": v, "col2": v}, "1": {...} }
-  //    키가 숫자 문자열이고 값이 object이면 → 이 경우는 위의 3번에서 이미 잡힘.
-  //    여기까지 오면 값이 원시 타입 → 단일 행 테이블로 처리
+  // 4) 값이 원시 타입 → 단일 행 테이블로 처리
   const columns = keys;
   const singleRow = {};
   columns.forEach((col) => { singleRow[col] = data[col]; });
@@ -964,10 +968,8 @@ async function sendMessage(text) {
         }
 
         if (parsed.event === "table_data") {
-          console.log("[table_data] SSE 수신:", parsed.data);
           const tableInfo = JSON.parse(parsed.data || "{}");
           if (tableInfo.url) {
-            console.log("[table_data] URL:", tableInfo.url);
             // 타이핑 중이면 잠시 해제하고 테이블을 렌더링한다.
             setTyping(false);
 
@@ -1293,82 +1295,6 @@ async function deleteSessionById(sessionId) {
   // 세션 목록을 갱신한다.
   fetchAndRenderSessions();
 }
-
-// ---------------------------------------------------------------------------
-// 브라우저 콘솔 테스트 함수: window.testTableRender()
-// GET /test/table 엔드포인트를 호출하여 table_data SSE 파이프라인을 검증한다.
-// 또는 window.testTableDirect() 로 fetch 없이 직접 렌더링을 테스트한다.
-// ---------------------------------------------------------------------------
-window.testTableRender = async function () {
-  console.log("[test] /test/table SSE 스트림 호출 시작");
-  try {
-    const res = await fetch("/test/table");
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n\n");
-      buffer = chunks.pop() || "";
-      chunks.forEach((chunk) => {
-        const trimmed = chunk.trim();
-        if (!trimmed) return;
-        const parsed = parseSseChunk(trimmed);
-        console.log("[test] parsed SSE:", parsed.event, parsed.data);
-        if (parsed.event === "table_data") {
-          const tableInfo = JSON.parse(parsed.data || "{}");
-          if (tableInfo.url) {
-            console.log("[test] table_data URL:", tableInfo.url);
-            // 직접 DOM에 삽입
-            const wrapper = document.createElement("div");
-            wrapper.className = "message message--assistant";
-            const card = document.createElement("div");
-            card.className = "assistant-card";
-            wrapper.appendChild(card);
-            threadEl.appendChild(wrapper);
-            fetchAndRenderArtifactTable(tableInfo.url).then((tableEl) => {
-              card.appendChild(tableEl);
-              scrollToBottom();
-              console.log("[test] 테이블 렌더링 완료");
-            });
-          }
-        }
-      });
-    }
-  } catch (e) {
-    console.error("[test] 에러:", e);
-  }
-};
-
-window.testTableDirect = async function (url) {
-  const target = url || "/artifacts/test_sample.json";
-  console.log("[test-direct] fetch:", target);
-  try {
-    const res = await fetch(target);
-    const data = await res.json();
-    console.log("[test-direct] JSON keys:", Object.keys(data));
-    console.log("[test-direct] 첫 번째 값 타입:", typeof data[Object.keys(data)[0]]);
-    const normalized = normalizePandasJson(data);
-    console.log("[test-direct] normalized:", normalized.columns.length, "cols,", normalized.rows.length, "rows");
-    console.log("[test-direct] columns:", normalized.columns);
-    console.log("[test-direct] 첫 행:", normalized.rows[0]);
-    // DOM에 렌더링
-    const wrapper = document.createElement("div");
-    wrapper.className = "message message--assistant";
-    const card = document.createElement("div");
-    card.className = "assistant-card";
-    const tableEl = renderPandasTable(data);
-    card.appendChild(tableEl);
-    wrapper.appendChild(card);
-    threadEl.appendChild(wrapper);
-    scrollToBottom();
-    console.log("[test-direct] 렌더링 완료");
-  } catch (e) {
-    console.error("[test-direct] 에러:", e);
-  }
-};
 
 // 초기 로딩을 수행한다.
 loadState();
