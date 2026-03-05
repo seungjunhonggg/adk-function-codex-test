@@ -737,6 +737,92 @@ function parseSseChunk(chunk) {
   return { event: eventName, data: dataLines.join("\n") };
 }
 
+// pandas.to_json() 기본(orient=columns) 데이터를 행 목록으로 바꾼다.
+function pandasColumnsJsonToRows(data) {
+  // 컬럼-인덱스 맵 구조가 아니면 빈 배열을 반환한다.
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return [];
+  }
+
+  // 인덱스 키를 모두 모은다.
+  const indexSet = new Set();
+  Object.values(data).forEach((columnMap) => {
+    if (!columnMap || typeof columnMap !== "object") return;
+    Object.keys(columnMap).forEach((idx) => indexSet.add(idx));
+  });
+
+  // 인덱스 순서대로 각 행 객체를 만든다.
+  return Array.from(indexSet)
+    .sort((a, b) => Number(a) - Number(b))
+    .map((idx) => {
+      const row = {};
+      Object.keys(data).forEach((columnName) => {
+        const columnMap = data[columnName] || {};
+        row[columnName] =
+          columnMap[idx] === undefined || columnMap[idx] === null
+            ? ""
+            : columnMap[idx];
+      });
+      return row;
+    });
+}
+
+// table_data SSE payload에서 url 값을 꺼낸다.
+function extractTableUrl(rawPayload) {
+  // payload가 문자열이면 JSON 파싱을 먼저 시도한다.
+  let payload = rawPayload;
+  if (typeof payload === "string") {
+    try {
+      payload = JSON.parse(payload);
+    } catch (e) {
+      payload = null;
+    }
+  }
+
+  // payload가 객체면 url 필드를 반환한다.
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    if (typeof payload.url === "string" && payload.url) {
+      return payload.url;
+    }
+  }
+  return "";
+}
+
+// 테이블 URL에서 화면용 키를 만든다.
+function createTableKeyFromUrl(tableUrl, fallbackKey) {
+  // URL 경로 마지막 값을 키로 사용한다.
+  const parts = String(tableUrl || "").split("/").filter(Boolean);
+  const lastPart = parts.length > 0 ? parts[parts.length - 1] : "";
+  return lastPart || `table_${fallbackKey}`;
+}
+
+// table_data SSE payload(url)에서 JSON을 읽어 테이블 행으로 변환한다.
+async function loadTableRowsFromPayload(rawPayload, fallbackKey) {
+  // payload에서 아티팩트 URL을 꺼낸다.
+  const tableUrl = extractTableUrl(rawPayload);
+  if (!tableUrl) {
+    return { tableKey: `table_${fallbackKey}`, rows: [] };
+  }
+
+  // URL로 저장된 JSON 파일을 받아온다.
+  try {
+    const res = await fetch(tableUrl);
+    if (!res.ok) {
+      return { tableKey: createTableKeyFromUrl(tableUrl, fallbackKey), rows: [] };
+    }
+
+    // pandas.to_json() 기본 형태(orient=columns)로 가정하고 변환한다.
+    const jsonData = await res.json();
+    return {
+      tableKey: createTableKeyFromUrl(tableUrl, fallbackKey),
+      rows: pandasColumnsJsonToRows(jsonData),
+    };
+  } catch (e) {
+    // 파일 읽기 실패 시 테이블만 비워서 다음 이벤트 처리를 계속한다.
+    return { tableKey: createTableKeyFromUrl(tableUrl, fallbackKey), rows: [] };
+  }
+}
+
 // 사용자 입력을 서버로 전송한다 (SSE 스트리밍).
 async function sendMessage(text) {
   setTyping(true);
@@ -768,6 +854,9 @@ async function sendMessage(text) {
     const decoder = new TextDecoder();
     let buffer = "";
     let hasFinal = false;
+    // 스트림 중 받은 테이블 데이터를 모아 최종 메시지에 함께 렌더링한다.
+    const streamTables = {};
+    const streamTableOrder = [];
 
     while (true) {
       const { value, done } = await reader.read();
@@ -777,16 +866,16 @@ async function sendMessage(text) {
       const chunks = buffer.split("\n\n");
       buffer = chunks.pop() || "";
 
-      chunks.forEach((chunk) => {
+      for (const chunk of chunks) {
         const trimmed = chunk.trim();
-        if (!trimmed) return;
+        if (!trimmed) continue;
         const parsed = parseSseChunk(trimmed);
-        if (!parsed) return;
+        if (!parsed) continue;
 
         if (parsed.event === "progress") {
           const progressData = JSON.parse(parsed.data || "{}");
           updateTypingLogs(progressData.logs || []);
-          return;
+          continue;
         }
 
         if (parsed.event === "trigger") {
@@ -801,7 +890,20 @@ async function sendMessage(text) {
             charts: [],
           });
           setTyping(true);
-          return;
+          continue;
+        }
+
+        if (parsed.event === "table_data") {
+          // SSE payload의 url로 JSON 아티팩트를 읽어온다.
+          const normalized = await loadTableRowsFromPayload(
+            parsed.data,
+            streamTableOrder.length + 1
+          );
+          if (normalized.rows.length > 0) {
+            streamTables[normalized.tableKey] = normalized.rows;
+            streamTableOrder.push(normalized.tableKey);
+          }
+          continue;
         }
 
         if (parsed.event === "final") {
@@ -812,17 +914,24 @@ async function sendMessage(text) {
             updateSessionUi();
           }
           const responseText = data.response || "";
+          const blocks = [];
           if (responseText) {
+            blocks.push({ type: "text", section: "응답", value: responseText });
+          }
+          streamTableOrder.forEach((tableKey) => {
+            blocks.push({ type: "table_ref", table_key: tableKey });
+          });
+          if (blocks.length > 0) {
             addMessage({
               role: "assistant",
               route: "mlcc_agent",
-              blocks: [{ type: "text", section: "응답", value: responseText }],
-              tables: {},
+              blocks,
+              tables: streamTables,
               charts: [],
             });
           }
         }
-      });
+      }
     }
 
     if (!hasFinal) {
