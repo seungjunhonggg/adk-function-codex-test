@@ -354,9 +354,11 @@ async def chat_stream(req: ChatRequest, request: Request):
             session_id=session_id,
             new_message=user_content,
         ):
-            # artifact_delta 감지 → table_data SSE 전송
+            # artifact_delta 감지 → URL 조립 후 table_data SSE 전송
+            # artifact_delta: { artifact_name: version(int) }
             if event.actions and getattr(event.actions, "artifact_delta", None):
-                for file_url in event.actions.artifact_delta.values():
+                for name, version in event.actions.artifact_delta.items():
+                    file_url = f"/artifacts/{USER_ID}/{session_id}/{name}/{version}.json"
                     payload = json.dumps({"url": file_url})
                     yield _sse("table_data", payload)
 

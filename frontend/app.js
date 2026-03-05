@@ -1,6 +1,12 @@
 // 기본 상수와 로컬 저장소 키를 정의한다.
 const API_URL = "/chat";
 const API_STREAM_URL = "/chat/stream";
+const ARTIFACT_USER_ID = "default_user";
+
+// artifact_delta(name→version)에서 파일 URL을 조립한다.
+function buildArtifactUrl(sessionId, name, version) {
+  return `/artifacts/${ARTIFACT_USER_ID}/${sessionId}/${name}/${version}.json`;
+}
 const STORAGE_KEYS = {
   sessionId: "mlcc_demo_session_id",
   messages: "mlcc_demo_messages",
@@ -1244,10 +1250,11 @@ async function switchToSession(sessionId) {
       const msgs = data.messages || [];
       // ADK Event 형식의 메시지를 프론트엔드 형식으로 변환한다.
       msgs.forEach((event) => {
-        // artifact_delta가 있으면 테이블 블록으로 변환한다.
+        // artifact_delta {name: version}가 있으면 URL을 조립하여 테이블 블록으로 변환한다.
         const artifactDelta = event.actions && event.actions.artifact_delta;
         if (artifactDelta && typeof artifactDelta === "object") {
-          Object.values(artifactDelta).forEach((fileUrl) => {
+          Object.entries(artifactDelta).forEach(([name, version]) => {
+            const fileUrl = buildArtifactUrl(sessionId, name, version);
             state.messages.push({
               role: "assistant",
               route: "data",
