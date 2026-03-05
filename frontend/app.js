@@ -704,14 +704,69 @@ function renderTableCard(tableKey, tables) {
   return card;
 }
 
-// pandas.to_json() 기본(orient="columns") 형태의 JSON을 테이블로 렌더링한다.
-// 형태: { "col1": {"0": v, "1": v, ...}, "col2": {"0": v, "1": v, ...} }
+// pandas JSON을 { columns: string[], rows: object[] } 정규 형태로 변환한다.
+// orient="columns"(기본), "records", "index", "split" 형식을 자동 감지한다.
+function normalizePandasJson(data) {
+  // 1) 배열이면 orient="records": [{col:val, ...}, ...]
+  if (Array.isArray(data)) {
+    const colSet = new Set();
+    data.forEach((row) => {
+      if (row && typeof row === "object") {
+        Object.keys(row).forEach((k) => colSet.add(k));
+      }
+    });
+    return { columns: Array.from(colSet), rows: data };
+  }
+
+  // 2) orient="split": { "columns": [...], "index": [...], "data": [[...], ...] }
+  if (data.columns && data.data && Array.isArray(data.columns) && Array.isArray(data.data)) {
+    const cols = data.columns;
+    const rows = data.data.map((rowArr) => {
+      const obj = {};
+      cols.forEach((c, i) => { obj[c] = rowArr[i]; });
+      return obj;
+    });
+    return { columns: cols, rows };
+  }
+
+  // 3) orient="columns" (기본): { "col1": {"0": v, "1": v}, "col2": {"0": v, "1": v} }
+  //    각 컬럼의 값이 반드시 object(dict)여야 한다.
+  const keys = Object.keys(data);
+  if (keys.length === 0) return { columns: [], rows: [] };
+
+  const firstVal = data[keys[0]];
+  if (firstVal !== null && typeof firstVal === "object" && !Array.isArray(firstVal)) {
+    // orient="columns" 확정
+    const columns = keys;
+    const rowIndices = Object.keys(firstVal);
+    rowIndices.sort((a, b) => Number(a) - Number(b));
+    const rows = rowIndices.map((idx) => {
+      const obj = {};
+      columns.forEach((col) => {
+        obj[col] = data[col] ? data[col][idx] : undefined;
+      });
+      return obj;
+    });
+    return { columns, rows };
+  }
+
+  // 4) orient="index": { "0": {"col1": v, "col2": v}, "1": {...} }
+  //    키가 숫자 문자열이고 값이 object이면 → 이 경우는 위의 3번에서 이미 잡힘.
+  //    여기까지 오면 값이 원시 타입 → 단일 행 테이블로 처리
+  const columns = keys;
+  const singleRow = {};
+  columns.forEach((col) => { singleRow[col] = data[col]; });
+  return { columns, rows: [singleRow] };
+}
+
+// pandas JSON 데이터를 테이블 DOM으로 렌더링한다.
 function renderPandasTable(pandasData) {
   const card = document.createElement("div");
   card.className = "block table-card artifact-table";
 
-  const columns = Object.keys(pandasData);
-  if (columns.length === 0) {
+  const { columns, rows } = normalizePandasJson(pandasData);
+
+  if (columns.length === 0 || rows.length === 0) {
     const empty = document.createElement("div");
     empty.className = "block__text";
     empty.textContent = "No table data.";
@@ -719,14 +774,10 @@ function renderPandasTable(pandasData) {
     return card;
   }
 
-  // 행 인덱스를 첫 번째 컬럼의 키에서 추출하고 숫자 정렬한다.
-  const rowIndices = Object.keys(pandasData[columns[0]]);
-  rowIndices.sort((a, b) => Number(a) - Number(b));
-
-  // 행 개수 배지를 추가한다.
+  // 행·열 개수 배지
   const info = document.createElement("div");
   info.className = "artifact-table__info";
-  info.textContent = `${rowIndices.length} rows \u00D7 ${columns.length} cols`;
+  info.textContent = `${rows.length} rows \u00D7 ${columns.length} cols`;
   card.appendChild(info);
 
   // 테이블 스크롤 래퍼
@@ -748,11 +799,11 @@ function renderPandasTable(pandasData) {
 
   // tbody
   const tbody = document.createElement("tbody");
-  rowIndices.forEach((idx) => {
+  rows.forEach((row) => {
     const tr = document.createElement("tr");
     columns.forEach((col) => {
       const td = document.createElement("td");
-      const val = pandasData[col][idx];
+      const val = row[col];
       td.textContent = val === null || val === undefined ? "" : String(val);
       tr.appendChild(td);
     });
