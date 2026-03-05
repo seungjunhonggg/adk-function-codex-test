@@ -1244,6 +1244,20 @@ async function switchToSession(sessionId) {
       const msgs = data.messages || [];
       // ADK Event 형식의 메시지를 프론트엔드 형식으로 변환한다.
       msgs.forEach((event) => {
+        // artifact_delta가 있으면 테이블 블록으로 변환한다.
+        const artifactDelta = event.actions && event.actions.artifact_delta;
+        if (artifactDelta && typeof artifactDelta === "object") {
+          Object.values(artifactDelta).forEach((fileUrl) => {
+            state.messages.push({
+              role: "assistant",
+              route: "data",
+              blocks: [{ type: "artifact_table", url: fileUrl }],
+              tables: {},
+              charts: [],
+            });
+          });
+        }
+
         const content = event.content;
         if (!content || !content.parts) return;
         const role = content.role === "user" ? "user" : "assistant";
