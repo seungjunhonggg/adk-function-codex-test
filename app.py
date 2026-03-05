@@ -247,7 +247,10 @@ app.add_middleware(
 )
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
+ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
+app.mount("/artifacts", StaticFiles(directory=str(ARTIFACTS_DIR)), name="artifacts")
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
@@ -351,6 +354,12 @@ async def chat_stream(req: ChatRequest, request: Request):
             session_id=session_id,
             new_message=user_content,
         ):
+            # artifact_delta 감지 → table_data SSE 전송
+            if event.actions and getattr(event.actions, "artifact_delta", None):
+                for file_url in event.actions.artifact_delta.values():
+                    payload = json.dumps({"url": file_url})
+                    yield _sse("table_data", payload)
+
             if not event.content or not event.content.parts:
                 continue
 

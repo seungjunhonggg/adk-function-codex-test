@@ -492,6 +492,37 @@ body::before {
   font-size: 11px;
 }
 
+/* Artifact 테이블 스타일 */
+.artifact-table__info {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.artifact-table__scroll {
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.artifact-table__scroll thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
+}
+
+.artifact-table__loading {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.artifact-table__loading.is-error {
+  color: #c0392b;
+}
+
 /* 테이블 선택 카드 */
 .table-select-card {
   display: grid;

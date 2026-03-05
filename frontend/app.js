@@ -213,6 +213,22 @@ function renderBlock(block, tables, charts) {
   if (block.type === "table_ref") {
     return renderTableCard(block.table_key, tables);
   }
+  if (block.type === "artifact_table" && block.url) {
+    // 비동기 로드를 위한 컨테이너를 반환한다.
+    const container = document.createElement("div");
+    container.className = "block table-card artifact-table";
+    const loading = document.createElement("div");
+    loading.className = "artifact-table__loading";
+    loading.textContent = "테이블 데이터를 불러오는 중...";
+    container.appendChild(loading);
+    fetchAndRenderArtifactTable(block.url).then((tableEl) => {
+      container.removeChild(loading);
+      while (tableEl.firstChild) {
+        container.appendChild(tableEl.firstChild);
+      }
+    });
+    return container;
+  }
   if (block.type === "chart_ref") {
     return renderChartCard(block.chart_id, charts);
   }
@@ -688,6 +704,98 @@ function renderTableCard(tableKey, tables) {
   return card;
 }
 
+// pandas.to_json() 기본(orient="columns") 형태의 JSON을 테이블로 렌더링한다.
+// 형태: { "col1": {"0": v, "1": v, ...}, "col2": {"0": v, "1": v, ...} }
+function renderPandasTable(pandasData) {
+  const card = document.createElement("div");
+  card.className = "block table-card artifact-table";
+
+  const columns = Object.keys(pandasData);
+  if (columns.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "block__text";
+    empty.textContent = "No table data.";
+    card.appendChild(empty);
+    return card;
+  }
+
+  // 행 인덱스를 첫 번째 컬럼의 키에서 추출하고 숫자 정렬한다.
+  const rowIndices = Object.keys(pandasData[columns[0]]);
+  rowIndices.sort((a, b) => Number(a) - Number(b));
+
+  // 행 개수 배지를 추가한다.
+  const info = document.createElement("div");
+  info.className = "artifact-table__info";
+  info.textContent = `${rowIndices.length} rows \u00D7 ${columns.length} cols`;
+  card.appendChild(info);
+
+  // 테이블 스크롤 래퍼
+  const scrollWrap = document.createElement("div");
+  scrollWrap.className = "artifact-table__scroll";
+
+  const table = document.createElement("table");
+
+  // thead
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  columns.forEach((col) => {
+    const th = document.createElement("th");
+    th.textContent = col;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  // tbody
+  const tbody = document.createElement("tbody");
+  rowIndices.forEach((idx) => {
+    const tr = document.createElement("tr");
+    columns.forEach((col) => {
+      const td = document.createElement("td");
+      const val = pandasData[col][idx];
+      td.textContent = val === null || val === undefined ? "" : String(val);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  scrollWrap.appendChild(table);
+  card.appendChild(scrollWrap);
+  return card;
+}
+
+// artifact URL에서 JSON을 가져와 pandas 테이블로 렌더링한다.
+async function fetchAndRenderArtifactTable(url) {
+  const card = document.createElement("div");
+  card.className = "block table-card artifact-table";
+
+  // 로딩 표시
+  const loading = document.createElement("div");
+  loading.className = "artifact-table__loading";
+  loading.textContent = "테이블 데이터를 불러오는 중...";
+  card.appendChild(loading);
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const pandasData = await res.json();
+
+    // 로딩 제거 후 테이블 렌더링
+    card.removeChild(loading);
+    const rendered = renderPandasTable(pandasData);
+    // rendered 의 자식들을 card로 옮긴다.
+    while (rendered.firstChild) {
+      card.appendChild(rendered.firstChild);
+    }
+  } catch (e) {
+    loading.textContent = `테이블 로드 실패: ${e.message}`;
+    loading.classList.add("is-error");
+  }
+
+  return card;
+}
+
 // 차트 블록 (placeholder)
 function renderChartCard(chartId, charts) {
   const card = document.createElement("div");
@@ -801,6 +909,59 @@ async function sendMessage(text) {
             charts: [],
           });
           setTyping(true);
+          return;
+        }
+
+        if (parsed.event === "table_data") {
+          const tableInfo = JSON.parse(parsed.data || "{}");
+          if (tableInfo.url) {
+            // 타이핑 중이면 잠시 해제하고 테이블을 렌더링한다.
+            setTyping(false);
+
+            // artifact URL에서 JSON을 fetch하여 테이블로 렌더링한다.
+            const wrapper = document.createElement("div");
+            wrapper.className = "message message--assistant";
+            const card = document.createElement("div");
+            card.className = "assistant-card";
+
+            const meta = document.createElement("div");
+            meta.className = "assistant-meta";
+            const pill = document.createElement("span");
+            pill.className = "route-pill";
+            pill.textContent = "data";
+            const metaText = document.createElement("span");
+            metaText.textContent = "assistant";
+            meta.appendChild(pill);
+            meta.appendChild(metaText);
+            card.appendChild(meta);
+
+            // 비동기로 테이블을 로드하여 삽입한다.
+            const placeholder = document.createElement("div");
+            placeholder.className = "artifact-table__loading";
+            placeholder.textContent = "테이블 데이터를 불러오는 중...";
+            card.appendChild(placeholder);
+            wrapper.appendChild(card);
+            threadEl.appendChild(wrapper);
+            scrollToBottom();
+
+            fetchAndRenderArtifactTable(tableInfo.url).then((tableEl) => {
+              card.removeChild(placeholder);
+              card.appendChild(tableEl);
+              scrollToBottom();
+
+              // 메시지 상태에도 저장한다.
+              state.messages.push({
+                role: "assistant",
+                route: "data",
+                blocks: [{ type: "artifact_table", url: tableInfo.url }],
+                tables: {},
+                charts: [],
+              });
+              saveState();
+            });
+
+            setTyping(true);
+          }
           return;
         }
 
