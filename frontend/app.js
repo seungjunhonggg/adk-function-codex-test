@@ -240,6 +240,18 @@ function renderBlock(block, tables, charts) {
   if (block.type === "chart_ref") {
     return renderChartCard(block.chart_id, charts);
   }
+  if (block.type === "artifact_chart" && block.url) {
+    const container = document.createElement("div");
+    container.className = "block chart-card artifact-chart";
+    const loading = document.createElement("div");
+    loading.className = "artifact-table__loading";
+    loading.textContent = "차트를 불러오는 중...";
+    container.appendChild(loading);
+    fetchAndRenderPlotlyChart(block.url, container).then(() => {
+      if (container.contains(loading)) container.removeChild(loading);
+    });
+    return container;
+  }
   if (block.type === "input_form") {
     return renderInputForm(block);
   }
@@ -859,7 +871,7 @@ async function fetchAndRenderArtifactTable(url) {
   return card;
 }
 
-// 차트 블록 (placeholder)
+// 차트 블록 (기존 chart_ref용, 인라인 데이터)
 function renderChartCard(chartId, charts) {
   const card = document.createElement("div");
   card.className = "block chart-card";
@@ -867,11 +879,61 @@ function renderChartCard(chartId, charts) {
   label.className = "block__label";
   label.textContent = chartId || "chart";
   card.appendChild(label);
-  const empty = document.createElement("div");
-  empty.className = "block__text";
-  empty.textContent = "Chart rendering placeholder.";
-  card.appendChild(empty);
+
+  const chartData = charts && chartId ? charts[chartId] : null;
+  if (!chartData) {
+    const empty = document.createElement("div");
+    empty.className = "block__text";
+    empty.textContent = "No chart data.";
+    card.appendChild(empty);
+    return card;
+  }
+
+  // 인라인 Plotly JSON이 있으면 바로 렌더링한다.
+  const plotDiv = document.createElement("div");
+  plotDiv.className = "artifact-chart__plot";
+  card.appendChild(plotDiv);
+  renderPlotly(plotDiv, chartData);
   return card;
+}
+
+// Plotly JSON(data + layout)을 div에 렌더링한다.
+function renderPlotly(containerDiv, plotlyJson) {
+  const data = plotlyJson.data || [];
+  const layout = Object.assign(
+    {
+      autosize: true,
+      margin: { l: 50, r: 30, t: 40, b: 50 },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { family: "Noto Sans KR, sans-serif", size: 12, color: "#1d1f1e" },
+    },
+    plotlyJson.layout || {}
+  );
+  const config = { responsive: true, displayModeBar: false };
+  Plotly.newPlot(containerDiv, data, layout, config);
+}
+
+// artifact URL에서 Plotly JSON을 가져와 차트를 렌더링한다.
+async function fetchAndRenderPlotlyChart(url, container) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let plotlyJson = await res.json();
+    // 이중 JSON 인코딩 대응
+    if (typeof plotlyJson === "string") {
+      try { plotlyJson = JSON.parse(plotlyJson); } catch (_) {}
+    }
+    const plotDiv = document.createElement("div");
+    plotDiv.className = "artifact-chart__plot";
+    container.appendChild(plotDiv);
+    renderPlotly(plotDiv, plotlyJson);
+  } catch (e) {
+    const errEl = document.createElement("div");
+    errEl.className = "artifact-table__loading is-error";
+    errEl.textContent = `차트 로드 실패: ${e.message}`;
+    container.appendChild(errEl);
+  }
 }
 
 // 현재 활성 스트림 컨트롤러를 저장한다.
@@ -1017,6 +1079,57 @@ async function sendMessage(text) {
                 role: "assistant",
                 route: "data",
                 blocks: [{ type: "artifact_table", url: tableInfo.url }],
+                tables: {},
+                charts: [],
+              });
+              saveState();
+            });
+
+            setTyping(true);
+          }
+          return;
+        }
+
+        if (parsed.event === "chart_data") {
+          const chartInfo = JSON.parse(parsed.data || "{}");
+          if (chartInfo.url) {
+            setTyping(false);
+
+            const wrapper = document.createElement("div");
+            wrapper.className = "message message--assistant";
+            const card = document.createElement("div");
+            card.className = "assistant-card";
+
+            const meta = document.createElement("div");
+            meta.className = "assistant-meta";
+            const pill = document.createElement("span");
+            pill.className = "route-pill";
+            pill.textContent = "chart";
+            const metaText = document.createElement("span");
+            metaText.textContent = "assistant";
+            meta.appendChild(pill);
+            meta.appendChild(metaText);
+            card.appendChild(meta);
+
+            const chartContainer = document.createElement("div");
+            chartContainer.className = "block chart-card artifact-chart";
+            const placeholder = document.createElement("div");
+            placeholder.className = "artifact-table__loading";
+            placeholder.textContent = "차트를 불러오는 중...";
+            chartContainer.appendChild(placeholder);
+            card.appendChild(chartContainer);
+            wrapper.appendChild(card);
+            threadEl.appendChild(wrapper);
+            scrollToBottom();
+
+            fetchAndRenderPlotlyChart(chartInfo.url, chartContainer).then(() => {
+              if (chartContainer.contains(placeholder)) chartContainer.removeChild(placeholder);
+              scrollToBottom();
+
+              state.messages.push({
+                role: "assistant",
+                route: "chart",
+                blocks: [{ type: "artifact_chart", url: chartInfo.url }],
                 tables: {},
                 charts: [],
               });
@@ -1257,10 +1370,11 @@ async function switchToSession(sessionId) {
         if (artifactDelta && typeof artifactDelta === "object") {
           Object.entries(artifactDelta).forEach(([name, version]) => {
             const fileUrl = buildArtifactUrl(sessionId, name, version);
+            const isChart = name.toLowerCase().includes("chart");
             state.messages.push({
               role: "assistant",
-              route: "data",
-              blocks: [{ type: "artifact_table", url: fileUrl }],
+              route: isChart ? "chart" : "data",
+              blocks: [{ type: isChart ? "artifact_chart" : "artifact_table", url: fileUrl }],
               tables: {},
               charts: [],
             });

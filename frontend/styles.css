@@ -572,6 +572,18 @@ body::before {
   color: #c0392b;
 }
 
+/* Artifact 차트 (Plotly) 스타일 */
+.artifact-chart {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.artifact-chart__plot {
+  width: 100%;
+  min-height: 360px;
+}
+
 /* 테이블 선택 카드 */
 .table-select-card {
   display: grid;
