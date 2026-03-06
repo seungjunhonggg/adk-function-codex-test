@@ -70,9 +70,11 @@ function resizeInput() {
   messageInputEl.style.height = `${messageInputEl.scrollHeight}px`;
 }
 
-// 스레드 하단으로 스크롤한다.
+// 스레드 하단으로 스크롤한다. 브라우저 페인트 이후 실행하여 scrollHeight를 보장한다.
 function scrollToBottom() {
-  threadEl.scrollTop = threadEl.scrollHeight;
+  requestAnimationFrame(() => {
+    threadEl.scrollTop = threadEl.scrollHeight;
+  });
 }
 
 // 메시지를 상태에 추가하고 렌더링한다.
